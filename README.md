@@ -1,23 +1,22 @@
 # Fable II Recomp for macOS
 
-> **Based on [himdo/Fable-2-Recomp](https://github.com/himdo/Fable-2-Recomp).** If you're on
-> Windows or Linux, use that project.
->
-> **This fork is mostly AI-generated.** Issues, comments and pull requests are welcome, but they
-> will be processed by AI. In other words, don't expect much human interaction. This is mostly my
-> own experiment in single developer/AI coding. **Forks are encouraged:** take it wherever you like.
+**Based on [himdo/Fable-2-Recomp](https://github.com/himdo/Fable-2-Recomp).** If you're on Windows or Linux, use that project.
+
+**This fork is mostly AI-generated.** Issues, comments and pull requests are welcome, but they
+will be processed by AI. In other words, don't expect much human interaction. This is mostly my
+own experiment in single developer/AI coding. **Forks are encouraged:** take it wherever you like.
 
 A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, with a Metal renderer.
-**It is very much an early work in progress.** Expect bugs, rough edges and frequent changes.
+**It is very much an early work in progress.** Not yet tested all the way to the game's ending.
 
 ## Features beyond the original game
 
 - **Turbo mode:** F7 runs the whole game 2× faster (configurable).
-- **Quick save / quick load:** F5 saves anywhere. The Dev Launcher boots straight into any save
+- **Quick save / quick load:** Launcher boots straight into any save
   and keeps a timestamped library of every save.
-- **Fast loading:** about 7 s from launch to gameplay, and about 5 s for area transitions.
+- **Faster loading**
 - **60 FPS or uncapped,** with an Auto mode that picks 30 or 60 FPS based on your Mac's GPU.
-- **Higher internal resolution** (2× or 3×, or `"auto"` to pick from the GPU, `[graphics] resolution_scale`), with bloom and glow kept at their original size (`effects_native_scale`), and an optional MetalFX Spatial upscaling mode (`[graphics] upscaling`; look-changing, off by default), e.g. 2× upscaled to a 4K fullscreen window.
+- **Higher internal resolution** (2× or 3×, or `"auto"` to pick from the GPU, `[graphics] resolution_scale`), with bloom and glow kept at their original size (`effects_native_scale`).
 - **Windowed or fullscreen** (`[graphics] fullscreen`); the window reopens at its last size and position.
 - **Skip intros, fast title screen, shorter save notices.**
 - **Keyboard and mouse support,** plus an in-game Lua script menu (F6) for tinkering.
@@ -54,9 +53,6 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
 | 16 GB, 10–12 cores (estimate) | about 3 min |
 | M1, 8 GB (estimate) | about 5–6 min |
 
-Updates: replace the app with the new version; the next launch rebuilds only what changed. Settings →
-Advanced → **Start Fresh…** moves everything the app made into an archive so you can start over
-([details](docs/release-app.md)).
 
 ## Build from source
 
