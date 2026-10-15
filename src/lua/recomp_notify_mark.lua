@@ -1,0 +1,2 @@
+-- No-op progress mark: recomp_notify.lua runs it between game API calls so the
+-- host log (fable2_f5_lua.log, "[notify] ack") shows how far a run got. Keep it empty.

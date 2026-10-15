@@ -1,0 +1,91 @@
+SDK clock: guest durations take 1/scalar of the host time (turbo waits ran 4x long).
+Phase B item B2 (docs/sdk-from-source.md). Applied by tools/build_sdk_from_source.py
+(SDK_BEHAVIOUR_PATCHES). set_guest_time_scalar(s) speeds the guest tick ratio up by s,
+but ScaleGuestDurationMillis / FileTime / Timeval and the XSystemClock -> WinSystemClock
+cast multiplied a guest duration by s to get host time (and the reverse cast divided).
+At 2x a guest Sleep(100) took ~200 ms instead of 50. Also scales relative (negative)
+FILETIMEs as signed values. Behaviour at scalar 1.0 is unchanged.
+The executable's old workaround (overwrite guest_time_scalar_ with 1/s,
+src/core/fable2_turbo.h) probes ScaleGuestDurationMillis and stands down on this runtime.
+
+--- a/include/rex/chrono/chrono.h
++++ b/include/rex/chrono/chrono.h
+@@ -143,8 +143,9 @@
+ 
+     auto delta = (t - x_now);
+     if (!REXCVAR_GET(clock_no_scaling)) {
++      // Guest time runs guest_time_scalar() times faster than host time.
+       delta =
+-          std::chrono::floor<WClock_::duration>(delta * rex::chrono::Clock::guest_time_scalar());
++          std::chrono::floor<WClock_::duration>(delta / rex::chrono::Clock::guest_time_scalar());
+     }
+     return w_now + delta;
+   }
+@@ -167,7 +168,7 @@
+     rex::chrono::hundrednanoseconds delta = (t - w_now);
+     if (!REXCVAR_GET(clock_no_scaling)) {
+       delta =
+-          std::chrono::floor<WClock_::duration>(delta / rex::chrono::Clock::guest_time_scalar());
++          std::chrono::floor<WClock_::duration>(delta * rex::chrono::Clock::guest_time_scalar());
+     }
+     return x_now + delta;
+   }
+--- a/src/core/clock.cpp
++++ b/src/core/clock.cpp
+@@ -197,8 +197,10 @@
+   } else if (!guest_ms) {
+     return 0;
+   }
++  // guest_time_scalar_ is the guest speed (set_guest_time_scalar speeds the guest
++  // tick ratio up by it), so a guest duration takes 1/scalar of the host time.
+   uint64_t scaled_ms =
+-      static_cast<uint64_t>((static_cast<uint64_t>(guest_ms) * guest_time_scalar_));
++      static_cast<uint64_t>((static_cast<uint64_t>(guest_ms) / guest_time_scalar_));
+   return static_cast<uint32_t>(std::min(scaled_ms, max));
+ }
+ 
+@@ -213,14 +215,12 @@
+     // Absolute time.
+     uint64_t guest_time = Clock::QueryGuestSystemTime();
+     int64_t relative_time = guest_file_time - static_cast<int64_t>(guest_time);
+-    int64_t scaled_time = static_cast<int64_t>(relative_time * guest_time_scalar_);
++    int64_t scaled_time = static_cast<int64_t>(relative_time / guest_time_scalar_);
+     return static_cast<int64_t>(guest_time) + scaled_time;
+   } else {
+-    // Relative time.
+-    uint64_t scaled_file_time =
+-        static_cast<uint64_t>((static_cast<uint64_t>(guest_file_time) * guest_time_scalar_));
+-    // TODO(benvanik): check for overflow?
+-    return scaled_file_time;
++    // Relative time (negative). Scale it as a signed value: converting it to
++    // unsigned first turned it into a huge positive (absolute) time.
++    return static_cast<int64_t>(guest_file_time / guest_time_scalar_);
+   }
+ }
+ 
+@@ -229,16 +229,16 @@
+     return;
+   }
+ 
+-  uint64_t scaled_sec = static_cast<uint64_t>(static_cast<uint64_t>(*tv_sec) * guest_time_scalar_);
+-  uint64_t scaled_usec =
+-      static_cast<uint64_t>(static_cast<uint64_t>(*tv_usec) * guest_time_scalar_);
+-  if (scaled_usec > std::numeric_limits<uint32_t>::max()) {
+-    uint64_t overflow_sec = scaled_usec / 1000000;
+-    scaled_usec -= overflow_sec * 1000000;
+-    scaled_sec += overflow_sec;
++  if (guest_time_scalar_ == 1.0) {
++    return;
+   }
+-  *tv_sec = int32_t(scaled_sec);
+-  *tv_usec = int32_t(scaled_usec);
++  // Scale the whole duration, so the fraction of a second that dividing tv_sec
++  // leaves is carried into tv_usec.
++  uint64_t total_usec =
++      static_cast<uint64_t>(static_cast<uint32_t>(*tv_sec)) * 1000000 + static_cast<uint32_t>(*tv_usec);
++  uint64_t scaled_usec = static_cast<uint64_t>(total_usec / guest_time_scalar_);
++  *tv_sec = int32_t(scaled_usec / 1000000);
++  *tv_usec = int32_t(scaled_usec % 1000000);
+ }
+ 
+ }  // namespace rex::chrono

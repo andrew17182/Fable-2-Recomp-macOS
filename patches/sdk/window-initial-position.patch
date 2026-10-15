@@ -1,0 +1,204 @@
+SDK UI: let the app give the main window an initial position and size before it is first shown.
+Phase B item B5 (docs/sdk-from-source.md). Applied by tools/build_sdk_from_source.py
+(SDK_BEHAVIOUR_PATCHES). WindowSDL::OpenImpl creates the window hidden and shows it
+inside ReXApp::SetupPresentation, at SDL's default centred position, before the app
+gets control, so a restored position made the window appear centred and then jump.
+Adds Window::SetInitialPosition and Window::SetInitialSize (applied while hidden: the
+size is clamped to 640x360 .. the usable display area, the position keeps the title bar
+on a connected display; the `monitor` cvar takes priority over the position; under
+fullscreen they become the windowed frame that leaving fullscreen returns to), the
+ReXApp::OnPreOpenWindow hook, and the REX_UI_WINDOW_INITIAL_POSITION /
+REX_UI_WINDOW_INITIAL_SIZE feature macros. The new Window members are appended last,
+so the member offsets that other modules compiled against the unpatched header (the
+Metal plugin) see are unchanged.
+The executable's SDL_EVENT_WINDOW_SHOWN watch (src/core/fable2_window_position.cpp)
+stands down when the macro is present; it stays the fallback on the prebuilt runtime.
+
+--- a/include/rex/rex_app.h
++++ b/include/rex/rex_app.h
+@@ -103,6 +103,10 @@
+ 
+   /// Called after runtime is fully initialized, before window creation.
+   virtual void OnPostSetup() {}
++
++  /// Called after the main window is created and configured, before it is
++  /// opened (shown). Set desired state here, e.g. window->SetInitialPosition()/SetInitialSize().
++  virtual void OnPreOpenWindow(ui::Window* window) { (void)window; }
+ 
+   /// Called after ImGui drawer is created. Add custom dialogs here.
+   virtual void OnCreateDialogs(ui::ImGuiDrawer* drawer) { (void)drawer; }
+--- a/include/rex/ui/window.h
++++ b/include/rex/ui/window.h
+@@ -25,6 +25,12 @@
+ #include <rex/ui/virtual_key.h>
+ #include <rex/ui/window_listener.h>
+ #include <rex/ui/windowed_app_context.h>
++
++// Window::SetInitialPosition is available (apps can test for it at compile time).
++#define REX_UI_WINDOW_INITIAL_POSITION 1
++// Window::SetInitialSize is available, and the initial position also applies
++// under fullscreen (it becomes the windowed frame that leaving fullscreen restores).
++#define REX_UI_WINDOW_INITIAL_SIZE 1
+ 
+ namespace rex {
+ namespace ui {
+@@ -273,6 +279,40 @@
+   // by the implementation (including from SetFullscreen itself).
+   bool IsFullscreen() const { return fullscreen_; }
+   void SetFullscreen(bool new_fullscreen);
++
++  // Optional position (screen coordinates, the same space as the window
++  // position events) applied by the implementation while the window is still
++  // hidden, so it never appears at the default position first, e.g. a position
++  // the app saved in an earlier session. Only effective when set before Open().
++  // Ignored when the `monitor` cvar selects a display, and when it would leave
++  // the title bar off every connected display. When the window starts
++  // fullscreen it is the windowed frame that leaving fullscreen returns to.
++  void SetInitialPosition(int32_t x, int32_t y) {
++    initial_position_x_ = x;
++    initial_position_y_ = y;
++    has_initial_position_ = true;
++  }
++  bool GetInitialPosition(int32_t& x, int32_t& y) const {
++    x = initial_position_x_;
++    y = initial_position_y_;
++    return has_initial_position_;
++  }
++
++  // Optional client-area size in window coordinates (points on macOS), applied
++  // together with the initial position while the window is still hidden, so
++  // the window never shows at the default size first. Only effective when set
++  // before Open(). Clamped to at least 640x360 and to the usable area of the
++  // display the window opens on.
++  void SetInitialSize(int32_t width, int32_t height) {
++    initial_width_ = width;
++    initial_height_ = height;
++    has_initial_size_ = true;
++  }
++  bool GetInitialSize(int32_t& width, int32_t& height) const {
++    width = initial_width_;
++    height = initial_height_;
++    return has_initial_size_;
++  }
+ 
+   // Desired state stored by the common Window, externally modifiable, read-only
+   // in the implementation.
+@@ -734,6 +774,14 @@
+   // complex than just a small state update, and recursive painting is
+   // completely unsupported by the Presenter.
+   bool is_painting_ = false;
++
++  // Kept last so the offsets of the members above do not change.
++  bool has_initial_position_ = false;
++  int32_t initial_position_x_ = 0;
++  int32_t initial_position_y_ = 0;
++  bool has_initial_size_ = false;
++  int32_t initial_width_ = 0;
++  int32_t initial_height_ = 0;
+ };
+ 
+ }  // namespace ui
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -355,6 +355,7 @@
+       window_->SetFullscreen(rex::string::from_string<bool>(value, false));
+     }
+   });
++  OnPreOpenWindow(window_.get());
+   window_->Open();
+ 
+   auto* graphics_system = config_.graphics.get();
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -113,6 +113,49 @@
+   }
+ }
+ 
++// Whether a window placed at (x, y) (client-area origin) keeps a usable part of
++// its title bar on a connected display: a saved position may refer to a display
++// that is gone. Wide arithmetic, since x / y may come from a file. On success
++// `usable_out` (optional) receives that display's usable bounds.
++bool IsTitleBarOnDisplay(SDL_Window* window, int32_t x, int32_t y, SDL_Rect* usable_out = nullptr) {
++  int top = 0;
++  SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
++  int count = 0;
++  SDL_DisplayID* displays = SDL_GetDisplays(&count);
++  bool visible = false;
++  for (int i = 0; i < count && !visible; ++i) {
++    SDL_Rect bounds;
++    if (!SDL_GetDisplayUsableBounds(displays[i], &bounds)) {
++      continue;
++    }
++    const int64_t left = x;
++    const int64_t title_top = int64_t(y) - top;
++    visible = left >= int64_t(bounds.x) - 64 && left + 64 <= int64_t(bounds.x) + bounds.w &&
++              title_top >= bounds.y && title_top + 32 <= int64_t(bounds.y) + bounds.h;
++    if (visible && usable_out) {
++      *usable_out = bounds;
++    }
++  }
++  SDL_free(displays);
++  return visible;
++}
++
++// Smallest initial client size an app-provided size is raised to (window coordinates).
++constexpr int32_t kMinInitialWidth = 640;
++constexpr int32_t kMinInitialHeight = 360;
++
++// Clamps an app-provided client size to [minimum, usable area of `usable`],
++// leaving room for the title bar. A display smaller than the minimum wins.
++void ClampInitialSize(SDL_Window* window, const SDL_Rect& usable, int32_t& width,
++                      int32_t& height) {
++  int top = 0;
++  SDL_GetWindowBordersSize(window, &top, nullptr, nullptr, nullptr);
++  const int32_t max_width = std::max(1, usable.w);
++  const int32_t max_height = std::max(1, usable.h - top);
++  width = std::clamp(width, std::min(kMinInitialWidth, max_width), max_width);
++  height = std::clamp(height, std::min(kMinInitialHeight, max_height), max_height);
++}
++
+ }  // namespace
+ 
+ std::unique_ptr<Window> Window::Create(WindowedAppContext& app_context,
+@@ -167,7 +210,41 @@
+                     monitor_index, display_count);
+       }
+       SDL_free(displays);
++    }
++  }
++
++  // App-provided initial frame (size, then position), applied while the window
++  // is still hidden so it never shows at the default first. An explicit monitor
++  // selection takes priority over the position. When the window starts
++  // fullscreen this is the windowed frame that leaving fullscreen returns to.
++  int32_t initial_x = 0, initial_y = 0;
++  bool place = GetInitialPosition(initial_x, initial_y) && REXCVAR_GET(monitor) <= 0;
++  SDL_Rect usable{};
++  if (place && !IsTitleBarOnDisplay(sdl_window_, initial_x, initial_y, &usable)) {
++    REXLOG_INFO("Initial window position {}, {} is not on a connected display; using the default",
++                initial_x, initial_y);
++    place = false;
++  }
++  int32_t frame_width = 0, frame_height = 0;
++  if (GetInitialSize(frame_width, frame_height) && frame_width > 0 && frame_height > 0) {
++    // Without a usable saved position, clamp against the display the window
++    // is on now (the default or the `monitor` display) and re-centre there.
++    const SDL_DisplayID display = SDL_GetDisplayForWindow(sdl_window_);
++    if (!place && !(display && SDL_GetDisplayUsableBounds(display, &usable))) {
++      usable = SDL_Rect{0, 0, 8192, 8192};
++    }
++    ClampInitialSize(sdl_window_, usable, frame_width, frame_height);
++    SDL_SetWindowSize(sdl_window_, frame_width, frame_height);
++    if (!place && display) {
++      SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
++                            SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+     }
++    REXLOG_INFO("Window opens at its initial size {}x{}", frame_width, frame_height);
++  }
++  if (place) {
++    SDL_SetWindowPosition(sdl_window_, initial_x, initial_y);
++    REXLOG_INFO("Window opens at its initial position {}, {}{}", initial_x, initial_y,
++                IsFullscreen() ? " (windowed frame; starting fullscreen)" : "");
+   }
+ 
+   if (IsFullscreen()) {

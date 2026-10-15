@@ -1,0 +1,22 @@
+# Codegen register options, included from fable_2_manifest.toml ([entrypoint] includes).
+#
+# Perf pass 2026-10-11, stage 3 (the 2026-10-11 performance audit, candidate 1, stage 1): keep the
+# condition register fields, CTR, XER and the lwarx reservation in C++ locals of each recompiled
+# function instead of PPCContext fields. The audit measured CR compares at 11.3% of guest-thread
+# samples (3-4 byte stores into ctx each); a local lets clang keep them in host registers.
+# Same guest semantics: these are volatile across calls (CR0/1/5-7, CTR, XER, reservation) or
+# callee-saved (CR2-4, which a callee can then never clobber), and no function reads them on
+# entry (audit in the perf doc). LR stays in ctx (skip_lr = false: hooks and the flight
+# recorder read ctx.lr) and r1 stays in ctx (non_volatile / non_argument stay off).
+#
+# Build-time revert: FABLE2_CODEGEN_CONSERVATIVE=1 in the build environment (or
+# -DFABLE2_CODEGEN_CONSERVATIVE=ON) makes CMake write generated/codegen-override.toml with
+# all four off; it is included after this file, so it wins, and codegen re-runs.
+skip_lr = false
+skip_msr = false
+cr_as_local = true
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
+non_argument_as_local = false
+non_volatile_as_local = false

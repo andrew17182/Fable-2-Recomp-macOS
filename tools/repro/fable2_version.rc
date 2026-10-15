@@ -1,0 +1,36 @@
+// VS_VERSION_INFO for fable_2.exe
+//
+// A well-formed version resource (company / product / version / description)
+// is a small but real "looks like a legitimate product" signal for AV
+// heuristics and for end users. Kept include-free so it compiles with llvm-rc
+// without depending on Windows SDK header layout.
+//
+// Values are intentionally consistent across builds (bump FileVersion only on
+// real releases) so the file's identity is stable.
+
+1 VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEOS          0x40004
+FILETYPE        0x1
+FILESUBTYPE     0x0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "ReXGlue Project\0"
+      VALUE "FileDescription",  "Fable 2 (ReXGlue recompile)\0"
+      VALUE "FileVersion",      "1.0.0.0\0"
+      VALUE "InternalName",     "fable_2\0"
+      VALUE "LegalCopyright",   "Copyright (C) ReXGlue Project\0"
+      VALUE "OriginalFilename", "fable_2.exe\0"
+      VALUE "ProductName",      "Fable 2 ReXGlue\0"
+      VALUE "ProductVersion",   "1.0.0.0\0"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 0x04B0
+  END
+END

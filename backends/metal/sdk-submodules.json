@@ -1,0 +1,135 @@
+[
+  {
+    "path": "thirdparty/cli11",
+    "name": "cli11",
+    "url": "https://codeload.github.com/CLIUtils/CLI11/tar.gz/bfffd37e1f804ca4fae1caae106935791696b6a9",
+    "sha256": "03c9b7921b8f99ca39ae660b03ebf9bd5a3f4280201f7d04bc5639b1e0496401",
+    "commit": "bfffd37e1f804ca4fae1caae106935791696b6a9"
+  },
+  {
+    "path": "thirdparty/libmspack",
+    "name": "libmspack",
+    "url": "https://codeload.github.com/kyz/libmspack/tar.gz/305907723a4e7ab2018e58040059ffb5e77db837",
+    "sha256": "342427b589ec04ba50ac5662119400955cbb0d9c52259ad1c8188dae505ab0f2",
+    "commit": "305907723a4e7ab2018e58040059ffb5e77db837"
+  },
+  {
+    "path": "thirdparty/FFmpeg",
+    "name": "FFmpeg",
+    "url": "https://codeload.github.com/wmarti/FFmpeg/tar.gz/0604b464c7cb4ebc94940cf1f324a3b26b87717c",
+    "sha256": "cb05b8b2a0ea051150bd70bc98091cd1e27f92f5000b48bbfe3828b0e89d4991",
+    "commit": "0604b464c7cb4ebc94940cf1f324a3b26b87717c"
+  },
+  {
+    "path": "thirdparty/tomlplusplus",
+    "name": "tomlplusplus",
+    "url": "https://codeload.github.com/marzer/tomlplusplus/tar.gz/30172438cee64926dc41fdd9c11fb3ba5b2ba9de",
+    "sha256": "291254ffe7f2433f90deef878d0d9335534a350a958ea23ecf511b7b2277bf7f",
+    "commit": "30172438cee64926dc41fdd9c11fb3ba5b2ba9de"
+  },
+  {
+    "path": "thirdparty/simde",
+    "name": "simde",
+    "url": "https://codeload.github.com/simd-everywhere/simde/tar.gz/71fd833d9666141edcd1d3c109a80e228303d8d7",
+    "sha256": "72b2c14a487560b7eb203795f2c2fead5c7499662e639944cca2a9bb19f09029",
+    "commit": "71fd833d9666141edcd1d3c109a80e228303d8d7"
+  },
+  {
+    "path": "thirdparty/xxHash",
+    "name": "xxHash",
+    "url": "https://codeload.github.com/Cyan4973/xxHash/tar.gz/e626a72bc2321cd320e953a0ccf1584cad60f363",
+    "sha256": "34e71c085636fbc1726482996d92719d0a16e6a6097970ecf2990a27b3821162",
+    "commit": "e626a72bc2321cd320e953a0ccf1584cad60f363"
+  },
+  {
+    "path": "thirdparty/spdlog",
+    "name": "spdlog",
+    "url": "https://codeload.github.com/gabime/spdlog/tar.gz/79524ddd08a4ec981b7fea76afd08ee05f83755d",
+    "sha256": "c6dee844e35a54cc80e3ab76aae2310763e0b49c7397549dfa4d4657d9737138",
+    "commit": "79524ddd08a4ec981b7fea76afd08ee05f83755d"
+  },
+  {
+    "path": "thirdparty/fmt",
+    "name": "fmt",
+    "url": "https://codeload.github.com/fmtlib/fmt/tar.gz/407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+    "sha256": "2bc1fe4a5b6d5d6a614239b4ca1d520e66e152a02d3d262684d26dfd6ab3438a",
+    "commit": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f"
+  },
+  {
+    "path": "thirdparty/utfcpp",
+    "name": "utfcpp",
+    "url": "https://codeload.github.com/nemtrif/utfcpp/tar.gz/63d64de49fd6b829f7c8694df5ab2ee625cb7134",
+    "sha256": "f11186e50579ba4404ad531be74f30b31fa8986abe54f4742cfef52009a4f614",
+    "commit": "63d64de49fd6b829f7c8694df5ab2ee625cb7134"
+  },
+  {
+    "path": "thirdparty/imgui",
+    "name": "imgui",
+    "url": "https://codeload.github.com/ocornut/imgui/tar.gz/6d910d5487d11ca567b61c7824b0c78c569d62f0",
+    "sha256": "b715a3226320aaebaea79dc6af6405ae37cdcb479817fddaef12a17d8bd15a3a",
+    "commit": "6d910d5487d11ca567b61c7824b0c78c569d62f0"
+  },
+  {
+    "path": "thirdparty/sdl3",
+    "name": "sdl3",
+    "url": "https://codeload.github.com/libsdl-org/SDL/tar.gz/8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4",
+    "sha256": "bb4f83f5d6041c3a22186cdac4e15ed71e4127a1a8532dbb382f4b730a334b61",
+    "commit": "8bf3b7215ad9fc3deb583c6a3a37c6c67f2e24e4"
+  },
+  {
+    "path": "thirdparty/vulkan-headers",
+    "name": "vulkan-headers",
+    "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/e3b1eec08173d6b825cd3ac88c885a63b621504a",
+    "sha256": "f492279345cbc10708b64fcd432b3ff6c8246a5837c4db2b649abba00cf82208",
+    "commit": "e3b1eec08173d6b825cd3ac88c885a63b621504a"
+  },
+  {
+    "path": "thirdparty/vulkan-memory-allocator",
+    "name": "vulkan-memory-allocator",
+    "url": "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tar.gz/1d8f600fd424278486eade7ed3e877c99f0846b1",
+    "sha256": "04b278f5a185ef75a7ea988e0e76ddd0b2f2186bf56dd90625159972a47dcb3b",
+    "commit": "1d8f600fd424278486eade7ed3e877c99f0846b1"
+  },
+  {
+    "path": "thirdparty/spirv-headers",
+    "name": "spirv-headers",
+    "url": "https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/29981f65241605e08b0ede4cfeb999fe3b723c6a",
+    "sha256": "232899f1ad4104fb5bc377b94596c7621575eee62ad9a9e8f929b63a7dd8a7ad",
+    "commit": "29981f65241605e08b0ede4cfeb999fe3b723c6a"
+  },
+  {
+    "path": "thirdparty/spirv-tools",
+    "name": "spirv-tools",
+    "url": "https://codeload.github.com/KhronosGroup/SPIRV-Tools/tar.gz/9a49b0883b9b635689a85b5647dbfcb223268151",
+    "sha256": "5cd1a935296c324e7bfa8f0e4c223742ac490d45d6af0577fa3c2cf7e1a7dd22",
+    "commit": "9a49b0883b9b635689a85b5647dbfcb223268151"
+  },
+  {
+    "path": "thirdparty/glslang",
+    "name": "glslang",
+    "url": "https://codeload.github.com/KhronosGroup/glslang/tar.gz/f4f1d8a352ca1908943aea2ad8c54b39b4879080",
+    "sha256": "8732f10351cc68c50aea6820fbc50e5d86f44da39205728e18b6300a404068ea",
+    "commit": "f4f1d8a352ca1908943aea2ad8c54b39b4879080"
+  },
+  {
+    "path": "thirdparty/tracy",
+    "name": "tracy",
+    "url": "https://codeload.github.com/wolfpld/tracy/tar.gz/05cceee0df3b8d7c6fa87e9638af311dbabc63cb",
+    "sha256": "9447edfc59838348e94f7057999b65612d6a9073020efa5a9bea75200377ee1d",
+    "commit": "05cceee0df3b8d7c6fa87e9638af311dbabc63cb"
+  },
+  {
+    "path": "thirdparty/o1heap",
+    "name": "o1heap",
+    "url": "https://codeload.github.com/pavel-kirienko/o1heap/tar.gz/388a73fd9007300e5130c5fe352d9ce3288b6dde",
+    "sha256": "b9c6c40d1eda938028c8a9e3d1de3a4e0762bd6253bcaef37169e8962e8a5ec9",
+    "commit": "388a73fd9007300e5130c5fe352d9ce3288b6dde"
+  },
+  {
+    "path": "thirdparty/inja",
+    "name": "inja",
+    "url": "https://codeload.github.com/pantor/inja/tar.gz/7d1b4600b68595085a949743331c2e5673f511ea",
+    "sha256": "e86aee0376a9ae726bff9d9309e1319bc6e9ddce3d3204df21953aa6f0d96899",
+    "commit": "7d1b4600b68595085a949743331c2e5673f511ea"
+  }
+]

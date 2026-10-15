@@ -1,0 +1,148 @@
+SDK thread priorities on macOS: map guest priorities instead of passing them to SCHED_FIFO
+(perf pass 2026-10-11, stage 1c). Applied by tools/build_sdk_from_source.py
+(SDK_BEHAVIOUR_PATCHES). FABLE2_THREAD_PRIORITY_MAP=0 restores the old calls.
+
+PosixCondition<Thread>::set_priority and the initial-priority attribute passed the value straight
+to SCHED_FIFO: the POSIX ThreadPriority scale (1/8/16/24/32) and the Win32-style 0/1 from XThread
+creation flags. macOS accepts FIFO priorities 15..47 only, so 0/1/8 failed with EINVAL, and
+"normal" (16) would have become a fixed-priority FIFO thread below every default (31) thread.
+Now the value maps to a level -2..2 and a SCHED_OTHER priority 31 + 4 * level; normal leaves the
+thread (and its QoS class) untouched. XThread's creation-flag priority now honours
+ignore_thread_priorities (default true) like SetPriority does. Today those calls failed with
+EINVAL, so the default behaviour is unchanged; with the cvar off the mapping applies.
+
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -46,6 +46,7 @@
+ #include <rex/thread/timer_queue.h>
+ 
+ #include <sched.h>
++#include <cstdlib>
+ 
+ #if REX_PLATFORM_ANDROID
+ #include <dlfcn.h>
+@@ -71,6 +72,34 @@
+                     "Legacy multi-object waits: re-check every 1 ms and spin while a handle is "
+                     "locked, and let the audio worker sleep 500 ms when idle (A/B tests only)");
+ 
++#if defined(__APPLE__)
++namespace {
++// FABLE2_THREAD_PRIORITY_MAP (default on, =0 restores the raw SCHED_FIFO calls).
++// Guest priorities reach here as the POSIX ThreadPriority scale (1/8/16/24/32 around
++// kNormal = 16) or, from XThread creation flags, as Win32-style 0/1. Passed straight to
++// SCHED_FIFO they are invalid on macOS (FIFO range 15..47, so 0/1/8 fail with EINVAL) or
++// would make a "normal" thread a fixed-priority FIFO thread at 16, below every default
++// (31) thread. Map them to a relative step instead and keep the default timeshare policy:
++// normal leaves the thread alone (and keeps its QoS), other levels move it 4 steps per
++// level around the default priority 31 (23..39, all within the SCHED_OTHER range).
++bool ThreadPriorityMapEnabled() {
++  static const bool on = [] {
++    const char* v = std::getenv("FABLE2_THREAD_PRIORITY_MAP");
++    return !(v && v[0] == '0');
++  }();
++  return on;
++}
++int MapGuestPriorityLevel(int priority) {
++  // Win32-style relative values (-2..2, creation-flag 0/1) stay as they are.
++  if (priority >= -2 && priority <= 2) return priority;
++  // POSIX ThreadPriority scale: 1, 8, 16, 24, 32 -> -2, -1, 0, 1, 2.
++  const int level = (priority - 16 + (priority >= 16 ? 4 : -4)) / 8;
++  return std::clamp(level, -2, 2);
++}
++int MappedSchedPriority(int level) { return 31 + 4 * level; }
++}  // namespace
++#endif
++
+ namespace rex::thread {
+ 
+ #if REX_PLATFORM_ANDROID
+@@ -793,6 +822,20 @@
+       pthread_attr_destroy(&attr);
+       return false;
+     }
++#if defined(__APPLE__)
++    if (params.initial_priority != 0 && ThreadPriorityMapEnabled()) {
++      const int level = MapGuestPriorityLevel(params.initial_priority);
++      if (level != 0) {
++        sched_param sched{};
++        sched.sched_priority = MappedSchedPriority(level);
++        if (pthread_attr_setschedpolicy(&attr, SCHED_OTHER) != 0 ||
++            pthread_attr_setschedparam(&attr, &sched) != 0) {
++          pthread_attr_destroy(&attr);
++          return false;
++        }
++      }
++    } else
++#endif
+     if (params.initial_priority != 0) {
+       sched_param sched{};
+       sched.sched_priority = params.initial_priority + 1;
+@@ -971,6 +1014,34 @@
+ 
+   void set_priority(int new_priority) {
+     WaitStarted();
++#if defined(__APPLE__)
++    if (ThreadPriorityMapEnabled()) {
++      const int level = MapGuestPriorityLevel(new_priority);
++      int policy = 0;
++      sched_param current{};
++      if (level == 0) {
++        // Normal: undo an earlier mapped change, otherwise leave the thread (and its QoS) alone.
++        if (pthread_getschedparam(thread_, &policy, &current) == 0 &&
++            current.sched_priority != MappedSchedPriority(0) && priority_mapped_) {
++          sched_param param{};
++          param.sched_priority = MappedSchedPriority(0);
++          pthread_setschedparam(thread_, SCHED_OTHER, &param);
++        }
++        priority_mapped_ = false;
++        return;
++      }
++      sched_param param{};
++      param.sched_priority = MappedSchedPriority(level);
++      const int result = pthread_setschedparam(thread_, SCHED_OTHER, &param);
++      if (result != 0) {
++        REXSYS_WARN("set_priority: pthread_setschedparam(SCHED_OTHER, {}) failed ({})",
++                    param.sched_priority, result);
++      } else {
++        priority_mapped_ = true;
++      }
++      return;
++    }
++#endif
+     sched_param param{};
+     param.sched_priority = new_priority;
+     int result = pthread_setschedparam(thread_, SCHED_FIFO, &param);
+@@ -1171,6 +1242,7 @@
+   State state_;             // Protected by state_mutex_
+   uint32_t suspend_count_;  // Protected by state_mutex_
+ #if defined(__APPLE__)
++  bool priority_mapped_ = false;  // set_priority applied a mapped (non-normal) level
+   sem_t* suspend_sem_ = SEM_FAILED;
+   sem_t* suspend_sem_ptr() { return suspend_sem_; }
+ #else
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <cstdlib>
+ #include <cstring>
+ 
+ #include <fmt/format.h>
+@@ -470,7 +471,14 @@
+     set_name(fmt::format("XThread{:04X}", thread_->system_id()));
+   }
+ 
+-  if (creation_params_.creation_flags & 0x60) {
++  // Creation-flag priority: honour ignore_thread_priorities like SetPriority does. These
++  // Win32-style 0/1 values were passed to SCHED_FIFO, where macOS rejects them (EINVAL), so
++  // skipping them by default keeps today's effective behaviour; with the cvar off, the
++  // runtime maps them (FABLE2_THREAD_PRIORITY_MAP, threading_posix.cpp).
++  if ((creation_params_.creation_flags & 0x60) &&
++      (!REXCVAR_GET(ignore_thread_priorities) ||
++       (std::getenv("FABLE2_THREAD_PRIORITY_MAP") &&
++        std::getenv("FABLE2_THREAD_PRIORITY_MAP")[0] == '0'))) {
+     thread_->set_priority(creation_params_.creation_flags & 0x20 ? 1 : 0);
+   }
+ 

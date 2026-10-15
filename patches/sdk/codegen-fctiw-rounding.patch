@@ -1,0 +1,96 @@
+SDK codegen: fctiw / fctid round in the guest rounding mode (perf pass 2026-10-11, stage 0b).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). Fidelity fix; the game's
+switch is FABLE2_FCTIW_ROUNDING=0 (src/core/fable2_guest_memory.h), which restores the old
+expressions (rex::ppc::FctiwSimde / FctidSimde).
+
+Codegen emitted fctiw/fctid as simde_mm_cvtsd_si32/64. On x86 that is cvtsd2si, which rounds
+per MXCSR (= guest FPSCR[RN]). SIMDe's portable fallback, used on ARM64, is round(): ties away
+from zero and blind to the rounding mode, so fctiw(2.5) gave 3 where Xenon gives 2 (nearest-
+even) and the directed modes were ignored. Codegen now emits REX_FCTIW(x) / REX_FCTID(x);
+rex/ppc/intrinsics.h defines them (unless the project does) as frintx (the current FPCR mode)
+plus an exact conversion, with Xenon's saturation: NaN -> 0x80000000 / 0x8000000000000000
+(fctiw keeps the old upper word convention), out of range -> INT_MAX/INT_MIN or
+LLONG_MAX/LLONG_MIN. fctiwz/fctidz (truncate) were already right and are unchanged. FPSCR
+exception bits (VXCVI) are not modelled by this SDK, as before. Changing codegen output needs a
+regenerate (any manifest change triggers one). Test: tests/fctiw_rounding_tests.cpp.
+
+--- a/include/rex/ppc/intrinsics.h
++++ b/include/rex/ppc/intrinsics.h
+@@ -39,6 +39,45 @@
+ #define REX_GUEST_LWSYNC() std::atomic_thread_fence(std::memory_order_acq_rel)
+ #endif
+ 
++// PowerPC fctiw / fctid: convert to integer in the current rounding mode (FPSCR[RN], kept in
++// the host FPCR/MXCSR by mtfsf/mtfsb), saturating like Xenon: NaN -> 0x80000000 (fctiw, low
++// word) / 0x8000000000000000 (fctid), too large -> INT_MAX / LLONG_MAX, too small -> min.
++// Codegen emits REX_FCTIW / REX_FCTID; a project may #undef and redefine them. The *Simde
++// forms are the expressions codegen emitted before: SIMDe's non-x86 _mm_cvtsd_si32/64 use
++// round() (ties away from zero, ignoring the rounding mode), so fctiw(2.5) gave 3, not 2.
++namespace rex::ppc {
++inline int64_t FctiwCurrentMode(double x) noexcept {
++  if (std::isnan(x)) return int64_t(0x80000000U);
++  const double r = __builtin_rint(x);  // frintx on ARM64: the current FPCR rounding mode
++  if (r >= 2147483647.0) return INT_MAX;
++  if (r <= -2147483648.0) return INT_MIN;
++  return int32_t(r);  // exact: r is integral and in range
++}
++inline int64_t FctidCurrentMode(double x) noexcept {
++  if (std::isnan(x)) return int64_t(0x8000000000000000ULL);
++  const double r = __builtin_rint(x);
++  if (r >= 9223372036854775808.0) return LLONG_MAX;
++  if (r <= -9223372036854775808.0) return LLONG_MIN;
++  return int64_t(r);
++}
++inline int64_t FctiwSimde(double x) noexcept {
++  return std::isnan(x) ? int64_t(0x80000000U)
++         : (x >= double(INT_MAX)) ? INT_MAX
++                                  : simde_mm_cvtsd_si32(simde_mm_load_sd(&x));
++}
++inline int64_t FctidSimde(double x) noexcept {
++  return std::isnan(x) ? int64_t(0x8000000000000000ULL)
++         : (x > double(LLONG_MAX)) ? LLONG_MAX
++                                   : simde_mm_cvtsd_si64(simde_mm_load_sd(&x));
++}
++}  // namespace rex::ppc
++#ifndef REX_FCTIW
++#define REX_FCTIW(x) ::rex::ppc::FctiwCurrentMode(x)
++#endif
++#ifndef REX_FCTID
++#define REX_FCTID(x) ::rex::ppc::FctidCurrentMode(x)
++#endif
++
+ namespace rex::ppc {
+ 
+ //=============================================================================
+--- a/src/codegen/builders/floating_point.cpp
++++ b/src/codegen/builders/floating_point.cpp
+@@ -58,11 +58,9 @@
+ 
+ bool build_fctid(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println(
+-      "\t{0}.s64 = std::isnan({1}.f64) ? int64_t(0x8000000000000000ULL) : "
+-      "({1}.f64 > double(LLONG_MAX)) ? LLONG_MAX : "
+-      "simde_mm_cvtsd_si64(simde_mm_load_sd(&{1}.f64));",
+-      ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]));
++  // Rounds per FPSCR[RN] (the host rounding mode); rex/ppc/intrinsics.h, REX_FCTID.
++  ctx.println("\t{0}.s64 = REX_FCTID({1}.f64);", ctx.f(ctx.insn.operands[0]),
++              ctx.f(ctx.insn.operands[1]));
+   return true;
+ }
+ 
+@@ -78,11 +76,9 @@
+ 
+ bool build_fctiw(BuilderContext& ctx) {
+   ctx.emit_set_flush_mode(false);
+-  ctx.println(
+-      "\t{0}.s64 = std::isnan({1}.f64) ? int64_t(0x80000000U) : "
+-      "({1}.f64 >= double(INT_MAX)) ? INT_MAX : "
+-      "simde_mm_cvtsd_si32(simde_mm_load_sd(&{1}.f64));",
+-      ctx.f(ctx.insn.operands[0]), ctx.f(ctx.insn.operands[1]));
++  // Rounds per FPSCR[RN] (the host rounding mode); rex/ppc/intrinsics.h, REX_FCTIW.
++  ctx.println("\t{0}.s64 = REX_FCTIW({1}.f64);", ctx.f(ctx.insn.operands[0]),
++              ctx.f(ctx.insn.operands[1]));
+   return true;
+ }
+ 

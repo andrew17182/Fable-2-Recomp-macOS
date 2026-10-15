@@ -1,0 +1,162 @@
+SDK GPU: synchronise primary ring buffer re-init with the command processor worker.
+Phase B item B1 (docs/sdk-from-source.md, docs/boot-hang-20261008.md). Applied by
+tools/build_sdk_from_source.py to the runtime tree (rexgpu-xenos), and the same hunks
+are appended to backends/metal/sdk-metal.patch for the Metal plugin, which compiles
+command_processor.cpp itself. InitializeRingBuffer reset only the read index, on the
+guest thread, unsynchronised with WorkerThreadMain, so the worker replayed
+ring[0, old write index): duplicate GPU frame callbacks in ~95% of Fable II boots and
+a rare endless frame-throttle spin. Now it drains the worker (read == write), parks it
+with the 0xBAADF00D sentinel, resets both indices (CP_RB_WPTR = 0) and lets the guest's
+next write pointer update run only the new packets (bounded 50 ms wait; on a timeout
+the old behaviour). The worker publishes the read index last and reads it between two
+loads of the write index, so the reset can never pair with a stale write index.
+Cvar gpu_ring_reinit_sync (default true) turns the synchronisation off for A/B tests.
+The executable's __imp__VdInitializeRingBuffer override asks the plugin
+(fable2_ring_reinit op 2) and stands down while this is active.
+
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -10,10 +10,13 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <chrono>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+ #include <string_view>
++#include <thread>
+ 
+ #include <fmt/format.h>
+ 
+@@ -36,6 +39,9 @@
+ #include <rex/system/user_module.h>
+ 
+ REXCVAR_DEFINE_BOOL(vsync, true, "GPU", "Enable vertical sync");
++REXCVAR_DEFINE_BOOL(gpu_ring_reinit_sync, true, "GPU",
++                    "Drain the command processor before a primary ring buffer re-init and "
++                    "reset the read and write indices together (false replays old packets)");
+ 
+ REXCVAR_DEFINE_BOOL(clear_memory_page_state, true, "GPU",
+                     "Refresh page-valid state from GPU-written memory at frame end. "
+@@ -203,6 +209,24 @@
+     return;
+   }
+ 
++  // Loads the write index and reports whether there is nothing to execute.
++  // The read index is read between two loads of the write index: a concurrent
++  // InitializeRingBuffer parks the write index before it resets the read index,
++  // so a stale write index can never pair with the reset read index (which
++  // would replay ring[0, old write index)).
++  auto ring_idle = [this](uint32_t& write_ptr_index) {
++    for (;;) {
++      write_ptr_index = write_ptr_index_.load();
++      if (write_ptr_index == 0xBAADF00D) {
++        return true;
++      }
++      const uint32_t read_ptr_index = std::atomic_ref<uint32_t>(read_ptr_index_).load();
++      if (write_ptr_index_.load() == write_ptr_index) {
++        return read_ptr_index == write_ptr_index;
++      }
++    }
++  };
++
+   while (worker_running_) {
+     while (!pending_fns_.empty()) {
+       auto fn = std::move(pending_fns_.front());
+@@ -210,8 +234,8 @@
+       fn();
+     }
+ 
+-    uint32_t write_ptr_index = write_ptr_index_.load();
+-    if (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index) {
++    uint32_t write_ptr_index = 0;
++    if (ring_idle(write_ptr_index)) {
+       SCOPE_profile_cpu_i("gpu", "rex::graphics::CommandProcessor::Stall");
+       // We've run out of commands to execute.
+       // We spin here waiting for new ones, as the overhead of waiting on our
+@@ -228,9 +252,7 @@
+ 
+         rex::thread::MaybeYield();
+         loop_count++;
+-        write_ptr_index = write_ptr_index_.load();
+-      } while (worker_running_ && pending_fns_.empty() &&
+-               (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
++      } while (worker_running_ && pending_fns_.empty() && ring_idle(write_ptr_index));
+       ReturnFromWait();
+       if (!worker_running_ || !pending_fns_.empty()) {
+         continue;
+@@ -239,14 +261,17 @@
+     assert_true(read_ptr_index_ != write_ptr_index);
+ 
+     // Execute. Note that we handle wraparound transparently.
+-    read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
++    const uint32_t read_ptr_index = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
+ 
+     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
+     //     that many indices.
+     if (read_ptr_writeback_ptr_) {
+       memory::store_and_swap<uint32_t>(memory_->TranslatePhysical(read_ptr_writeback_ptr_),
+-                                       read_ptr_index_);
++                                       read_ptr_index);
+     }
++    // Publish the read index last: InitializeRingBuffer (another thread) takes
++    // read == write to mean this batch, writeback included, is complete.
++    std::atomic_ref<uint32_t>(read_ptr_index_).store(read_ptr_index);
+ 
+     // FIXME: We're supposed to process the WAIT_UNTIL register at this point,
+     // but no games seem to actually use it.
+@@ -312,9 +337,51 @@
+ void CommandProcessor::ShutdownContext() {}
+ 
+ void CommandProcessor::InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
+-  read_ptr_index_ = 0;
++  // Called on a guest thread (VdInitializeRingBuffer) while the worker may be
++  // running. Resetting only the read index made the worker execute
++  // ring[0, old write index) again, stale packets and any new ones the guest was
++  // writing into that range. Titles re-init the same ring (Fable II does it on
++  // another thread), so: wait until the worker has consumed everything
++  // submitted (read == write), park it with the "no commands" sentinel, reset
++  // both indices, then set the write index to 0 (CP_RB_WPTR, as on hardware).
++  // Bounded wait; on a timeout the old behaviour is kept.
++  constexpr uint32_t kParked = 0xBAADF00D;  // WorkerThreadMain: no commands
++  bool parked = false;
++  if (REXCVAR_GET(gpu_ring_reinit_sync)) {
++    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
++    for (uint32_t spins = 0;; ++spins) {
++      uint32_t write_index = write_ptr_index_.load();
++      // A batch publishes read = write only after it has returned, so
++      // read == write means the worker is idle with nothing pending. The
++      // compare-exchange fails if the guest wrote a new write index meanwhile.
++      if (write_index == kParked ||
++          (std::atomic_ref<uint32_t>(read_ptr_index_).load() == write_index &&
++           write_ptr_index_.compare_exchange_strong(write_index, kParked))) {
++        parked = true;
++        break;
++      }
++      if (std::chrono::steady_clock::now() >= deadline) {
++        REXGPU_WARN("InitializeRingBuffer: command processor did not drain in 50 ms; "
++                    "re-initialising without synchronisation");
++        break;
++      }
++      if (spins < 64) {
++        std::this_thread::yield();
++      } else {
++        std::this_thread::sleep_for(std::chrono::microseconds(50));
++      }
++    }
++  }
++  // Atomic: the worker reads it in ring_idle (WorkerThreadMain).
++  std::atomic_ref<uint32_t>(read_ptr_index_).store(0);
+   primary_buffer_ptr_ = ptr;
+   primary_buffer_size_ = uint32_t(1) << (size_log2 + 3);
++  if (parked) {
++    // Same as the guest writing CP_RB_WPTR = 0: read == write == 0, and the
++    // next guest write pointer update runs only the new packets.
++    register_file_->values[XE_GPU_REG_CP_RB_WPTR] = 0;
++    UpdateWritePointer(0);
++  }
+ }
+ 
+ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2) {

@@ -1,0 +1,31 @@
+# Fable II recomp: ownership-claim hook for lazily sized host render targets
+# (FABLE2_RT_SHRINK, docs/resolution-scale.md section 21). Applied after sdk-metal-native-scale.patch.
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -619,6 +619,16 @@
+   // For pixel shader interlock.
+ 
+   virtual void RequestPixelShaderInterlockBarrier() {}
++
++  // Fable II recomp: called whenever a render target claims EDRAM ownership
++  // of [base, base + end_tiles_base_relative) tiles (draws, resolve clears,
++  // tile conversion), before the transfers for it are built. Every later
++  // access to the host texture (transfers in and out, resolves, dumps,
++  // clears) addresses rows within ranges claimed this way, so an
++  // implementation may size the host texture lazily from it
++  // (FABLE2_RT_SHRINK, docs/resolution-scale.md section 21).
++  virtual void OnOwnershipClaimed(RenderTargetKey dest,
++                                  uint32_t end_tiles_base_relative) {}
+ 
+   // To be called by the implementation when interlocked writes to all of the
+   // EDRAM memory are committed with a memory barrier.
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -1586,6 +1586,7 @@
+   if (length_tiles == 0) {
+     return;
+   }
++  OnOwnershipClaimed(dest, start_tiles_base_relative + length_tiles);
+   uint32_t dest_pitch_tiles = dest.GetPitchTiles();
+   bool dest_is_64bpp = dest.Is64bpp();
+   bool host_depth_encoding_different =

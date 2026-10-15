@@ -1,0 +1,109 @@
+SDK guest clock: carry fractional guest ticks between UpdateGuestClock calls.
+Phase B item B6 (docs/sdk-from-source.md). Applied by tools/build_sdk_from_source.py
+(SDK_BEHAVIOUR_PATCHES). Without it the scaled clock path ran ~0.96x real time on
+Apple Silicon (24 MHz host, ratio 25/12; movie audio starvation), because each host
+tick delta was converted with truncating integer math and the remainder dropped.
+Two more fixes in the same function, needed for an exact clock once all callers
+use it: last_host_tick_count_ never moves backwards (a thread that read the host
+clock before another thread's update could take the lock after it and rewind it,
+so the next update counted that interval twice: +0.03-0.08% at 2x turbo), and a
+ratio change first counts the time since the last update at the old ratio.
+Also defines REX_CLOCK_EXACT_GUEST_TICKS in clock.h. The executable's old override
+(src/core/fable2_guest_clock.h, a strong Clock::QueryGuestTickCount with an anchored
+exact count) is compiled out when that macro exists, so every caller, recompiled mftb
+sites included, reads this runtime clock. It stays the fallback on the prebuilt runtime.
+
+--- a/include/rex/chrono/clock.h
++++ b/include/rex/chrono/clock.h
+@@ -17,6 +17,10 @@
+ #include <rex/cvar.h>
+ #include <rex/platform.h>
+ 
++// UpdateGuestClock carries fractional guest ticks between calls, so the
++// scaled guest clock does not drift (apps can test for this at compile time).
++#define REX_CLOCK_EXACT_GUEST_TICKS 1
++
+ REXCVAR_DECLARE(bool, clock_no_scaling);
+ REXCVAR_DECLARE(bool, clock_source_raw);
+ 
+--- a/src/core/clock.cpp
++++ b/src/core/clock.cpp
+@@ -41,7 +41,28 @@
+ uint64_t last_host_tick_count_ = Clock::QueryHostTickCount();
+ // Mutex to ensure last_host_tick_count_ and last_guest_tick_count_ are in sync
+ std::mutex tick_mutex_;
++// Fractional guest ticks (numerator units of guest_tick_ratio_.second) carried
++// between UpdateGuestClock calls. Converting each host delta separately and
++// discarding the remainder lost up to one guest tick per call; with high-rate
++// mftb polling on Apple Silicon (24 MHz host, ratio 25/12) the guest clock ran
++// ~0.96x real time. Guarded by tick_mutex_; reset when the ratio changes.
++uint64_t guest_tick_remainder_ = 0;
+ 
++namespace {
++// guest = (host_delta * first + remainder) / second, keeping the new remainder.
++// Split so that host_delta * first cannot overflow:
++// host_delta = q * second + r  =>  guest = q * first + (r * first + remainder) / second.
++// Requires second * (first + 1) < 2^64, true for all reduced tick ratios.
++uint64_t ConvertHostTickDelta(uint64_t host_tick_delta, std::pair<uint64_t, uint64_t> ratio,
++                              uint64_t& remainder) {
++  const uint64_t q = host_tick_delta / ratio.second;
++  const uint64_t r = host_tick_delta % ratio.second;
++  const uint64_t partial = r * ratio.first + remainder;
++  remainder = partial % ratio.second;
++  return q * ratio.first + partial / ratio.second;
++}
++}  // namespace
++
+ void RecomputeGuestTickScalar() {
+   // Create a rational number with numerator (first) and denominator (second)
+   auto frac = std::make_pair(guest_tick_frequency_, Clock::QueryHostTickFrequency());
+@@ -58,6 +79,18 @@
+   reduce_fraction(frac);
+ 
+   std::lock_guard<std::mutex> lock(tick_mutex_);
++  if (guest_tick_ratio_ != frac) {
++    // Count the time since the last update at the old ratio first, so a ratio
++    // change never makes the clock jump; only the sub-tick remainder (in old
++    // units) is dropped.
++    const uint64_t host_tick_count = Clock::QueryHostTickCount();
++    if (host_tick_count > last_host_tick_count_) {
++      last_guest_tick_count_ += ConvertHostTickDelta(host_tick_count - last_host_tick_count_,
++                                                     guest_tick_ratio_, guest_tick_remainder_);
++      last_host_tick_count_ = host_tick_count;
++    }
++    guest_tick_remainder_ = 0;
++  }
+   guest_tick_ratio_ = frac;
+ }
+ 
+@@ -68,18 +101,22 @@
+ 
+   if (REXCVAR_GET(clock_no_scaling)) {
+     // Nothing to update, calculate on the fly
+-    return host_tick_count * guest_tick_ratio_.first / guest_tick_ratio_.second;
++    uint64_t remainder = 0;
++    return ConvertHostTickDelta(host_tick_count, guest_tick_ratio_, remainder);
+   }
+ 
+   std::unique_lock<std::mutex> lock(tick_mutex_, std::defer_lock);
+   if (lock.try_lock()) {
+-    // Translate host tick count to guest tick count.
+-    uint64_t host_tick_delta =
+-        host_tick_count > last_host_tick_count_ ? host_tick_count - last_host_tick_count_ : 0;
+-    last_host_tick_count_ = host_tick_count;
+-    uint64_t guest_tick_delta =
+-        host_tick_delta * guest_tick_ratio_.first / guest_tick_ratio_.second;
+-    last_guest_tick_count_ += guest_tick_delta;
++    // Translate host tick count to guest tick count. A thread that read the
++    // host clock before another thread's update can get the lock after it;
++    // never move last_host_tick_count_ backwards, or the next update would
++    // count that interval twice (the clock ran fast under contention).
++    if (host_tick_count > last_host_tick_count_) {
++      const uint64_t host_tick_delta = host_tick_count - last_host_tick_count_;
++      last_host_tick_count_ = host_tick_count;
++      last_guest_tick_count_ +=
++          ConvertHostTickDelta(host_tick_delta, guest_tick_ratio_, guest_tick_remainder_);
++    }
+     return last_guest_tick_count_;
+   } else {
+     // Wait until another thread has finished updating the clock.

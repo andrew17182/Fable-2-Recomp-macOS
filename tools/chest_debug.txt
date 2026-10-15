@@ -1,0 +1,31 @@
+$$ =============================================================================
+$$ Fable 2 Guild chest - WinDbg breakpoint script
+$$ Run with:  $$><D:\...\Fable 2 Rexglue\tools\chest_debug.txt
+$$ Then F5, boot into the game, click the Guild chest.
+$$
+$$ Recompiled guest fns are emitted as __imp__<name> (the real body).
+$$ PPCContext is passed in rcx. Guest GPR offsets:
+$$   r3=+0x00  r4=+0x20  r5=+0x28  r31=+0xF8  lr=+0x100
+$$ Every bp ends in gc (auto-continue). Remove the gc to BREAK instead.
+$$ =============================================================================
+
+bc *
+.logopen /t fable2_chest.log
+.echo === chest breakpoints installed ===
+
+$$ Click handler: per-tick rate-limited item processor (noisy, quiet)
+bp __imp__sub_82228C70 ".printf \"[click-hdr 82228C70] this=%p r4=%p r5=%p | r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); gc"
+
+$$ Item-processing loop: calls ProcessItem once per chest item
+bp __imp__GuildChest_ProcessItems_822DE008 ".printf \"[ProcessItems 822DE008] this=%p r4=%p r5=%p | r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); kc 6; gc"
+
+$$ Per-item worker: calls the item op method (0x8256E4F8)
+bp __imp__GuildChest_ProcessItem_82228830 ".printf \"[ProcessItem 82228830] r3=%p r4=%p r5=%p | r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); kc 8; gc"
+
+$$ Website-item getter: the fable2.com gate (Xenia Unlock Website Items)
+bp __imp__GuildChest_GetWebsiteItem_8256E368 ".printf \"[GetWebsiteItem 8256E368] r3=%p r4=%p r5=%p | r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); kc 10; gc"
+
+$$ CE-content getter (Xenia Unlock CE Content)
+bp __imp__GuildChest_GetCEContent_824B3528 ".printf \"[GetCEContent 824B3528] r3=%p r4=%p r5=%p | r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); kc 10; gc"
+
+.echo === done - click the chest, flow prints above. Use bl to list. ===

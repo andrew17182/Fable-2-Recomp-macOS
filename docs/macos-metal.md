@@ -1,0 +1,304 @@
+# Apple Silicon Metal backend
+
+The default Apple Silicon Metal backend provides native Metal rendering through a ReXGlue
+plugin. It requires Apple Silicon and an Xcode installation with the Metal
+Toolchain component. See [backend build details](../backends/metal/README.md)
+for dependencies, source provenance and licenses.
+
+## Build and launch
+
+Supply the extracted game content described in the [README](../README.md#getting-started), then run:
+
+```sh
+python3 tools/build_macos_metal.py
+open 'out/build/mac-arm64-metal-release/Fable II.app'
+```
+
+The full build generates guest code, builds the converter, helper shaders and
+renderer, and creates or refreshes the app. `--prepare-only` and `--backend-only`
+do not produce a game app. Existing app output is replaced only after the new
+bundle has been assembled and signature-verified.
+
+The app includes its runtime libraries and can be moved to Applications. It
+uses the source checkout as the initial game-content location. If that location
+moves, the app asks for the folder containing `default.xex` and `data/` and
+remembers the selection. Game content is never copied into the app.
+
+For command-line use, `./run_macos_metal.command` starts Metal directly.
+`./run_macos.command` requires Metal on Apple Silicon and uses Vulkan on Intel.
+A missing Metal build reports an error instead of silently switching renderers. Set `FABLE2_MACOS_BACKEND=metal` to require Metal, or `vulkan` to
+select Vulkan. Intel Macs use Vulkan.
+
+## Saves and configuration
+
+The app stores saves in `~/Library/Application Support/Fable II Recomp/saves`,
+with settings, logs and caches in the parent directory. Metal and Vulkan apps
+share this state and refuse concurrent game instances. Updating the app does
+not replace user state.
+
+Command launchers retain separate state beside their executables:
+
+- Metal: `out/build/mac-arm64-metal-release/saves/`
+- Vulkan: `out/build/mac-arm64-release/saves/`
+
+There is no automatic save migration or merging. To migrate, close the game and
+copy the entire existing `saves` folder into a new app state folder before first
+launch. Preserve a backup; do not merge two existing save trees.
+`FABLE2_GAME_DATA_ROOT` selects external game content for command launches without
+changing their save location.
+
+## Renderer configuration and limitations
+
+The pinned SDK's guest clock dropped the fractional guest tick on every query,
+so the scaled clock ran ~0.96x real time and movie audio got periodic silence
+padding. Launchers used to pass `--clock_no_scaling=true` as a workaround. Since
+2026-10-05 the executable carries the remainder itself
+(`src/core/fable2_guest_clock.h`; source-runtime fix in
+`patches/sdk/clock-fractional-ticks.patch`), so the launchers no longer pass it
+and clock scaling (needed by turbo, see `docs/turbo.md`) stays enabled. A
+`clock_no_scaling = true` line in `fable_2.toml` or a `REX_CLOCK_NO_SCALING`
+variable is obsolete and ignored at startup; only an explicit
+`--clock_no_scaling=true` command-line argument still selects host time.
+
+The Metal launchers enable sequential register batching and two background
+shader compilation workers. Constant-payload caching and forced block-compressed
+texture expansion are disabled. The `[patches] hero_dog_texture_readback` setting
+in `fable2_config.toml` controls morph readback (default `true`); explicit SDK or
+command-line settings such as `--metal_fable_morph_readback=false` take priority.
+
+Morph readback copies native-resolution RGBA8 color resolves at guest destination
+`0x12704000` into guest RAM after GPU completion. The selection criteria derive
+from [Femtofork for Fable II](https://github.com/just-harry/unofficial-xenia-femtofork-for-fable-ii).
+The address is game-version-specific; scaled-resolution readback is unsupported.
+Background shader compilation waits for the game-specific morph texture shader
+when morph readback is enabled, preserving generated hero/dog textures. Other
+pending scene draws may be skipped while compiling to avoid gameplay stalls.
+Stored shader and pipeline descriptions are prepared before guest execution.
+With `metal_background_pipeline_warmup=true` (the default), cached pipelines
+compile on the existing workers while opening videos play. A cached pipeline
+needed immediately is moved ahead of remaining warm-up work and waited for,
+so skipping the logos does not discard its first draws. Previously unseen
+shaders retain the normal background-compilation behavior and may briefly
+render incompletely. This overlaps startup work; it does not reduce total
+compilation work. The measured 300-pipeline cache prepared in 0.04 seconds.
+
+Compiled pipelines are kept between launches. They are stored in a Metal
+binary archive next to the `.metal.artifacts` file:
+`cache/shaders/local/metal/<GPU>/<abi>/4D5307F1/*.os<macOS version>.metal.segNNNNNN[.full].binarchive`.
+Each launch looks pipelines up in the existing segments first. New pipelines
+compile in parallel on the workers and go into a new segment. That segment is
+saved when warm-up ends, then every
+`metal_pipeline_binary_archive_save_interval` seconds (default 30) while new
+pipelines keep arriving. Each save writes a temporary file and renames it over
+the segment. A saved segment is then closed and later pipelines go to the next
+one: Metal fails a second serialize of the same archive ("expecting 'fragment'
+stage", CR-05). `FABLE2_ARCHIVE_SAFE_SAVE=0` restores the old single-segment
+behaviour. With `FABLE2_NATIVE_SHADERS` on (the default), pipelines with an
+optimized pixel shader use their own `.ns1` segments (`docs/native-shaders.md`). Unreadable segments are deleted and their pipelines are rebuilt.
+From 8 segments on, a launch writes a `.full` segment, and the older segments
+are deleted on the next launch. macOS also keeps its own per-app Metal cache.
+With either cache warm, the 337-pipeline warm-up finishes in about 0.5 seconds;
+it took about 13 seconds before this change. With both cold it takes about 7
+seconds. `--metal_pipeline_binary_archive_save_interval=0` stops these saves.
+`--metal_pipeline_binary_archive=false` turns the archive off.
+
+Use `--metal_background_pipeline_warmup=false` to finish all cached compilation
+before starting the videos. The native “Loading Fable II” overlay services Cocoa
+events during startup preparation or this full blocking warm-up.
+Failed geometry pipelines
+are retried with backoff. Complete-playthrough coverage is not established.
+
+Metal uses uniform subdivision at the guest maximum tessellation factor for
+Fable II's terrain shader (`5003700B7C9B1C16`) to reduce distant ground cracks.
+This workaround leaves other tessellated geometry unchanged. It increases
+terrain geometry compared with adaptive subdivision; the tested overlook showed
+improved ground coverage with no noticeable frame-rate penalty, but other areas
+may differ. Use `--metal_fable_terrain_uniform_tessellation=false` to compare
+with adaptive subdivision.
+
+The build applies the private SDK graphics patch from `backends/metal/` without
+modifying the installed runtime or Windows SDK submodule. Generated-code hooks
+in `tools/apply_startup_handoff.py` target a specific startup lock and validate
+function shape before patching. The Metal launcher enables that workaround with
+`FABLE_STARTUP_LOCK_HANDOFF=1`; it is not a general SDK locking fix. Measured 2026-10-14: with it off the title takes 12–24 s instead of
+about 2 s (workaround audit, 2026-10-14). Diagnostic
+render-loop cadence logging is opt-in with `FABLE2_FPS_METER=1` and does not
+measure displayed frames.
+
+## App packaging and testing
+
+Standalone packaging is available through `python3 tools/package_macos_app.py`.
+It creates `out/app/Fable II.app`; `--replace` permits replacing a generated app.
+Packaging includes only selected runtime libraries, default settings and an icon.
+Lua helpers are loaded from the external content folder's `data/scripts/recomp`.
+No game content, saves, caches or generated guest source are packaged.
+
+Apps are ad-hoc signed for local use, not Apple-notarized for distribution.
+Their minimum macOS version is derived from the compiled binaries. Packaging
+cannot lower that version. Omit `--game-data-root` when packaging for distribution
+to avoid embedding a local checkout path.
+
+Run the [Mac regression tests](macos.md#tests-and-current-limits) and the backend's
+[renderer tests](../backends/metal/README.md#tests). For a bounded app startup check
+using a **new disposable state folder**:
+
+```sh
+python3 tests/macos_app_tests.py --app 'out/build/mac-arm64-metal-release/Fable II.app' \
+  --state out/validation/fresh-app-state --game-data-root "$PWD" \
+  --report out/validation/app-startup.json
+```
+
+This requires desktop access, verifies Metal/input initialization, preserves
+preexisting settings, checks bundle signatures and immutability, and stops only
+the process it starts. Gameplay testing remains a separate manual check.
+
+
+## Frame-time recordings
+
+The normal Metal app records `frames-<Unix milliseconds>-<PID>.csv` beside its
+main log (normally `~/Library/Application Support/Fable II Recomp/logs/`).
+`metal_frame_logging` defaults to true; disable it in the Metal settings and
+save the config, then restart, to stop future recordings. Each launch creates
+a separate file. Nothing changes the game clock, frame cap, or resolution.
+
+The recorder links game swap submissions, guest outputs, and Metal drawable
+presentation timestamps with a frame ID. Repeated presentations of the same
+output are counted separately from newly presented game frames. A synthetic
+capture swap is excluded from FPS statistics. Metal callbacks with zero
+`presentedTime` indicate an unpresented/skipped drawable; they do not count as
+displayed frames. Invalid timestamps and dropped log events are reported.
+Presentation timestamps describe delivery reported by Metal, not GPU execution
+time or proof that every submitted frame contains different pixels.
+
+Events are buffered in bounded memory and written on a background thread every
+500ms, outside the rendering callbacks. The app hard-exits at shutdown, so the
+last roughly half-second may be missing. Recordings are retained until deleted.
+The file marks warm-up begin/end and waits for demanded cached pipelines.
+
+From the repository root, summarize the latest normal-app recording:
+
+```sh
+python3 tools/summarize_frame_log.py --last 120
+# Or select a known gameplay section, in seconds since recorder startup:
+python3 tools/summarize_frame_log.py /absolute/path/to/frames-recording.csv --start 90 --duration 120
+# Machine-readable report, including the startup period:
+python3 tools/summarize_frame_log.py /absolute/path/to/frames-recording.csv --phase all --json
+```
+
+The default excludes warm-up, but does not identify gameplay automatically:
+opening videos, menus, pauses, and loading screens can still be present. For a
+baseline, enter gameplay, follow a repeatable route for at least two minutes,
+and quit immediately afterward. Use the final 120 seconds. Repeat the route
+after its shaders have been seen, keeping resolution and settings fixed.
+The report includes average FPS, p50/p95/p99 and maximum frame intervals, gaps
+over 33/50ms, and 1% low FPS (1000 divided by the mean slowest 1% of intervals
+in milliseconds). Guest submission timing and unique-frame presentation timing
+are both reported; all-presentation rate includes repeats and is not game FPS.
+
+The opening-video smoke test validates recording, not 60-FPS gameplay capability.
+CPU/GPU execution profiling and changes to frame pacing follow a gameplay
+baseline; this recorder does not enable the SDK performance-counter overlay.
+
+
+## Stable 30 FPS and app-owned testing
+
+Metal now defaults to `metal_allow_tearing=false`: CAMetalLayer display
+synchronization is enabled, preserving the guest's original 30-FPS pacing.
+An existing saved `metal_allow_tearing=true` can override the default. The
+initial title/video comparison changed presentation from uneven delivery to
+33.333/33.334ms between new game frames, with zero skipped presentations.
+Gameplay coverage must be recorded separately; a default change alone does
+not guarantee every area sustains 30 FPS.
+
+The opt-in test interface starts only when `FABLE2_TEST_CONTROL_DIR` is set to
+an absolute path. It is implemented inside the app: input enters its SDL event
+loop, captures read the guest render output via the Metal presenter, and close
+uses the normal SDL quit path. It needs neither Accessibility nor macOS Screen
+Recording access. No TCP listener is opened. The private session folder holds
+request/reply files and rendered-frame PNG/PPM captures. Normal Finder launches
+leave the interface disabled.
+
+```sh
+python3 tools/fable2_test_control.py launch
+# Use the absolute session directory returned by launch for subsequent commands:
+python3 tools/fable2_test_control.py capture /absolute/session
+python3 tools/fable2_test_control.py press /absolute/session e
+python3 tools/fable2_test_control.py press /absolute/session down
+python3 tools/fable2_test_control.py press /absolute/session w --hold 1000
+python3 tools/fable2_test_control.py close /absolute/session
+python3 tools/fable2_test_control.py summary /absolute/session --last 120
+```
+
+Launch uses the normal app bundle with a copy of current saves, cache, metadata
+and settings under `out/validation/gameplay-tests/`. Progress/autosaves from
+tests stay in that copy. Window placement comes from the test-window memory
+(see "Test-window placement" in `docs/macos.md`), never from or to the normal
+app preferences. With `FABLE2_TEST_WINDOW_MEMORY=0` it is inherited, as before,
+from the most recently modified `fable2_window.toml` in the normal app
+preferences, the selected save/settings source, or a previous test session. Launch refuses to run while another game is open.
+The test forces `vsync=true` and display sync on by default; `--display-sync off`
+is available for comparisons. Presses release automatically after the bounded
+hold duration (20..10000ms). Key names are physical game key mappings; the
+current saved map uses E for A and X for B. Inspect each capture before choosing
+a menu action, especially before loading a save. A loading screen or cutscene
+is not proof of gameplay: verify visible control response to movement. Captures
+are synchronous and can perturb timing, so capture before/after measured routes.
+
+`tools/fable2_test_mcp.py` exposes this same interface as a stdio MCP server:
+launch, capture (PNG image content), press, close, summary, and ping. Its launch
+returns the session directory required by other tools. Run it with Python 3;
+no additional dependencies are required. It does not register itself in a
+client or change system permissions. The same source API can be used directly
+by the CLI in this chat; MCP clients can configure the stdio bridge as a server.
+
+Register it with Codex using absolute paths (the working directory is not
+required):
+
+```sh
+codex mcp add fable2 -- /usr/bin/python3 /absolute/project/tools/fable2_test_mcp.py
+codex mcp get fable2
+```
+
+After registration, reload MCP servers in the desktop app's Settings > MCP
+servers, or restart the app if the existing chat does not expose the new tools.
+Registration alone does not refresh a running chat's tool list. The `capture`
+tool returns the PNG inline, avoiding a separate file-viewing tool call.
+
+Each new capture also saves a matching `.capture.json` file. The MCP image
+response includes that metadata as JSON text; the path-only CLI remains
+compatible with existing callers. Native `frame_submitted_monotonic_us`,
+`capture_started_monotonic_us`, and `capture_completed_monotonic_us` use
+`CLOCK_MONOTONIC`, the same microsecond clock as the session input journal.
+`frame_t_us` and capture `*_t_us` subtract `FABLE2_SESSION_ORIGIN_US`, so they
+can be aligned with recorded input times from launch. Without a session origin,
+those relative fields are null. The frame timestamp identifies CPU submission
+of the selected guest output, not GPU completion or physical display time.
+The mailbox remains acquired through readback, keeping pixels and metadata
+from the same output. `submission_id` identifies the submitted output;
+`frame_id` is the optional frame logger's identifier (zero if unavailable).
+
+Client `request_sent_monotonic_us`, `reply_received_monotonic_us`, and
+`image_ready_monotonic_us` track retrieval and PNG conversion independently.
+`delivery_and_conversion_us` ends at PNG readiness, before MCP transport or
+model interpretation. Older game builds explicitly report
+`native_timestamps_available: false`; file timestamps are never substituted.
+Restart/reconnect an already running MCP bridge after updating its Python
+source to receive the new metadata fields.
+
+A verified navigation example is: skip/confirm title with E, inspect the menu,
+select Continue with Down, confirm E, inspect the hero carousel, confirm the
+selected copied Hero 4 save, and wait for Bowerstone Old Town to load. Once
+the opening movie is visibly playing, press Start once (`escape` with the
+current keyboard map) to skip it. In gameplay the same button pauses or opens
+a menu, so inspect the output before sending it. Complete the LT tutorial
+with `q` if prompted, then verify the gameplay HUD/trail and movement before
+starting timing. Never blindly repeat confirm presses or infer gameplay
+solely from elapsed time. Allow the startup logos to finish before sending
+title/menu input; an early logo skip hit a guest null-read fault in a test.
+
+Recording replay accepts either an explicit `recording_end` event or EOF.
+When the game closes without an explicit stop, EOF ends replay at the last
+recorded event's timestamp; the reader adds a terminal event in memory and
+leaves the source file unchanged. Replay releases held controller inputs at
+completion. `replay` accepts the session's frozen `recording.jsonl` or its
+native `test-state/control/events.jsonl`, using the session's initial saves.

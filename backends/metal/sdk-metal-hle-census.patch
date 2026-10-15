@@ -1,0 +1,50 @@
+# Fable II recomp: command-processor hooks for the HLE census and the tiling collapse
+# (FABLE2_HLE_CENSUS / FABLE2_TILING_COLLAPSE; docs/hle-census-20261013.md). Applied after sdk-metal-rt-shrink.patch.
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -171,6 +171,16 @@
+ 
+   uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index);
+   virtual void OnPrimaryBufferEnd() {}
++  // Fable II recomp, trace only (FABLE2_HLE_CENSUS, docs/hle-census-20261013.md): called for
++  // every PM4_DRAW_INDX / PM4_DRAW_INDX_2 packet before it runs (skipped = dropped by the bin
++  // predicate), with the host address of its header, and for every indirect buffer. The
++  // implementation checks its own switch; the base does nothing.
++  virtual void OnDrawPacketForCensus(const void* header, bool skipped) {}
++  // Returns true to skip the indirect buffer (diagnostic / tiling-collapse use only).
++  virtual bool OnIndirectBufferForCensus(uint32_t ptr, uint32_t count) { return false; }
++  // Every type-3 packet (header host address; skipped = dropped by the bin predicate).
++  virtual void OnType3PacketForCensus(uint32_t packet, const void* header, bool skipped) {}
++  bool hle_census_hooks_ = false;
+   void ExecuteIndirectBuffer(uint32_t ptr, uint32_t length);
+   bool ExecutePacket(memory::RingBuffer* reader);
+   bool ExecutePacketType0(memory::RingBuffer* reader, uint32_t packet);
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -712,6 +712,9 @@
+ 
+ void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
+   SCOPE_profile_cpu_f("gpu");
++  if (hle_census_hooks_ && OnIndirectBufferForCensus(ptr, count)) {
++    return;
++  }
+ 
+   // Execute commands!
+   memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t));
+@@ -827,6 +830,16 @@
+   // & 1 == predicate - when set, we do bin check to see if we should execute
+   // the packet. Only type 3 packets are affected.
+   // We also skip predicated swaps, as they are never valid (probably?).
++  if (hle_census_hooks_) {
++    const void* header =
++        reader->buffer() + (data_start_offset + reader->capacity() - sizeof(uint32_t)) %
++                               reader->capacity();
++    const bool skipped = (packet & 1) && (bin_select_ & bin_mask_) == 0;
++    OnType3PacketForCensus(packet, header, skipped);
++    if (opcode == PM4_DRAW_INDX || opcode == PM4_DRAW_INDX_2) {
++      OnDrawPacketForCensus(header, skipped);
++    }
++  }
+   if (packet & 1) {
+     bool any_pass = (bin_select_ & bin_mask_) != 0;
+     if (!any_pass || opcode == PM4_XE_SWAP) {

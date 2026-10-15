@@ -1,0 +1,165 @@
+# =============================================================================
+# fable2_config.toml - Fable 2 recomp user configuration
+# =============================================================================
+#
+# Loaded on every launch from the game's state folder (the Mac app uses
+# ~/Library/Application Support/Fable II Recomp/; command-line builds use the
+# folder next to the executable). If the file is missing, it is recreated with
+# these defaults: this exact file is embedded into the game at build time
+# (config/fable2_config.toml in the repo is the only copy - edit defaults here).
+#
+# Every "Default:" below is also the built-in value used when a key is
+# missing; tests/config_defaults_tests.cpp fails the build if they differ.
+#
+# - Human-readable TOML: # starts a comment, sections are [bracketed].
+# - Missing keys are fine: the game falls back to its built-in defaults.
+# - Unknown sections/keys are ignored (a warning is logged for unknown
+#   sections), so the file can grow over time without breaking the game.
+# - A syntax error does not stop the game: it is logged to logs/, a dialog
+#   is shown, and the built-in defaults are used instead.
+#
+# NOTE: this is the recomp's own config. fable_2.toml (also next to the exe)
+# is the ReXGlue SDK cvar config - a different file.
+# =============================================================================
+
+[general]
+# Bumped when this file's format gains new required structure. The game
+# tolerates any version it does not know about.
+# Default: 1
+config_version = 1
+
+[input]
+# Host keyboard -> guest gamepad map: "Key:Button,Key:Button,..." (one line;
+# do not add spaces or newlines inside the string). Key = Windows virtual-key
+# name (see README.md, Keyboard controls); Button = A/B/X/Y, LB/RB, LT/RT,
+# Up/Down/Left/Right, Pause, Select, L3/R3, StickUp/StickDown/StickLeft/
+# StickRight. Empty string disables the keyboard gamepad.
+# --keyboard_gamepad_map, REX_* environment variables and fable_2.toml still
+# take priority over this value; the Backtick console can change it live.
+# Default: the built-in layout
+#   E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,
+#   Escape:Pause,M:Select,Q:LT,Tab:RT,Up:Up,Down:Down,Left:Left,Right:Right
+keyboard_gamepad_map = "E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,Escape:Pause,M:Select,Q:LT,Tab:RT,Up:Up,Down:Down,Left:Left,Right:Right"
+
+# Map mouse movement to the guest right stick (camera look): sweep to look,
+# stop to stop. Enabling this captures/hides the cursor while playing.
+# Default: false (free cursor; controller camera input is unaffected)
+mouse_look = false
+
+# Mouse-look sensitivity: right-stick units per pixel of mouse movement
+# (1..4096; larger = more sensitive).
+# Default: 256
+mouse_look_scale = 256
+
+[patches]
+# Single-vblank frame dispatch (60 FPS target; performance may vary).
+# Use vsync=true. true = 60 FPS, false = 30 FPS (the console's rate),
+# "auto" = 60 FPS when this Mac's GPU is estimated to average >= ~54 FPS at the
+# resolution scale that will run (1x when resolution_scale = "auto"), else 30 FPS.
+# The 2x rule: at 2x, an estimate of 45-54 FPS runs uncapped instead of 30, and
+# with resolution_scale = "auto" too a Mac that holds >= 45 FPS at 2x (and has
+# >= 16 GB) runs 2x, e.g. a 14-core M3 Pro at 2x uncapped (docs/resolution-scale.md
+# section 25; FABLE2_AUTO_2X=0 turns the 2x rule off; FABLE2_FPS_AUTO_MIN_CORES=24
+# restores the old 24-core rule). FABLE2_FPS_60=0/1/auto overrides this setting.
+# Base chips (M1-M5 without Pro/Max/Ultra) stay at 30 on "auto" until a base
+# Mac is measured. The original game runs at 30 FPS: false.
+# Default: "auto" (also used when the key is missing)
+fps_60 = "auto"
+
+# Turbo: F7 toggles running the whole game this many times faster (starts
+# off; 1.1 to 4.0 in 0.1 steps, 1.0 disables F7). Keeps ~30 FPS while on and
+# overrides fps_60. Audio stays normal speed. FABLE2_TURBO_SCALE=<x> overrides
+# the speed and starts turbo on.
+# Default: 2.0
+turbo_scale = 2.0
+
+# Toggles for the recomp-level (mid-asm hook) patches, consulted at runtime
+# by the hook bodies (src/core/fable2_hooks.cpp) - no rebuild needed. Guest-image
+# DATA patches are a different file: fable2_patches.toml next to the exe.
+# Unlock Website Items (mid-asm hooks fable2_hook_website_g1/g1b/grantnew;
+# Xenia "Unlock Website Items" by Guy): forces the website-registration gates
+# AND the grant-method result in the Guild-chest item getter so the website
+# items are granted at save load. false = locked (original).
+# Default: true
+unlock_website = true
+
+# Unlock Collectors Edition Content (mid-asm hooks fable2_hook_ce_g1/g1b/
+# grantavail; Xenia "Unlock Collectors Edition Content" by Guy): forces the
+# CE-registration gates AND the grant-method result in the CE-content getter so
+# the CE items are granted at save load. false = locked (original).
+# Default: true
+unlock_ce = true
+
+# Force a CPU readback of the render-to-texture resolve that regenerates the
+# hero/dog face+skin texture, so the character does not render black on a
+# split-memory host (see plans/hero-dog-texture-readback.md). Approach + the
+# guest base 0x12704000 come from just-harry's Unofficial Xenia femtofork for
+# Fable II. Seeds the SDK cvar readback_resolve_force_addresses; readback then
+# happens only for that resolve, not every frame. false = original black bug.
+# Default: true
+hero_dog_texture_readback = true
+
+[graphics]
+# Internal resolution: the game renders at this multiple of the console's
+# 1280x720 per axis (1 = native, 2 = 2560x1440, 3 = 3840x2160), then scales
+# to the window. 2 needs a fast GPU (holds 60 FPS on an M5 Max); 3 is for
+# Max-class GPUs only and uses about 9 GB of GPU memory. A new value compiles
+# its shaders once on the next launch. "auto" picks 1, 2 or 3 at startup from
+# the Mac's GPU (core count and chip), the frame-rate target and RAM, aiming to
+# hold the frame rate with headroom; the log says what it chose and why
+# ("[res-auto]"; docs/resolution-scale.md sections 24-25). FABLE2_RES_SCALE=<n>/auto
+# overrides this. 1 is the console's own resolution.
+# Default: "auto" (also used when the key is missing)
+resolution_scale = "auto"
+
+# Upscaling of the game image to the window:
+#   "off"             - one bilinear filter (the faithful path).
+#   "metalfx-spatial" - Apple's MetalFX spatial upscaler. Changes the look
+#                       (sharper edges, reconstructed detail). It only acts when
+#                       the window is larger than the internal resolution, e.g.
+#                       resolution_scale = 2 (2560x1440) in a 4K fullscreen
+#                       window: cheaper than resolution_scale = 3 there.
+# FABLE2_UPSCALING=off/metalfx-spatial overrides this. (The older
+# `metalfx = true/false` key is still read when this key is missing.)
+# Default: "off"
+upscaling = "off"
+
+# At internal resolution 2 or 3: keep bloom, blur and glow effects (torch halos,
+# the green interact outline, soft light) at their original size, as on the
+# console. false makes them follow the internal resolution, which narrows them
+# (half the width at 2, a third at 3). No effect at resolution_scale = 1.
+# FABLE2_EFFECTS_NATIVE=1/0 overrides this.
+# Default: true
+effects_native_scale = true
+
+# Start fullscreen (macOS full-screen Space) instead of in a window. The window
+# remembers its last size and position either way. FABLE2_FULLSCREEN=1/0
+# overrides this; so does a `fullscreen =` line in fable_2.toml.
+# Default: false
+fullscreen = false
+
+# On-screen FPS counter in the bottom-left corner: presented frames per second
+# and frame time. F9 shows or hides it while playing. FABLE2_FPS_COUNTER=1/0
+# overrides this.
+# Default: false
+fps_counter = false
+
+# Shader cache target. "portable" builds the translated shaders for any Apple
+# Silicon Mac with macOS 15 or later, so the shader cache survives macOS
+# updates and can be copied to another Mac. "native" builds them for this
+# Mac's GPU and exact macOS version (the behaviour before 2026-10-12; every
+# macOS update then rebuilds the cache). Measured equally fast. Changing it
+# rebuilds the shader cache once in the background on the next launch.
+# FABLE2_MSC_MIN_TARGET=native/apple7:15.0 overrides this.
+# Default: "portable"
+shader_cache_target = "portable"
+
+[perf]
+# NtYieldExecution batching for the hot-function overrides (see
+# src/core/hotfunc/hotfunc_yield.h): every Nth guest yield does the real
+# SwitchToThread; the others take a full memory fence. The work-loop yield
+# was the single biggest cost in the 475 render chain; on multi-core hosts
+# the yield is only a politeness hint, so batch it. 1 = original (yield
+# every call); 0 = never yield; larger = fewer context switches.
+# Default: 8
+hotfunc_yield_every = 8

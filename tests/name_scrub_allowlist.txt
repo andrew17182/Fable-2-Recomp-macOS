@@ -1,0 +1,7 @@
+# False positives for the personal-identifier guard (tools/fable2_name_guard.py, tests/name_scrub_tests.py).
+# One entry per line: `literal` is ignored in every file; `path/in/repo | literal` only in that file.
+# Matching ignores case. Keep entries as narrow as possible and say why.
+
+# The maintainer's GitHub handle (fork URL github.com/<handle>/Fable-2-Recomp-macOS, git remote, commit authors): kept on
+# purpose, decided 2026-10-14.
+andrew17182

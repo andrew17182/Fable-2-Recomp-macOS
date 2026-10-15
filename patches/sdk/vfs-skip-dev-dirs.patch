@@ -1,0 +1,88 @@
+VFS: do not walk the dev checkout's out/, .git and thirdparty at startup (perf-3x 2026-10-11).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). FABLE2_VFS_SKIP_DEV_DIRS=0
+restores the full walk.
+
+Dev sessions mount the repository root as game:\ (--game_data_root). HostPathDevice::Initialize
+populated the whole tree recursively (opendir + stat per entry): ~179k entries, 162k of them under
+out/ (dev sessions, builds), so the gap between "Guest memory arena mapped" and the GPU Commands
+thread grew from 0.6 to 1.1 s as out/ grew (`sample` of a boot: 76% of the main thread in
+PopulateEntry). Only top-level children of the device root named out, .git or thirdparty are
+skipped: their entry stays. HostPathDevice::ResolvePath's lazy fallback (exact stat per missing
+component) now also walks every directory it adds: VirtualFileSystem::OpenFile resolves the
+parent directory, then calls the base Entry::GetChild on it, so an unwalked directory made every
+open below it fail (first version of this patch: skip intro's game:\out\skipintro\*.bik
+reported missing and the intro movies played; bug-patterns row 53).
+Other mounts (saves, cache, the playtest/portable game-data roots) have no such directories.
+
+--- a/src/filesystem/devices/host_path_device.cpp	2026-10-11 14:29:34
++++ b/src/filesystem/devices/host_path_device.cpp	2026-10-11 14:39:48
+@@ -12,6 +12,7 @@
+ #include <rex/filesystem/devices/host_path_entry.h>
+ 
+ #include <algorithm>
++#include <cstdlib>
+ 
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+@@ -87,6 +88,11 @@
+         }
+         current_entry->children_.push_back(std::unique_ptr<Entry>(exact_child));
+         current_entry = static_cast<HostPathEntry*>(exact_child);
++        // A directory found here was never walked (a skipped dev directory below the
++        // root, or a casing mismatch): walk it now, or OpenFile's GetChild on it fails.
++        if (exact_info.type == rex::filesystem::FileInfo::Type::kDirectory) {
++          PopulateEntry(current_entry);
++        }
+         continue;
+       }
+ 
+@@ -105,6 +111,9 @@
+       }
+       child = new_child;
+       current_entry->children_.push_back(std::unique_ptr<Entry>(new_child));
++      if (match->type == rex::filesystem::FileInfo::Type::kDirectory) {
++        PopulateEntry(new_child);
++      }
+     }
+ 
+     current_entry = static_cast<HostPathEntry*>(child);
+@@ -113,6 +122,26 @@
+   return current_entry;
+ }
+ 
++// Fable II recomp (patches/sdk/vfs-skip-dev-dirs.patch): when the game data root is the
++// development checkout, the startup scan walked its build output, git objects and SDK
++// sources (~177k of ~179k entries, 0.5-1 s at every boot, growing with out/). The
++// game opens nothing there by enumeration; those top-level directories keep their entry
++// but are not walked. An open below them resolves through ResolvePath's lazy host
++// lookup, which now walks each directory it adds (skip intro opens
++// game:\out\skipintro\*.bik). FABLE2_VFS_SKIP_DEV_DIRS=0 walks everything again.
++static bool SkipDevDirChildren(const HostPathEntry* parent, const HostPathEntry* root,
++                               const std::filesystem::path& name) {
++  static const bool on = [] {
++    const char* v = std::getenv("FABLE2_VFS_SKIP_DEV_DIRS");
++    return !(v && v[0] == '0');
++  }();
++  if (!on || parent != root) {
++    return false;
++  }
++  const std::string n = rex::path_to_utf8(name);
++  return n == "out" || n == ".git" || n == "thirdparty";
++}
++
+ void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
+   auto child_infos = rex::filesystem::ListFiles(parent_entry->host_path());
+   for (auto& child_info : child_infos) {
+@@ -121,6 +150,12 @@
+     parent_entry->children_.push_back(std::unique_ptr<Entry>(child));
+ 
+     if (child_info.type == rex::filesystem::FileInfo::Type::kDirectory) {
++      if (SkipDevDirChildren(parent_entry, static_cast<HostPathEntry*>(root_entry_.get()),
++                             child_info.name)) {
++        REXFS_INFO("[vfs-skip-dev-dirs] not walking {} (opens resolve lazily)",
++                   rex::path_to_utf8(child->host_path()));
++        continue;
++      }
+       PopulateEntry(child);
+     }
+   }

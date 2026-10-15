@@ -1,0 +1,16 @@
+$$ =============================================================================
+$$ Run when at the chest. Sets a fast one-line print on ALL 8 website-chest
+$$ sibling methods (the item-op dispatch set). Click the chest; whichever
+$$ fires is the real path to the fable2.com message. 'lr' is the guest return
+$$ address (maps to the caller).
+$$ =============================================================================
+bc *
+.echo === 8 sibling bps ready - click the chest ===
+bp __imp__sub_8256DC10 ".printf \"[DC10] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256DCA0 ".printf \"[DCA0] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256DED8 ".printf \"[DED8] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256E120 ".printf \"[E120] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__GuildChest_GetWebsiteItem_8256E368 ".printf \"[E368] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256E4F8 ".printf \"[E4F8] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256E5B0 ".printf \"[E5B0] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"
+bp __imp__sub_8256E888 ".printf \"[E888] r3=%p r4=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x100); gc"

@@ -1,0 +1,186 @@
+SDK TimerQueue: block in kevent instead of yield-spinning (perf pass 2026-10-11, stage 1b).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). FABLE2_TIMER_QUEUE_BLOCKING=0
+restores the disruptorplus spin wait.
+
+The dispatch thread waited for the next due timer or a newly queued one with
+spin_wait_strategy::wait_until_published(timeout): 10 rounds of `yield` instructions, then
+std::this_thread::yield() 19 times and sleep_for(1 ms) once, repeated until the timeout. On
+macOS that is thousands of swtch_pri syscalls per second (30-45% of the thread's samples in
+the 2026-10-11 audit) and timers fired up to ~1.5 ms late (sleep_for leeway).
+
+On Apple platforms the thread now checks for published items without blocking, then sleeps in
+kevent on a one-shot EVFILT_TIMER (NOTE_CRITICAL, microseconds) for the next due time plus an
+EVFILT_USER event that QueueTimer triggers when the thread is asleep (Dekker-style sleeping_
+flag, seq_cst on both sides; EV_CLEAR keeps a trigger pending until the next kevent, so a wake-up
+cannot be lost). Timers fire at their due time within tens of microseconds instead of up to a
+millisecond and a half late; callbacks, ordering and the flood mitigation are unchanged.
+
+--- a/src/core/timer_queue.cpp
++++ b/src/core/timer_queue.cpp
+@@ -10,8 +10,15 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdlib>
+ #include <forward_list>
+ 
++#if defined(__APPLE__)
++#include <sys/event.h>
++#include <unistd.h>
++#endif
++
+ #include <disruptorplus/multi_threaded_claim_strategy.hpp>
+ #include <disruptorplus/ring_buffer.hpp>
+ #include <disruptorplus/sequence_barrier.hpp>
+@@ -27,6 +34,22 @@
+ 
+ using WaitItem = TimerQueueWaitItem;
+ 
++#if defined(__APPLE__)
++// FABLE2_TIMER_QUEUE_BLOCKING (default on, =0 restores the spin): the dispatch thread
++// blocks in kevent until the next due time (EVFILT_TIMER, NOTE_CRITICAL: no timer
++// coalescing, wakes within tens of microseconds) or until QueueTimer publishes a new
++// item (EVFILT_USER). The disruptorplus spin wait it replaces yielded 19 times and then
++// slept 1 ms (about 1.5 ms with the macOS timer leeway), in a loop, so a waiting timer
++// thread made thousands of swtch_pri calls per second and fired up to ~1.5 ms late.
++static bool TimerQueueBlockingEnabled() {
++  static const bool on = [] {
++    const char* v = std::getenv("FABLE2_TIMER_QUEUE_BLOCKING");
++    return !(v && v[0] == '0');
++  }();
++  return on;
++}
++#endif
++
+ class TimerQueue {
+  public:
+   using clock = WaitItem::clock;
+@@ -39,6 +62,19 @@
+         claim_strategy_(kWaitCount, wait_strategy_),
+         consumed_(wait_strategy_) {
+     claim_strategy_.add_claim_barrier(consumed_);
++#if defined(__APPLE__)
++    if (TimerQueueBlockingEnabled()) {
++      kq_ = kqueue();
++      if (kq_ >= 0) {
++        struct kevent ev;
++        EV_SET(&ev, kWakeIdent, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
++        if (kevent(kq_, &ev, 1, nullptr, 0, nullptr) < 0) {
++          close(kq_);
++          kq_ = -1;
++        }
++      }
++    }
++#endif
+     dispatch_thread_ =
+         std::jthread([this](std::stop_token stop_token) { TimerThreadMain(stop_token); });
+   }
+@@ -53,6 +89,15 @@
+     QueueTimer(std::move(wait_item));
+ 
+     // std::jthread auto-joins on destruction
++#if defined(__APPLE__)
++    if (dispatch_thread_.joinable()) {
++      dispatch_thread_.join();
++    }
++    if (kq_ >= 0) {
++      close(kq_);
++      kq_ = -1;
++    }
++#endif
+   }
+ 
+   void TimerThreadMain(std::stop_token stop_token) {
+@@ -67,9 +112,17 @@
+     while (!stop_token.stop_requested()) {
+       {
+         // Consume new wait items and add them to sorted wait queue
+-        dp::sequence_t available = claim_strategy_.wait_until_published(
+-            next_sequence, next_sequence - 1,
+-            wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_);
++        const clock::time_point wait_until =
++            wait_queue_.empty() ? clock::time_point::max() : wait_queue_.front()->due_;
++#if defined(__APPLE__)
++        dp::sequence_t available = kq_ >= 0
++                                       ? WaitBlocking(next_sequence, wait_until)
++                                       : claim_strategy_.wait_until_published(
++                                             next_sequence, next_sequence - 1, wait_until);
++#else
++        dp::sequence_t available =
++            claim_strategy_.wait_until_published(next_sequence, next_sequence - 1, wait_until);
++#endif
+ 
+         // Check for timeout
+         if (available != next_sequence - 1) {
+@@ -132,6 +185,17 @@
+     auto sequence = claim_strategy_.claim_one();
+     buffer_[sequence] = std::move(wait_item);
+     claim_strategy_.publish(sequence);
++#if defined(__APPLE__)
++    // Wake the dispatch thread only when it is (about to be) blocked: it sets sleeping_
++    // before its last check for published items (seq_cst on both sides), so either it
++    // sees this item or we see sleeping_ and trigger the EV_CLEAR user event, which stays
++    // pending until its next kevent.
++    if (kq_ >= 0 && sleeping_.load(std::memory_order_seq_cst)) {
++      struct kevent ev;
++      EV_SET(&ev, kWakeIdent, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
++      kevent(kq_, &ev, 1, nullptr, 0, nullptr);
++    }
++#endif
+ 
+     return wait_item_weak;
+   }
+@@ -139,6 +203,52 @@
+   std::jthread::id dispatch_thread_id() const { return dispatch_thread_.get_id(); }
+ 
+  private:
++#if defined(__APPLE__)
++  static constexpr uintptr_t kWakeIdent = 1;
++  static constexpr uintptr_t kTimerIdent = 2;
++  int kq_ = -1;
++  std::atomic<bool> sleeping_{false};
++
++  // Same contract as claim_strategy_.wait_until_published(seq, seq - 1, until): returns
++  // the last published sequence, or seq - 1 when nothing new arrived before `until`.
++  dp::sequence_t WaitBlocking(dp::sequence_t next_sequence, clock::time_point until) {
++    for (;;) {
++      // Non-blocking check (a time point in the past returns after the short spin phase).
++      dp::sequence_t available = claim_strategy_.wait_until_published(
++          next_sequence, next_sequence - 1, clock::time_point::min());
++      if (available != next_sequence - 1) {
++        return available;
++      }
++      const clock::time_point now = clock::now();
++      if (until <= now) {
++        return available;
++      }
++      sleeping_.store(true, std::memory_order_seq_cst);
++      available = claim_strategy_.wait_until_published(next_sequence, next_sequence - 1,
++                                                       clock::time_point::min());
++      if (available != next_sequence - 1) {
++        sleeping_.store(false, std::memory_order_relaxed);
++        return available;
++      }
++      struct kevent changes[1];
++      int nchanges = 0;
++      if (until != clock::time_point::max()) {
++        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(until - now).count();
++        EV_SET(&changes[0], kTimerIdent, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
++               NOTE_USECONDS | NOTE_CRITICAL, std::max<int64_t>(1, us), nullptr);
++        nchanges = 1;
++      } else {
++        // No due timer: drop a timer still armed from an earlier wait (ignore ENOENT).
++        EV_SET(&changes[0], kTimerIdent, EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
++        kevent(kq_, changes, 1, nullptr, 0, nullptr);
++      }
++      struct kevent out[2];
++      kevent(kq_, changes, nchanges, out, 2, nullptr);
++      sleeping_.store(false, std::memory_order_relaxed);
++    }
++  }
++#endif
++
+   // This ring buffer will be used to introduce timers queued by the public API
+   static constexpr size_t kWaitCount = 512;
+   dp::ring_buffer<std::shared_ptr<WaitItem>> buffer_;

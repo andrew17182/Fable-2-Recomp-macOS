@@ -1,0 +1,95 @@
+SDK FPSCR: per-arch HostToGuest rounding table (mffs on ARM64 swapped round-up/round-down).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). Correctness fix, no switch.
+
+PowerPC FPSCR[RN]: 0 nearest, 1 toward zero, 2 +infinity, 3 -infinity. The host rounding
+field decodes differently per arch: x86 MXCSR RC is (nearest, down, up, zero), ARM64 FPCR
+RMode is (nearest, +infinity, -infinity, zero). GuestToHost was already per arch and right,
+but HostToGuest lived in ppc/context.h with the x86 order, so on ARM64 mffs read +infinity
+back as -infinity and vice versa, and a partial mtfsf (read-modify-write through
+loadFromHost) wrote the swapped mode back. Fable II has 5 mffs and 5 mtfsf sites; the game
+runs at round-to-nearest, where both tables agree, so no visible change is expected.
+
+HostToGuest now sits next to GuestToHost in platform/fpscr.h for each arch, a static_assert
+checks that the two tables invert each other for all four modes, and context.h defines
+REX_FPSCR_HOST_TO_GUEST_PER_ARCH so tests can tell the fixed runtime from the prebuilt one.
+Also fixes the ARM GuestToHost comment ("-Infinity, -Infinity").
+
+--- a/include/rex/platform/fpscr.h
++++ b/include/rex/platform/fpscr.h
+@@ -40,6 +40,9 @@
+                                        (1 << 12);   // PM - Precision (Inexact)
+   static constexpr size_t GuestToHost[] = {SIMDE_MM_ROUND_NEAREST, SIMDE_MM_ROUND_TOWARD_ZERO,
+                                            SIMDE_MM_ROUND_UP, SIMDE_MM_ROUND_DOWN};
++  // Indexed by the host RC field (MXCSR bits 13-14): Nearest, Down, Up, Zero. Values are
++  // the PowerPC FPSCR[RN] encodings (0 Nearest, 1 Zero, 2 +Inf, 3 -Inf).
++  static constexpr size_t HostToGuest[] = {0, 3, 2, 1};
+ 
+   static inline u32 getcsr() noexcept { return simde_mm_getcsr(); }
+ 
+@@ -58,9 +61,13 @@
+   static constexpr size_t RoundMaskVal = 3 << RoundShift;
+   // FZ and FZ16
+   static constexpr size_t FlushMask = (1 << 19) | (1 << 24);
+-  // Nearest, Zero, -Infinity, -Infinity
++  // Indexed by the PowerPC FPSCR[RN] value (0 Nearest, 1 Zero, 2 +Infinity, 3 -Infinity);
++  // FPCR RMode is 0 RN (nearest), 1 RP (+Infinity), 2 RM (-Infinity), 3 RZ (zero).
+   static constexpr size_t GuestToHost[] = {0 << RoundShift, 3 << RoundShift, 1 << RoundShift,
+                                            2 << RoundShift};
++  // Indexed by the host RMode field: Nearest, +Infinity, -Infinity, Zero. The ARM order
++  // differs from the x86 MXCSR order (Nearest, Down, Up, Zero), so this table is per arch.
++  static constexpr size_t HostToGuest[] = {0, 2, 3, 1};
+   // Exception enable bits (0 = exception disabled, ARM defaults to 0)
+   static constexpr u32 ExceptionMask = (1 << 8) |   // IOE - Invalid Operation
+                                        (1 << 9) |   // DZE - Division by Zero
+@@ -85,5 +92,17 @@
+ #else
+ #error "Missing implementation for FPSCR."
+ #endif
++
++// Build-time check: every PowerPC rounding mode (FPSCR[RN] 0..3) survives guest -> host ->
++// guest, so mffs reads back what mtfsf wrote.
++constexpr bool FPSCRRoundTablesInvert() {
++  for (size_t mode = 0; mode < 4; ++mode) {
++    size_t host = FPSCRPlatform::GuestToHost[mode];
++    if ((host & ~FPSCRPlatform::RoundMaskVal) != 0) return false;
++    if (FPSCRPlatform::HostToGuest[host >> FPSCRPlatform::RoundShift] != mode) return false;
++  }
++  return true;
++}
++static_assert(FPSCRRoundTablesInvert(), "FPSCR GuestToHost/HostToGuest must invert each other");
+ 
+ }  // namespace rex::platform
+--- a/include/rex/ppc/context.h
++++ b/include/rex/ppc/context.h
+@@ -147,13 +147,20 @@
+ struct FPSCRRegister {
+   uint32_t csr;
+ 
+-  static constexpr size_t HostToGuest[] = {kRoundNearest, kRoundDown, kRoundUp, kRoundTowardZero};
+-
+   using Platform = platform::FPSCRPlatform;
+   static constexpr size_t RoundShift = Platform::RoundShift;
+   static constexpr size_t RoundMaskVal = Platform::RoundMaskVal;
+   static constexpr size_t FlushMask = Platform::FlushMask;
+ 
++  // Host rounding field -> guest RN. Per arch: the ARM FPCR RMode order (N, +Inf, -Inf, Z)
++  // is not the x86 MXCSR order (N, -Inf, +Inf, Z). A shared x86-ordered table made mffs
++  // report round-up and round-down swapped on ARM64 (and a partial mtfsf write them back
++  // swapped).
++#define REX_FPSCR_HOST_TO_GUEST_PER_ARCH 1
++
++  static_assert(kRoundNearest == 0 && kRoundTowardZero == 1 && kRoundUp == 2 && kRoundDown == 3,
++                "PowerPC FPSCR[RN] encodings (platform/fpscr.h tables assume them)");
++
+   // Bits the guest owns; the rest is host policy seeded by InitHost.
+   static constexpr uint32_t GuestMask = uint32_t(RoundMaskVal) | uint32_t(FlushMask);
+ 
+@@ -168,7 +175,7 @@
+ 
+   inline uint32_t loadFromHost() noexcept {
+     csr = getcsr();
+-    return HostToGuest[(csr & RoundMaskVal) >> RoundShift];
++    return uint32_t(Platform::HostToGuest[(csr & RoundMaskVal) >> RoundShift]);
+   }
+ 
+   inline void storeFromGuest(uint32_t value) noexcept {

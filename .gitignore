@@ -1,0 +1,81 @@
+# --- Disc images and sidecars (never part of a contribution) ----------------
+*.[iI][sS][oO]
+*.[iI][sS][oO].*
+*.[dD][vV][dD]
+[iI][sS][oO]/
+
+# --- Extracted game content (at any depth; see README "How to extract") ------
+*.[xX][eE][xX]
+*.[xX][bB][eE]
+data/
+nxeart
+$SystemUpdate/
+# Keep any additional files extracted from the disc in this ignored folder.
+disc-content/
+
+# --- Local player saves and profiles (never part of a contribution) ----------
+saves/
+
+# --- Build artifacts --------------------------------------------------------
+out
+generated
+.pi
+nul
+pi-session-*.html
+
+# --- Runtime logs written next to the exe (may land in the root when running
+#     with --game_data_root) ---------------------------------------------------
+fable2_func_trace.log
+fable2_func_trace_prev.log
+fable2_func_summary.log
+fable2_func_summary_prev.log
+fps_probe.log
+
+# --- SDK / runtime artifacts ------------------------------------------------
+.fable2_image.bin
+
+# --- Local scratch (old build logs, screenshots, session exports,
+#     stray runtime content folders) ------------------------------------------
+.DS_Store
+/scratch/
+
+# --- Manifest backup (pre-rename safety copy) --------------------------------
+fable_2_manifest.toml.bak
+
+# --- Loose helper scripts & images at the repo root (kept out of the repo) -----
+# Scripts under tools/, tests/ and backends/ are tracked normally (until 2026-10-13 every *.py / *.sh was ignored
+# and whitelisted one by one, which left new tests untracked; the 2026-10-13 release audit).
+/*.ps1
+/*.py
+/*.sh
+*.png
+build_*.log
+rebuild.log
+rebuild2.log
+__pycache__/
+
+# --- Fetched/external toolchain deps (created by tools/setup_sdk*.cmd). -------
+# The tracked files in thirdparty/ (rexglue-sdk-local.patch,
+# rexglue-sdk-submodule-pins.txt, vulkan/, vk_video/) stay in the repo.
+thirdparty/rexglue-sdk-src/
+thirdparty/android-ndk/
+
+# --- Historical reference (pre-ReXGlue XenonRecomp configs) -------------------
+XenonRecomp
+TODO.md
+
+# Local AI session handoff notes (not for the repo)
+docs/chat-handoff.md
+# Private AI-agent workflow docs (slots, locks, agent shader cache, playtest copy, heavy tools). Kept on disk
+# in the main checkout; tools/fable2_slots.py links it into every agent slot. No trailing slash in the pattern:
+# the slot copy is a symlink, which a directory-only pattern would not match.
+/docs-private
+
+# Controller View-button screenshots (src/input/controller_hotkeys.h)
+Screenshots/
+
+# App copies placed in the project folder by the first-run setup (Install.command).
+/Fable II.app/
+/Fable II Dev Launcher.app/
+/.Fable II.app.*/
+/.Fable II Dev Launcher.app.*/

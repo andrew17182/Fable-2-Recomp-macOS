@@ -1,0 +1,10 @@
+$$ =============================================================================
+$$ Run this ONLY when standing at the Guild chest (after bd * to stop loading
+$$ noise). Clears all bps, sets just the two chest-gate functions with a fast
+$$ one-line print (no stack walk) so the game stays responsive.
+$$ Then click the chest.
+$$ =============================================================================
+bc *
+.echo === chest-click bps ready - click the chest now ===
+bp __imp__GuildChest_GetWebsiteItem_8256E368 ".printf \"[GetWebsiteItem] r3=%p r4=%p r5=%p r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); gc"
+bp __imp__GuildChest_GetCEContent_824B3528 ".printf \"[GetCEContent] r3=%p r4=%p r5=%p r31=%p lr=0x%p\\n\", poi(@rcx), poi(@rcx+0x20), poi(@rcx+0x28), poi(@rcx+0xF8), poi(@rcx+0x100); gc"

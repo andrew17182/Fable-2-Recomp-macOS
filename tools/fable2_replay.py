@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Replay guest pad snapshots against observed state transitions (no images)."""
+import argparse
+import json
+from pathlib import Path
+import time
+
+NEUTRAL = [0] * 7
+
+def clock_us():
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+
+
+def load_recording(path):
+    events = [json.loads(line) for line in Path(path).read_text().splitlines() if line]
+    if not events or events[0].get('state') != 'AppLaunch' or events[0].get('t_us') != 0:
+        raise ValueError('Recording must start with the AppLaunch anchor')
+    anchors = {}
+    previous_seq, previous_time = -1, -1
+    for event in events:
+        if event.get('schema') != 1 or event.get('type') not in ('state', 'key', 'pad', 'recording_end'):
+            raise ValueError('Unsupported recording schema/event')
+        if not isinstance(event.get('seq'), int) or event['seq'] <= previous_seq:
+            raise ValueError('Recording event sequence is not increasing')
+        if not isinstance(event.get('t_us'), int) or event['t_us'] < previous_time:
+            raise ValueError('Recording timestamps are not increasing')
+        previous_seq, previous_time = event['seq'], event['t_us']
+        if event['type'] == 'state' and event['state'] != 'Unknown':
+            anchors[event['seq']] = event
+        if event['anchor'] not in anchors:
+            raise ValueError('Input refers to a missing or future anchor')
+        if abs(event['dt_us'] - (event['t_us'] - anchors[event['anchor']]['t_us'])) > 1000:
+            raise ValueError('Inconsistent anchor-relative timing')
+        if event['type'] == 'pad':
+            pad = event.get('pad')
+            limits = [(0, 65535), (0, 255), (0, 255)] + [(-32768, 32767)] * 4
+            if not isinstance(pad, list) or len(pad) != 7 or any(
+                    type(v) is not int or not lo <= v <= hi for v, (lo, hi) in zip(pad, limits)):
+                raise ValueError('Invalid controller snapshot')
+    if not any(e['type'] == 'pad' for e in events):
+        raise ValueError('Recording contains no guest controller samples')
+    if events[-1]['type'] != 'recording_end':
+        # EOF is a stop at the last recorded timestamp. Keep this terminal event
+        # in memory only: the original trace is never rewritten.
+        last = events[-1]
+        events.append(dict(schema=1, seq=last['seq'] + 1, type='recording_end',
+                           t_us=last['t_us'], anchor=last['anchor'], dt_us=last['dt_us']))
+    return events
+
+
+def atomic_write(path, value):
+    temp = path.with_suffix(path.suffix + '.tmp')
+    temp.write_text(value)
+    temp.replace(path)
+
+
+class Replay:
+    def __init__(self, recording, session, timeout=60):
+        self.events = load_recording(recording)
+        self.session = Path(session)
+        self.folder = self.session / 'test-state/control'
+        self.origin = json.loads((self.session / 'session.json').read_text())['origin_us']
+        self.timeout = timeout
+        self.pad = NEUTRAL.copy()
+        self.live = []
+        self.cursor = 0
+        self.anchor_times = {0: 0}
+        self.matched = []
+
+    def status(self, state, **fields):
+        atomic_write(self.folder / 'replay-status.json', json.dumps(
+            dict(status=state, matched=self.matched, **fields), indent=2) + '\n')
+
+    def publish(self, active=True):
+        # Refresh the lease while waiting; a crash cannot leave a stick held.
+        lease = clock_us() + 500000
+        atomic_write(self.folder / 'replay-pad.txt',
+                     ' '.join(map(str, [int(active), lease, *self.pad])) + '\n')
+
+    def tick(self):
+        if (self.folder / 'cancel-replay').exists():
+            raise RuntimeError('Replay cancelled')
+        self.publish()
+        time.sleep(.005)
+
+    def read_live(self):
+        path = self.folder / 'events.jsonl'
+        if not path.exists(): return []
+        events = []
+        for line in path.read_text().splitlines():
+            try: event = json.loads(line)
+            except json.JSONDecodeError: continue
+            if event['type'] == 'state' and event['state'] != 'Unknown': events.append(event)
+        return events
+
+    def sync(self, anchor):
+        if anchor['seq'] in self.anchor_times: return self.anchor_times[anchor['seq']]
+        deadline = time.monotonic() + self.timeout
+        self.status('waiting', expected=anchor['state'])
+        while time.monotonic() < deadline:
+            live = self.read_live()
+            while self.cursor < len(live):
+                event = live[self.cursor]
+                self.cursor += 1
+                if event['state'] == anchor['state']:
+                    self.anchor_times[anchor['seq']] = event['t_us']
+                    self.matched.append({'state': anchor['state'], 'recorded_seq': anchor['seq'],
+                                         'live_seq': event['seq']})
+                    return event['t_us']
+            self.tick()
+        raise TimeoutError('No matching transition: ' + anchor['state'])
+
+    def run(self):
+        try:
+            self.status('running')
+            anchors = {e['seq']: e for e in self.events if e['type'] == 'state' and e['state'] != 'Unknown'}
+            # Match reliable transitions in recorded order, including ones with
+            # no subsequent input. Unknown never resets the replay clock.
+            for event in self.events:
+                if event['type'] == 'state' and event['state'] != 'Unknown':
+                    self.sync(event)
+                elif event['type'] in ('pad', 'recording_end'):
+                    target = self.sync(anchors[event['anchor']]) + event['dt_us']
+                    while clock_us() - self.origin < target:
+                        self.tick()
+                    if event['type'] == 'pad':
+                        self.pad = event['pad']
+                        self.publish()
+            self.status('complete')
+        except Exception as error:
+            self.status('failed', error=str(error))
+        finally:
+            self.pad = NEUTRAL.copy()
+            # Leave a short neutral override, then automatically return control
+            # to the human. Natural inputs are never permanently disabled.
+            self.publish()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('recording', type=Path)
+    parser.add_argument('session', type=Path)
+    parser.add_argument('--timeout', type=float, default=60)
+    args = parser.parse_args()
+    Replay(args.recording, args.session, args.timeout).run()
+
+
+if __name__ == '__main__': main()

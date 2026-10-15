@@ -1,0 +1,18 @@
+// [tile-resolve prewarm] default keys: every tile pipeline used in Bower Lake, Old Tomb and
+// Bowerstone Old Town at 1x-3x (2026-10-13). <library>|<8 colour pixel formats>|<samples>.
+"resolve_host_color_32bpp_1xmsaa_rtt_tile|70|0|0|0|0|0|0|0|1",
+"resolve_host_color_32bpp_1xmsaa_rtt_tile|90|0|0|0|0|0|0|0|1",
+"resolve_host_color_32bpp_1xmsaa_scaled_rtt_tile|70|0|0|0|0|0|0|0|1",
+"resolve_host_color_32bpp_1xmsaa_scaled_rtt_tile|90|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_16bpp_1xmsaa_rtt_tile|70|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_16bpp_1xmsaa_scaled_rtt_tile|70|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_32bpp_1xmsaa_rtt_tile|90|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_32bpp_1xmsaa_scaled_rtt_tile|90|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_32bpp_4xmsaa_rtt_tile|70|0|0|0|0|0|0|0|4",
+"resolve_host_color_full_32bpp_4xmsaa_scaled_rtt_tile|70|0|0|0|0|0|0|0|4",
+"resolve_host_color_full_64bpp_1xmsaa_rtt_tile|115|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_64bpp_1xmsaa_scaled_rtt_tile|115|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_64bpp_2xmsaa_rtt_tile|115|0|0|0|0|0|0|0|2",
+"resolve_host_color_full_64bpp_2xmsaa_scaled_rtt_tile|115|0|0|0|0|0|0|0|2",
+"resolve_host_color_full_8bpp_1xmsaa_rtt_tile|70|0|0|0|0|0|0|0|1",
+"resolve_host_color_full_8bpp_1xmsaa_scaled_rtt_tile|70|0|0|0|0|0|0|0|1",

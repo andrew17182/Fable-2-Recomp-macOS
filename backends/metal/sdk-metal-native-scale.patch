@@ -1,0 +1,291 @@
+# Fable II recomp: native-resolution (1x) render targets at draw resolution scale > 1:
+# shadow maps (FABLE2_SHADOWS_NATIVE) and effect targets (FABLE2_EFFECTS_NATIVE_TARGETS).
+# docs/resolution-scale.md section 16. Applied after sdk-metal.patch to the Metal plugin's SDK tree.
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -263,6 +263,11 @@
+       uint32_t is_depth : 1;                                      // 22
+       // Ignoring the blending precision.
+       uint32_t resource_format : xenos::kRenderTargetFormatBits;  // 26
++      // Fable II recomp: render target kept at native (1x) resolution while
++      // the draw resolution is scaled (effect and shadow-map targets). Only
++      // set by implementations of NativeScaleRenderTargets; a different key
++      // from the full-scale one.
++      uint32_t native_scale : 1;  // 27
+     };
+ 
+     RenderTargetKey() : key(0) { static_assert_size(*this, sizeof(key)); }
+@@ -318,9 +323,9 @@
+     }
+ 
+     std::string GetDebugName() const {
+-      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}", base_tiles,
++      return fmt::format("RT @ {}t, <{}t>, {}xMSAA, {}{}", base_tiles,
+                          GetPitchTiles(), uint32_t(1) << uint32_t(msaa_samples),
+-                         GetFormatName());
++                         GetFormatName(), native_scale ? ", native" : "");
+     }
+   };
+ 
+@@ -527,6 +532,26 @@
+   // false).
+   virtual bool IsHostDepthEncodingDifferent(
+       xenos::DepthRenderTargetFormat format) const = 0;
++
++  // Fable II recomp: which render targets of a draw (bit 0 depth, bits 1-4
++  // colour; with the given surface pitch, MSAA and EDRAM bases) are kept at
++  // native resolution while the draw resolution is scaled. A pass never mixes
++  // scales: return 0 or all of used_rts_bits. Called for every draw that
++  // binds something, so the implementation may learn from other draws too.
++  virtual uint32_t NativeScaleRenderTargets(uint32_t pitch_tiles_at_32bpp,
++                                            xenos::MsaaSamples msaa_samples,
++                                            uint32_t used_rts_bits,
++                                            const uint32_t* edram_bases) {
++    return 0;
++  }
++  // Latest owner of an EDRAM tile (empty key if none).
++  RenderTargetKey GetTileOwner(uint32_t tile) const;
++  // Fable II recomp: for implementations that move tiles between the
++  // native-scale and the scaled variant of a render target before a resolve.
++  RenderTarget* GetOrCreateRenderTargetForTileConversion(RenderTargetKey key);
++  void ChangeOwnershipForTileConversion(
++      RenderTargetKey dest, uint32_t start_tiles_base_relative,
++      uint32_t length_tiles, std::vector<Transfer>* transfers_append_out);
+ 
+   void ResetAccumulatedRenderTargets() {
+     are_accumulated_render_targets_valid_ = false;
+--- a/include/rex/graphics/pipeline/shader/dxbc_translator.h
++++ b/include/rex/graphics/pipeline/shader/dxbc_translator.h
+@@ -195,6 +195,11 @@
+       // Only RT0 is supported for now.
+       xenos::BlendFactor rt0_blend_rgb_factor_for_premult : 5;
+       xenos::BlendFactor rt0_blend_a_factor_for_premult : 5;
++      // Fable II recomp: drawing to a native-resolution (1x) render target
++      // while the draw resolution is scaled - the pixel position (PsParamGen,
++      // memexport sample selection) is not scaled. Texture fetches still use
++      // the draw resolution scale for resolution-scaled textures.
++      uint32_t render_target_native_scale : 1;
+     } pixel;
+ 
+     explicit Modification(uint64_t modification_value = 0)
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -100,6 +100,11 @@
+   virtual void BeginFrame();
+ 
+   void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
++  // Fable II recomp: a resolve that wrote unscaled data to shared memory while
++  // the draw resolution is scaled (from a native-resolution render target).
++  // Drops the scaled-resolve marking of the range and invalidates textures.
++  void MarkRangeAsResolvedUnscaled(uint32_t start_unscaled,
++                                   uint32_t length_unscaled);
+   // Ensures the memory backing the range in the scaled resolve address space is
+   // allocated and returns whether it is.
+   virtual bool EnsureScaledResolveMemoryCommitted(
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -808,6 +808,16 @@
+                      << (((rts_are_64bpp >> rt_base_last.second) & 1) ^ 1));
+   }
+ 
++  // Fable II recomp: render targets at native resolution for this draw.
++  const uint32_t native_scale_rts =
++      interlock_barrier_only
++          ? 0u
++          : (NativeScaleRenderTargets(pitch_tiles_at_32bpp, msaa_samples,
++                                      depth_and_color_rts_used_bits,
++                                      edram_bases) &
++             depth_and_color_rts_used_bits);
++  const bool pass_native_scale = native_scale_rts != 0;
++
+   // Make sure all the needed render targets are created, and gather lengths of
+   // ranges used by each render target.
+   RenderTargetKey rt_keys[1 + xenos::kMaxColorRenderTargets];
+@@ -827,6 +837,7 @@
+     rt_key.msaa_samples = msaa_samples;
+     rt_key.is_depth = rt_bit_index == 0;
+     rt_key.resource_format = resource_formats[rt_bit_index];
++    rt_key.native_scale = (native_scale_rts >> rt_bit_index) & 1;
+     if (!interlock_barrier_only) {
+       RenderTarget* render_target = GetOrCreateRenderTarget(rt_key);
+       if (!render_target) {
+@@ -922,7 +933,9 @@
+       } else {
+         RenderTargetKey accumulated_rt_key = accumulated_rt->key();
+         if (accumulated_rt_key.pitch_tiles_at_32bpp != pitch_tiles_at_32bpp ||
+-            accumulated_rt_key.msaa_samples != msaa_samples) {
++            accumulated_rt_key.msaa_samples != msaa_samples ||
++            // Fable II recomp: all attachments of a pass have one scale.
++            accumulated_rt_key.native_scale != uint32_t(pass_native_scale)) {
+           // The previously bound render target is incompatible with the
+           // current surface info.
+           are_accumulated_render_targets_valid_ = false;
+@@ -1299,6 +1312,19 @@
+     depth_render_target_key.is_depth = 1;
+     depth_render_target_key.resource_format =
+         resolve_info.depth_edram_info.format;
++    {
++      // Fable II recomp: clear the native-resolution variant if that is what
++      // currently owns the cleared tiles.
++      RenderTargetKey owner = GetTileOwner(
++          (resolve_info.depth_original_base +
++           depth_clear_start_tiles_base_relative) &
++          (xenos::kEdramTileCount - 1));
++      RenderTargetKey native_key = depth_render_target_key;
++      native_key.native_scale = 1;
++      if (owner == native_key) {
++        depth_render_target_key = native_key;
++      }
++    }
+     depth_render_target = GetOrCreateRenderTarget(depth_render_target_key);
+     if (!depth_render_target) {
+       // Failed to create the depth render target, don't clear it.
+@@ -1315,6 +1341,19 @@
+     color_render_target_key.is_depth = 0;
+     color_render_target_key.resource_format = uint32_t(GetColorResourceFormat(
+         xenos::ColorRenderTargetFormat(resolve_info.color_edram_info.format)));
++    {
++      // Fable II recomp: clear the native-resolution variant if that is what
++      // currently owns the cleared tiles.
++      RenderTargetKey owner = GetTileOwner(
++          (resolve_info.color_original_base +
++           color_clear_start_tiles_base_relative) &
++          (xenos::kEdramTileCount - 1));
++      RenderTargetKey native_key = color_render_target_key;
++      native_key.native_scale = 1;
++      if (owner == native_key) {
++        color_render_target_key = native_key;
++      }
++    }
+     color_render_target = GetOrCreateRenderTarget(color_render_target_key);
+     if (!color_render_target) {
+       // Failed to create the color render target, don't clear it.
+@@ -1407,6 +1446,32 @@
+   }
+   ownership_ranges_.clear();
+   ownership_ranges_.emplace(0, empty_range);
++}
++
++RenderTargetCache::RenderTargetKey RenderTargetCache::GetTileOwner(
++    uint32_t tile) const {
++  auto it = ownership_ranges_.upper_bound(tile);
++  if (it == ownership_ranges_.begin()) {
++    return RenderTargetKey();
++  }
++  --it;
++  if (it->second.end_tiles <= tile) {
++    return RenderTargetKey();
++  }
++  return it->second.render_target;
++}
++
++RenderTargetCache::RenderTarget*
++RenderTargetCache::GetOrCreateRenderTargetForTileConversion(
++    RenderTargetKey key) {
++  return GetOrCreateRenderTarget(key);
++}
++
++void RenderTargetCache::ChangeOwnershipForTileConversion(
++    RenderTargetKey dest, uint32_t start_tiles_base_relative,
++    uint32_t length_tiles, std::vector<Transfer>* transfers_append_out) {
++  ChangeOwnership(dest, start_tiles_base_relative, length_tiles,
++                  transfers_append_out);
+ }
+ 
+ RenderTargetCache::RenderTarget* RenderTargetCache::GetOrCreateRenderTarget(
+--- a/src/graphics/pipeline/shader/dxbc_translator.cpp
++++ b/src/graphics/pipeline/shader/dxbc_translator.cpp
+@@ -688,6 +688,15 @@
+   bool uses_register_dynamic_addressing =
+       current_shader().uses_register_dynamic_addressing();
+   Modification shader_modification = GetDxbcShaderModification();
++  // Fable II recomp: the render target's own resolution scale.
++  const uint32_t rt_scale_x =
++      shader_modification.pixel.render_target_native_scale
++          ? 1u
++          : draw_resolution_scale_x_;
++  const uint32_t rt_scale_y =
++      shader_modification.pixel.render_target_native_scale
++          ? 1u
++          : draw_resolution_scale_y_;
+ 
+   // param_gen_interpolator is already 4 bits, no need for an interpolator count
+   // safety check.
+@@ -736,16 +745,15 @@
+     a_.OpRoundNI(dxbc::Dest::R(param_gen_temp, 0b0011),
+                  dxbc::Src::V1D(in_reg_ps_position_));
+     uint32_t resolution_scaled_axes =
+-        uint32_t(draw_resolution_scale_x_ > 1) |
+-        (uint32_t(draw_resolution_scale_y_ > 1) << 1);
++        uint32_t(rt_scale_x > 1) | (uint32_t(rt_scale_y > 1) << 1);
+     if (resolution_scaled_axes) {
+       // Revert resolution scale - after truncating, so if the pixel position
+       // is passed to tfetch (assuming the game doesn't round it by itself),
+       // it will be sampled with higher resolution too.
+       a_.OpMul(dxbc::Dest::R(param_gen_temp, resolution_scaled_axes),
+                dxbc::Src::R(param_gen_temp),
+-               dxbc::Src::LF(1.0f / draw_resolution_scale_x_,
+-                             1.0f / draw_resolution_scale_y_, 1.0f, 1.0f));
++               dxbc::Src::LF(1.0f / rt_scale_x, 1.0f / rt_scale_y, 1.0f,
++                             1.0f));
+     }
+     if (shader_modification.pixel.param_gen_point) {
+       // A point - always front-facing (the upper bit of X is 0), not a line
+@@ -809,8 +817,7 @@
+     dxbc::Src memexport_enabled_src(dxbc::Src::R(
+         system_temp_memexport_enabled_and_eM_written_, dxbc::Src::kXXXX));
+     uint32_t resolution_scaled_axes =
+-        uint32_t(draw_resolution_scale_x_ > 1) |
+-        (uint32_t(draw_resolution_scale_y_ > 1) << 1);
++        uint32_t(rt_scale_x > 1) | (uint32_t(rt_scale_y > 1) << 1);
+     if (resolution_scaled_axes) {
+       uint32_t memexport_condition_temp = PushSystemTemp();
+       // Only do memexport for one host pixel in a guest pixel - prefer the
+@@ -824,12 +831,10 @@
+       a_.OpUDiv(dxbc::Dest::Null(),
+                 dxbc::Dest::R(memexport_condition_temp, resolution_scaled_axes),
+                 dxbc::Src::R(memexport_condition_temp),
+-                dxbc::Src::LU(draw_resolution_scale_x_,
+-                              draw_resolution_scale_y_, 0, 0));
++                dxbc::Src::LU(rt_scale_x, rt_scale_y, 0, 0));
+       a_.OpIEq(dxbc::Dest::R(memexport_condition_temp, resolution_scaled_axes),
+                dxbc::Src::R(memexport_condition_temp),
+-               dxbc::Src::LU(draw_resolution_scale_x_ >> 1,
+-                             draw_resolution_scale_y_ >> 1, 0, 0));
++               dxbc::Src::LU(rt_scale_x >> 1, rt_scale_y >> 1, 0, 0));
+       for (uint32_t i = 0; i < 2; ++i) {
+         if (!(resolution_scaled_axes & (1 << i))) {
+           continue;
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -299,6 +299,30 @@
+   shared_memory().RangeWrittenByGpu(start_unscaled, length_unscaled);
+ }
+ 
++void TextureCache::MarkRangeAsResolvedUnscaled(uint32_t start_unscaled,
++                                               uint32_t length_unscaled) {
++  if (length_unscaled == 0) {
++    return;
++  }
++  start_unscaled &= 0x1FFFFFFF;
++  length_unscaled = std::min(length_unscaled, 0x20000000 - start_unscaled);
++  if (IsDrawResolutionScaled()) {
++    uint32_t page_first = start_unscaled >> 12;
++    uint32_t page_last = (start_unscaled + length_unscaled - 1) >> 12;
++    auto global_lock = global_critical_region_.Acquire();
++    for (uint32_t page = page_first; page <= page_last; ++page) {
++      uint32_t block = page >> 5;
++      scaled_resolve_pages_[block] &= ~(UINT32_C(1) << (page & 31));
++      if (!scaled_resolve_pages_[block]) {
++        scaled_resolve_pages_l2_[block >> 6] &= ~(UINT64_C(1) << (block & 63));
++      }
++    }
++  }
++  // Invalidate textures (scaled ones over this range are re-created
++  // unscaled, since the range is no longer marked as scaled).
++  shared_memory().RangeWrittenByGpu(start_unscaled, length_unscaled);
++}
++
+ uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle,
+                                           uint32_t host_format_swizzle) {
+   uint32_t host_swizzle = 0;

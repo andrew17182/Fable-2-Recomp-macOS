@@ -1,0 +1,81 @@
+SDK codegen: emit host fences for PowerPC sync / lwsync (opt-in manifest key memory_barriers).
+Phase B item B3 (docs/sdk-from-source.md). Applied by tools/build_sdk_from_source.py
+(SDK_BEHAVIOUR_PATCHES); it changes the rexglue binary (codegen) and rex/ppc/intrinsics.h.
+Codegen emitted nothing for sync/lwsync ("x86 has strong ordering"); ARM64 is weakly ordered
+like the Xenon. With memory_barriers = true, codegen writes REX_GUEST_SYNC() (seq_cst fence)
+after each sync and REX_GUEST_LWSYNC() (acq_rel fence) after each lwsync, right after the
+instruction's comment line, which is where tools/apply_recomp_patches.py inserted its fences.
+eieio stays a no-op, as in the post-pass. Default off: output is unchanged unless a manifest
+opts in. The macros default to std::atomic_thread_fence and can be redefined by the project;
+src/core/fable2_guest_memory.h maps them to FABLE2_GUEST_SYNC / LWSYNC so FABLE2_GUEST_BARRIERS=0
+still disables them at run time. The post-pass skips lines already fenced either way.
+
+--- a/include/rex/codegen/config.h
++++ b/include/rex/codegen/config.h
+@@ -93,6 +93,9 @@
+   bool xerAsLocalVariable = false;
+   bool reservedRegisterAsLocalVariable = false;
+   bool skipMsr = false;
++  // Emit host fences for PowerPC sync / lwsync (REX_GUEST_SYNC / REX_GUEST_LWSYNC).
++  // Needed on weakly ordered hosts (ARM64); manifest key memory_barriers.
++  bool emitMemoryBarriers = false;
+   bool crRegistersAsLocalVariables = false;
+   bool nonArgumentRegistersAsLocalVariables = false;
+   bool nonVolatileRegistersAsLocalVariables = false;
+--- a/include/rex/ppc/intrinsics.h	2026-10-09 14:37:37
++++ b/include/rex/ppc/intrinsics.h	2026-10-09 14:37:37
+@@ -28,6 +28,17 @@
+ 
+ #include <rex/types.h>
+ 
++// Host fences for PowerPC sync / lwsync, emitted by codegen when the manifest
++// sets memory_barriers = true. A project may #undef and redefine them (for
++// example to add a runtime switch) before the generated code is compiled.
++#include <atomic>
++#ifndef REX_GUEST_SYNC
++#define REX_GUEST_SYNC() std::atomic_thread_fence(std::memory_order_seq_cst)
++#endif
++#ifndef REX_GUEST_LWSYNC
++#define REX_GUEST_LWSYNC() std::atomic_thread_fence(std::memory_order_acq_rel)
++#endif
++
+ namespace rex::ppc {
+ 
+ //=============================================================================
+--- a/src/codegen/builders/system.cpp	2026-10-09 14:37:37
++++ b/src/codegen/builders/system.cpp	2026-10-09 14:37:37
+@@ -31,14 +31,19 @@
+ }
+ 
+ bool build_sync(BuilderContext& ctx) {
+-  // Memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  // Full memory barrier. x86 is strongly ordered, but ARM64 (like the Xenon) is
++  // not: guest loads/stores are plain accesses the host may reorder.
++  if (ctx.config().emitMemoryBarriers) {
++    ctx.println("\tREX_GUEST_SYNC();");
++  }
+   return true;
+ }
+ 
+ bool build_lwsync(BuilderContext& ctx) {
+-  // Lightweight memory barrier, x86 has strong ordering so this is a no-op
+-  (void)ctx;
++  // Lightweight memory barrier (orders everything except store -> load).
++  if (ctx.config().emitMemoryBarriers) {
++    ctx.println("\tREX_GUEST_LWSYNC();");
++  }
+   return true;
+ }
+ 
+--- a/src/codegen/config.cpp
++++ b/src/codegen/config.cpp
+@@ -116,6 +116,8 @@
+             hasBool("non_volatile_as_local"), "non_volatile_as_local");
+   MergeBool(cfg.generateExceptionHandlers, toml["generate_exception_handlers"].value_or(false),
+             hasBool("generate_exception_handlers"), "generate_exception_handlers");
++  MergeBool(cfg.emitMemoryBarriers, toml["memory_barriers"].value_or(false),
++            hasBool("memory_barriers"), "memory_barriers");
+   if (hasBool("is_dll")) {
+     cfg.isDll = toml["is_dll"].value_or(false);
+   }

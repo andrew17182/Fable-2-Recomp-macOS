@@ -1,0 +1,305 @@
+Thread exit: async-signal-safe suspend/callback signals; quit without SDL's watch lock (2026-10-14).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). No switch (crash fix).
+
+Crash (Flash Kit on an M3 Pro, while the kit closed the game): EXC_BREAKPOINT "Trying to
+recursively lock an os_unfair_lock" on a guest thread inside pthread_exit. TerminateTitle wakes
+guest threads with SignalAllWaitableObjects and then sends each one a SIGUSR2 user-callback hint;
+threads woken by the first step are already self-exiting. rex::thread::signal_handler loaded the
+thread_local current_thread_ at entry (the compiler hoists the TLV thunk above the SIGUSR2
+early-out), and on Darwin every thread_local is a dyld TLV block allocated by malloc on first
+access and freed by a pthread key destructor. A signal landing during pthread_exit's TSD cleanup
+(which holds the malloc metapool lock while freeing) re-instantiated the block: malloc ->
+recursive unfair lock -> abort. __thread / initial-exec does not help on Mach-O (same TLV path).
+
+- threading_posix.cpp: the handler finds its thread through a pthread key (pthread_getspecific
+  reads the TSD slot, no allocation); every exit path (start routine return, Terminate on self,
+  main-thread Thread::Exit) blocks SIGUSR1/SIGUSR2 and clears the slot first, so later signals
+  stay pending and die with the thread. QueueUserCallback and Suspend skip a kFinished thread and
+  send the signal with state_mutex_ held (an exiting thread blocks the signals before it takes
+  that mutex to publish kFinished, so the target still exists): no more "QueueUserCallback:
+  signal delivery failed (3)" (ESRCH on a dead thread; ~6 per close before).
+- kernel_state.cpp: TerminateTitle does not signal targets that already cleared running_, and
+  names the threads still running when its 200 ms cooperative-exit timeout expires.
+- windowed_app_context_sdl.cpp: WatchEvent handles SDL_EVENT_QUIT inside SDL's event-watch
+  dispatch, so SDL's watcher lock is held for all of OnClosing/TerminateTitle; a guest thread
+  queueing UI work (CallInUIThread -> wakeup SDL_PushEvent, e.g. XamInputGetState's keyboard
+  refresh) blocked on it and became a straggler. While a quit is in progress, wakeups from
+  non-UI threads are skipped (the function stays queued; one wakeup is sent if the close is
+  vetoed).
+- thread.h: REX_THREAD_EXIT_SIGNAL_SAFE (tests/thread_exit_signal_tests.cpp skips without it).
+
+--- a/include/rex/thread.h
++++ b/include/rex/thread.h
+@@ -10,6 +10,10 @@
+  */
+ 
+ #pragma once
++
++// Thread suspend/user-callback signals are async-signal-safe during thread exit
++// (patches/sdk/thread-exit-signal-safe.patch).
++#define REX_THREAD_EXIT_SIGNAL_SAFE 1
+ 
+ #include <algorithm>
+ #include <atomic>
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -193,7 +193,43 @@
+ 
+ static void signal_handler(int signal, siginfo_t* info, void* context);
+ 
++// Thread-exit signal safety (patches/sdk/thread-exit-signal-safe.patch).
++// The suspend/user-callback signal handler must not touch a C++ thread_local:
++// on Darwin every thread_local (even a constant-initialised POD, and __thread)
++// lives in a dyld TLV block that is allocated with malloc on a thread's first
++// access and freed by a pthread key destructor in pthread_exit. A signal that
++// lands while the thread is inside pthread_exit's TSD cleanup (holding the
++// malloc zone lock) re-instantiates the block -> malloc -> "recursively lock an
++// os_unfair_lock" abort. The handler therefore finds its thread through a
++// pthread key (pthread_getspecific reads the TSD slot directly: no allocation),
++// and threads block these signals before they start exiting.
++static pthread_key_t signal_thread_key_;
++static pthread_once_t signal_thread_key_once_ = PTHREAD_ONCE_INIT;
++static void create_signal_thread_key() {
++  if (pthread_key_create(&signal_thread_key_, nullptr) != 0) {
++    assert_always();
++  }
++}
++static void ensure_signal_thread_key() {
++  pthread_once(&signal_thread_key_once_, create_signal_thread_key);
++}
++
++// Blocks the runtime's thread signals on the calling thread for the rest of its
++// life and forgets the thread's signal target. Called before a thread publishes
++// that it has finished and before pthread_exit / returning from the start
++// routine; signals sent after this stay pending and die with the thread.
++static void block_thread_signals_for_exit() {
++  sigset_t set;
++  sigemptyset(&set);
++  sigaddset(&set, GetSystemSignal(SignalType::kThreadSuspend));
++  sigaddset(&set, GetSystemSignal(SignalType::kThreadUserCallback));
++  pthread_sigmask(SIG_BLOCK, &set, nullptr);
++  ensure_signal_thread_key();
++  pthread_setspecific(signal_thread_key_, nullptr);
++}
++
+ void install_signal_handler(SignalType type) {
++  ensure_signal_thread_key();
+   bool expected = false;
+   if (!signal_handler_installed[static_cast<size_t>(type)].compare_exchange_strong(expected,
+                                                                                    true)) {
+@@ -1077,6 +1113,16 @@
+       return;
+     }
+ 
++    // A thread that has published kFinished is exiting (or gone): it will never
++    // drain the queue, and pthread_kill on a dead pthread_t is undefined (ESRCH
++    // "signal delivery failed (3)" at title termination). The signal is sent
++    // with state_mutex_ held: an exiting thread blocks the signals before it
++    // takes this mutex to publish kFinished, so a thread seen as not finished
++    // here still exists, and a late signal stays pending until it dies.
++    std::unique_lock<std::mutex> state_lock(state_mutex_);
++    if (state_ == State::kFinished) {
++      return;
++    }
+ #if defined(__APPLE__)
+     // macOS has no sigqueue/pthread_sigqueue; pthread_kill delivers the signal
+     // without the sigval payload.
+@@ -1091,6 +1137,7 @@
+     int result = pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback), value);
+ #endif
+ #endif
++    state_lock.unlock();
+     if (result != 0) {
+       REXSYS_WARN("QueueUserCallback: signal delivery failed ({})", result);
+     }
+@@ -1146,26 +1193,33 @@
+     }
+     WaitStarted();
+     bool is_current_thread = pthread_self() == thread_;
+-    {
+-      std::unique_lock<std::mutex> lock(state_mutex_);
+-      if (out_previous_suspend_count) {
+-        *out_previous_suspend_count = suspend_count_;
+-      }
+-      state_ = State::kSuspended;
+-      ++suspend_count_;
++    std::unique_lock<std::mutex> lock(state_mutex_);
++    if (state_ == State::kFinished) {
++      // Exiting or gone: nothing to suspend, and the signal must not reach it.
++      return false;
++    }
++    if (out_previous_suspend_count) {
++      *out_previous_suspend_count = suspend_count_;
+     }
++    state_ = State::kSuspended;
++    ++suspend_count_;
+ 
+     if (is_current_thread) {
++      lock.unlock();
+       WaitSuspended();
+       return true;
+     }
+ 
++    // Sent under state_mutex_, as in QueueUserCallback: the target still exists.
+     int result = pthread_kill(thread_, GetSystemSignal(SignalType::kThreadSuspend));
+     return result == 0;
+   }
+ 
+   void Terminate(int exit_code) {
+     bool is_current_thread = pthread_self() == thread_;
++    if (is_current_thread) {
++      block_thread_signals_for_exit();
++    }
+     {
+       std::unique_lock<std::mutex> lock(state_mutex_);
+       if (state_ == State::kFinished) {
+@@ -1628,6 +1682,8 @@
+ 
+   current_thread_ = thread;
+   current_thread_condition_ = &thread->handle_;
++  ensure_signal_thread_key();
++  pthread_setspecific(signal_thread_key_, thread);
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+     thread->handle_.state_ = create_suspended ? State::kSuspended : State::kRunning;
+@@ -1650,6 +1706,7 @@
+ 
+   start_routine();
+ 
++  block_thread_signals_for_exit();
+   {
+     std::unique_lock<std::mutex> lock(thread->handle_.state_mutex_);
+     thread->handle_.state_ = State::kFinished;
+@@ -1701,6 +1758,7 @@
+ 
+   current_thread_ = new PosixThread(handle);
+   current_thread_condition_ = &current_thread_->condition();
++  pthread_setspecific(signal_thread_key_, current_thread_);
+   // TODO(bwrsandman): Disabling deleting thread_local current thread to prevent
+   //                   assert in destructor. Since this is thread local, the
+   //                   "memory leaking" is controlled.
+@@ -1714,6 +1772,7 @@
+     current_thread_->Terminate(exit_code);
+   } else {
+     // Should only happen with the main thread
++    block_thread_signals_for_exit();
+     pthread_exit(reinterpret_cast<void*>(exit_code));
+   }
+   // Function must not return
+@@ -1736,10 +1795,13 @@
+ static void signal_handler(int signal, siginfo_t* /*info*/, void* /*context*/) {
+   switch (GetSystemSignalType(signal)) {
+     case SignalType::kThreadSuspend: {
+-      if (!current_thread_) {
++      // No thread_local here (see signal_thread_key_): the TSD slot read is
++      // allocation-free and is cleared before the thread starts exiting.
++      auto* thread = static_cast<PosixThread*>(pthread_getspecific(signal_thread_key_));
++      if (!thread) {
+         return;
+       }
+-      current_thread_->WaitSuspended();
++      thread->WaitSuspended();
+     } break;
+     case SignalType::kThreadUserCallback: {
+       // Callbacks are drained from alertable waits in normal thread context.
+--- a/src/system/kernel_state.cpp
++++ b/src/system/kernel_state.cpp
+@@ -969,7 +969,19 @@
+         break;
+       }
+     }
+-    if (all_exited || clock::now() >= deadline) {
++    if (all_exited) {
++      return;
++    }
++    if (clock::now() >= deadline) {
++      // Name the stragglers once (they are left running; the caller hard-exits).
++      std::string names;
++      for (auto& thread : threads) {
++        if (thread->is_running()) {
++          names += fmt::format(" [{}]", thread->thread() ? thread->thread()->name()
++                                                           : fmt::format("{:08X}", thread->thread_id()));
++        }
++      }
++      REXSYS_INFO("TerminateTitle: {} ms cooperative exit timeout; still running:{}", timeout_ms, names);
+       return;
+     }
+     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+@@ -1000,6 +1012,12 @@
+   // callback per target (alertable waits/delays).
+   SignalAllWaitableObjects();
+   for (auto& thread : target_threads) {
++    // SignalAllWaitableObjects above already lets many threads self-exit; a
++    // thread that cleared running_ is inside XThread::Exit / pthread_exit and
++    // must not be signalled (the host thread also skips kFinished threads).
++    if (!thread->is_running()) {
++      continue;
++    }
+     thread->thread()->QueueUserCallback([] {});
+   }
+ 
+--- a/src/ui/windowed_app_context_sdl.cpp
++++ b/src/ui/windowed_app_context_sdl.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <rex/ui/windowed_app_context_sdl.h>
+ 
++#include <atomic>
+ #include <cstdlib>
+ #include <string>
+ #include <vector>
+@@ -25,6 +26,20 @@
+ 
+ namespace rex::ui {
+ 
++namespace {
++// Set while the UI thread handles a quit request (thread-exit-signal-safe.patch).
++// WatchEvent handles SDL_EVENT_QUIT synchronously from SDL's event-watch
++// dispatch, i.e. with SDL's event-watcher lock held for the whole OnClosing /
++// TerminateTitle. Any other thread's SDL_PushEvent runs the watchers too, so a
++// guest thread that queues UI work (CallInUIThread -> wakeup event, e.g. the
++// keyboard/mouse refresh from XamInputGetState) blocked on that lock and could
++// not take the cooperative exit, becoming a TerminateTitle straggler. While a
++// quit is in progress, wakeups from other threads are skipped (the function is
++// still queued) and one wakeup is sent if the close was vetoed.
++std::atomic<bool> quit_in_progress{false};
++std::atomic<bool> wakeup_skipped{false};
++}  // namespace
++
+ SDLWindowedAppContext::~SDLWindowedAppContext() {
+   if (event_watch_registered_) {
+     SDL_RemoveEventWatch(WatchEvent, this);
+@@ -72,6 +87,10 @@
+ }
+ 
+ void SDLWindowedAppContext::NotifyUILoopOfPendingFunctions() {
++  if (quit_in_progress.load(std::memory_order_acquire) && !IsInUIThread()) {
++    wakeup_skipped.store(true, std::memory_order_release);
++    return;
++  }
+   // SDL_PushEvent is thread-safe by SDL contract.
+   SDL_Event event{};
+   event.type = wakeup_event_type_;
+@@ -196,6 +215,22 @@
+   // Use the normal close-request path rather than terminating the message loop
+   // directly. Window listeners use OnClosing to stop guest, audio and GPU
+   // threads; bypassing it leaves the process hanging during teardown.
++  struct QuitScope {
++    SDLWindowedAppContext* context;
++    bool outer;
++    explicit QuitScope(SDLWindowedAppContext* c)
++        : context(c), outer(!quit_in_progress.exchange(true, std::memory_order_acq_rel)) {}
++    ~QuitScope() {
++      if (!outer) {
++        return;
++      }
++      quit_in_progress.store(false, std::memory_order_release);
++      // Close vetoed (OnClosing hard-exits otherwise): deliver a skipped wakeup.
++      if (wakeup_skipped.exchange(false, std::memory_order_acq_rel)) {
++        context->NotifyUILoopOfPendingFunctions();
++      }
++    }
++  } quit_scope(this);
+   std::vector<SDL_WindowID> window_ids;
+   window_ids.reserve(windows_.size());
+   for (const auto& [id, window] : windows_) {

@@ -1,0 +1,49 @@
+Guest memory: unlink the named shm object right after creating it (shm leak, 2026-10-11).
+Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES). FABLE2_SHM_UNLINK_EARLY=0
+restores the old unlink-at-close behaviour (diagnostic only: it leaks again).
+
+Memory::Initialize creates the 4.5 GB guest mapping with CreateFileMappingHandle
+("xenia_memory_<tick>"), which on POSIX is shm_open(O_CREAT) + ftruncate. The name was only
+removed in CloseFileMappingHandle, from Memory's destructor, which never runs: the game hard-exits
+at the title and test tools terminate it. Every exit therefore left a named POSIX shm object, with
+every page the game touched (1-9 GB), in the kernel with no owner until reboot; it was compressed
+and then swapped (40+ GB of swap after a day of test runs). Unlinking right after a successful
+create keeps the object alive through the fd and the MAP_SHARED views, and the kernel frees it
+when the last of them goes, including on _exit, kill and crash. Nothing re-opens these objects by
+name (the only shm_open in the SDK is this function). The later unlink in CloseFileMappingHandle
+now gets ENOENT, which it ignores.
+
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -12,6 +12,7 @@
+ #include <cerrno>
+ #include <cstddef>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <fstream>
+ #include <functional>
+@@ -483,6 +484,15 @@
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++  // Remove the name now: the fd and every mapping of it keep the object alive, and the kernel
++  // frees it when the last one goes. Unlinking only in CloseFileMappingHandle leaked the whole
++  // object (every guest page the game touched) until reboot whenever the process exited without
++  // running Memory's destructor (hard exit at the title, kill, crash). Nothing re-opens these
++  // objects by name. FABLE2_SHM_UNLINK_EARLY=0 restores the old unlink-at-close behaviour.
++  const char* unlink_early = std::getenv("FABLE2_SHM_UNLINK_EARLY");
++  if (!unlink_early || std::strcmp(unlink_early, "0") != 0) {
++    shm_unlink(full_path.c_str());
++  }
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }
+@@ -490,6 +500,7 @@
+ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
+   close(static_cast<int>(handle));
+ #if !REX_PLATFORM_ANDROID
++  // Normally already unlinked at creation; ENOENT here is expected and harmless.
+   auto full_path = MakeShmName(path);
+   shm_unlink(full_path.c_str());
+ #endif

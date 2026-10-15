@@ -1,0 +1,570 @@
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -181,6 +181,19 @@
+ 
+  protected:
+   void RequestTextures(uint32_t used_texture_mask, bool load_data);
++  // [load-check-exact] FABLE2_LOAD_CHECK_EXACT: set by the caller around a
++  // RequestTextures that follows a "no load" MayRequestTexturesLoadData taken at
++  // load-check epoch E (the LoadCheckState read before the check). A texture the
++  // request would load only because a guest CPU write invalidated it after E is
++  // left outdated (the check's snapshot is a valid interleaving; the next draw
++  // that uses it loads it in its upload batch). Any other load still runs and is
++  // counted as a gap (the check missed it). 0 = off.
++  uint64_t request_defer_after_epoch_ = 0;
++  uint64_t request_deferred_loads_ = 0;
++  uint64_t request_gap_loads_ = 0;
++  // Textures deferred by the latest such request (for the verify mode).
++  const void* request_deferred_textures_[64];  // Texture*
++  uint32_t request_deferred_count_ = 0;
+ 
+   struct TextureKey {
+     // Dimensions minus 1 are stored similarly to how they're stored in fetch
+@@ -300,7 +313,18 @@
+ 
+     bool base_outdated(const global_unique_lock_type& global_lock) const {
+       return base_outdated_;
++    }
++    // [load-check-exact] load-check epoch of the latest CPU-write invalidation
++    // (0 after a GPU invalidation or none). Global critical region only.
++    uint64_t cpu_invalidated_epoch(
++        [[maybe_unused]] const global_unique_lock_type& global_lock) const {
++      return cpu_invalidated_epoch_;
+     }
++    void set_cpu_invalidated_epoch(
++        [[maybe_unused]] const global_unique_lock_type& global_lock,
++        uint64_t epoch) {
++      cpu_invalidated_epoch_ = epoch;
++    }
+     bool mips_outdated(const global_unique_lock_type& global_lock) const {
+       return mips_outdated_;
+     }
+@@ -364,6 +388,8 @@
+     bool base_outdated_ = false;
+     // Whether the recent mip data needs reloading from the memory.
+     bool mips_outdated_ = false;
++    // [load-check-exact] see cpu_invalidated_epoch().
++    uint64_t cpu_invalidated_epoch_ = 0;
+     // Watch handles for the memory ranges.
+     SharedMemory::WatchHandle base_watch_handle_ = nullptr;
+     SharedMemory::WatchHandle mips_watch_handle_ = nullptr;
+@@ -652,6 +678,13 @@
+   static void BindingInfoFromFetchConstant(
+       const xenos::xe_gpu_texture_fetch_t& fetch, TextureKey& key_out,
+       uint8_t* swizzled_signs_out);
++  // [tex-key-memo] FABLE2_TEX_KEY_MEMO (default on, =0 off): the same, memoized
++  // by the six fetch constant dwords (a pure function of them; only valid
++  // results are memoized, so the warning/error paths run as before).
++  void BindingInfoFromFetchConstantMemo(
++      uint32_t fetch_constant_index, const xenos::xe_gpu_texture_fetch_t& fetch,
++      TextureKey& key_out, uint8_t* swizzled_signs_out) const;
++  static bool TexKeyMemoEnabled();
+ 
+   // Makes all texture bindings invalid. Also requesting textures after calling
+   // this will cause another attempt to create a texture or to untile it if
+@@ -733,6 +766,88 @@
+   // Bit vector with bits reset on fetch constant writes to avoid parsing fetch
+   // constants again and again.
+   uint32_t texture_bindings_in_sync_ = 0;
++
++  // [tex-key-memo] (FABLE2_TEX_KEY_MEMO). Command processor thread only, like
++  // textures_ and texture_bindings_.
++  // Generation of scaled_resolve_pages_: bumped (under the global lock, after
++  // the bits change) whenever a page's scaled-resolve bit actually changes.
++  std::atomic<uint64_t> scaled_resolve_generation_{1};
++  // GetHostTextureKey results, direct-mapped by the guest key. An entry is
++  // used only if the generation it was computed at is still current, so a
++  // hit returns exactly what the locked check would have returned at the
++  // moment of the generation read.
++  struct HostKeyMemoEntry {
++    TextureKey guest_key;
++    TextureKey host_key;
++    uint64_t generation = 0;
++  };
++  static constexpr uint32_t kHostKeyMemoSizeLog2 = 10;
++  mutable std::unique_ptr<HostKeyMemoEntry[]> host_key_memo_;
++  struct FetchDecodeMemoEntry {
++    uint32_t dwords[6] = {};
++    TextureKey key;
++    uint8_t swizzled_signs = 0;
++    bool valid = false;
++  };
++  // Direct-mapped by a hash of the six dwords (shared by all slots: materials
++  // move between slots and come back).
++  static constexpr uint32_t kFetchDecodeMemoSizeLog2 = 9;
++  mutable std::array<FetchDecodeMemoEntry, size_t(1) << kFetchDecodeMemoSizeLog2>
++      fetch_decode_memo_;
++  TextureKey GetHostTextureKeyUncached(TextureKey key) const;
++  // [draw-prep-lite2] FABLE2_DRAW_PREP_LITE2 (default on): textures_.find by host
++  // key, memoized (direct-mapped, positive results only). Any erase from textures_
++  // (eviction, destroy, clear) bumps textures_generation_ and so invalidates every
++  // entry; inserts cannot make a positive entry wrong. Command processor thread only.
++  struct TextureFindMemoEntry {
++    TextureKey key;
++    Texture* texture = nullptr;
++    uint64_t generation = 0;
++  };
++  static constexpr uint32_t kTextureFindMemoSizeLog2 = 10;
++  mutable std::unique_ptr<TextureFindMemoEntry[]> texture_find_memo_;
++  uint64_t textures_generation_ = 1;
++  Texture* FindTextureMemo(const TextureKey& key) const;
++  static bool TextureFindMemoEnabled();
++  // [draw-prep-lite2] bumped after anything that can change what
++  // MayRequestTexturesLoadData returns for unchanged registers: a watch callback
++  // (after the outdated flag, any thread), a textures_ insert/erase/clear and a
++  // bindings reset (command processor thread).
++  std::atomic<uint64_t> load_check_epoch_{1};
++  void BumpLoadCheckEpoch() {
++    load_check_epoch_.fetch_add(1, std::memory_order_release);
++  }
++ public:
++  // [draw-prep-lite2] snapshot taken before MayRequestTexturesLoadData; if it is
++  // unchanged later, the earlier result still holds (bindings, host keys,
++  // textures_ and outdated flags are as they were, or changed only after this read).
++  struct LoadCheckState {
++    uint64_t epoch = 0;
++    uint64_t scaled_resolve_generation = 0;
++    uint32_t bindings_in_sync = 0;
++    bool operator==(const LoadCheckState& o) const {
++      return epoch == o.epoch &&
++             scaled_resolve_generation == o.scaled_resolve_generation &&
++             bindings_in_sync == o.bindings_in_sync;
++    }
++  };
++  LoadCheckState GetLoadCheckState() const {
++    LoadCheckState st;
++    st.epoch = load_check_epoch_.load(std::memory_order_acquire);
++    st.scaled_resolve_generation =
++        scaled_resolve_generation_.load(std::memory_order_acquire);
++    st.bindings_in_sync = texture_bindings_in_sync_;
++    return st;
++  }
++  // [tex-key-memo] counters for the frame CSV / logs (command processor thread).
++  struct TexKeyMemoStats {
++    uint64_t host_hits = 0, host_misses = 0, host_verify_mismatches = 0;
++    uint64_t fetch_hits = 0, fetch_misses = 0, fetch_verify_mismatches = 0;
++    uint64_t find_hits = 0, find_misses = 0, find_verify_mismatches = 0;
++  };
++  const TexKeyMemoStats& tex_key_memo_stats() const { return tex_key_memo_stats_; }
++ private:
++  mutable TexKeyMemoStats tex_key_memo_stats_;
+ };
+ 
+ }  // namespace gpu
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -246,6 +246,8 @@
+     if (found_texture_it != textures_.end()) {
+       assert_true(found_texture_it->second.get() == texture);
+       textures_.erase(found_texture_it);
++      ++textures_generation_;
++      BumpLoadCheckEpoch();  // [draw-prep-lite2] find memo invalid
+       // `texture` is invalid now.
+     }
+   }
+@@ -281,6 +283,7 @@
+     uint32_t block_first = page_first >> 5;
+     uint32_t block_last = page_last >> 5;
+     auto global_lock = global_critical_region_.Acquire();
++    bool changed = false;
+     for (uint32_t i = block_first; i <= block_last; ++i) {
+       uint32_t add_bits = UINT32_MAX;
+       if (i == block_first) {
+@@ -289,9 +292,14 @@
+       if (i == block_last && (page_last & 31) != 31) {
+         add_bits &= (UINT32_C(1) << ((page_last & 31) + 1)) - 1;
+       }
++      changed |= (scaled_resolve_pages_[i] & add_bits) != add_bits;
+       scaled_resolve_pages_[i] |= add_bits;
+       scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
+     }
++    if (changed) {
++      // [tex-key-memo] after the bits, under the lock.
++      scaled_resolve_generation_.fetch_add(1, std::memory_order_release);
++    }
+   }
+ 
+   // Invalidate textures. Toggling individual textures between scaled and
+@@ -310,13 +318,19 @@
+     uint32_t page_first = start_unscaled >> 12;
+     uint32_t page_last = (start_unscaled + length_unscaled - 1) >> 12;
+     auto global_lock = global_critical_region_.Acquire();
++    bool changed = false;
+     for (uint32_t page = page_first; page <= page_last; ++page) {
+       uint32_t block = page >> 5;
++      changed |= (scaled_resolve_pages_[block] >> (page & 31)) & 1;
+       scaled_resolve_pages_[block] &= ~(UINT32_C(1) << (page & 31));
+       if (!scaled_resolve_pages_[block]) {
+         scaled_resolve_pages_l2_[block >> 6] &= ~(UINT64_C(1) << (block & 63));
+       }
+     }
++    if (changed) {
++      // [tex-key-memo] after the bits, under the lock.
++      scaled_resolve_generation_.fetch_add(1, std::memory_order_release);
++    }
+   }
+   // Invalidate textures (scaled ones over this range are re-created
+   // unscaled, since the range is no longer marked as scaled).
+@@ -371,7 +385,8 @@
+     uint8_t old_swizzled_signs = binding.swizzled_signs;
+     const bool binding_was_outdated =
+         old_key.is_valid && IsBindingOutdatedForUse(binding);
+-    BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
++    BindingInfoFromFetchConstantMemo(index, fetch, binding.key,
++                                     &binding.swizzled_signs);
+     texture_bindings_in_sync_ |= index_bit;
+     if (!binding.key.is_valid) {
+       if (old_key.is_valid) {
+@@ -452,6 +467,37 @@
+     }
+   }
+ 
++  if (load_data && request_defer_after_epoch_ && num_textures_to_load) {
++    // [load-check-exact] keep only loads the "no load" check should have seen.
++    bool any_outdated = false;
++    for (uint32_t i = 0; i < num_textures_to_load; ++i) {
++      any_outdated = any_outdated ||
++                     textures_to_load[i]->base_outdated_lockless() ||
++                     textures_to_load[i]->mips_outdated_lockless();
++    }
++    uint32_t kept = 0;
++    request_deferred_count_ = 0;
++    if (any_outdated) {
++      // Under the lock: the watch callback sets the flag and the epoch together.
++      auto global_lock = global_critical_region_.Acquire();
++      for (uint32_t i = 0; i < num_textures_to_load; ++i) {
++        Texture* texture = textures_to_load[i];
++        if (!texture->base_outdated(global_lock) &&
++            !texture->mips_outdated(global_lock)) {
++          continue;  // LoadTexturesData would skip it too.
++        }
++        if (texture->cpu_invalidated_epoch(global_lock) >
++            request_defer_after_epoch_) {
++          ++request_deferred_loads_;
++          request_deferred_textures_[request_deferred_count_++] = texture;
++          continue;
++        }
++        ++request_gap_loads_;
++        textures_to_load[kept++] = texture;
++      }
++    }
++    num_textures_to_load = kept;
++  }
+   if (load_data) {
+     LoadTexturesData(textures_to_load, num_textures_to_load);
+   }
+@@ -480,6 +526,11 @@
+   };
+   auto key_may_need_load = [this, &is_texture_outdated](TextureKey key) {
+     key = GetHostTextureKey(key);
++    if (TextureFindMemoEnabled()) {
++      // [draw-prep-lite2]
++      const Texture* texture = FindTextureMemo(key);
++      return !texture || is_texture_outdated(texture);
++    }
+     auto texture_it = textures_.find(key);
+     if (texture_it == textures_.end()) {
+       return true;
+@@ -503,8 +554,8 @@
+       new_key = old_key;
+       new_swizzled_signs = old_swizzled_signs;
+     } else {
+-      BindingInfoFromFetchConstant(regs.GetTextureFetch(index), new_key,
+-                                   &new_swizzled_signs);
++      BindingInfoFromFetchConstantMemo(index, regs.GetTextureFetch(index),
++                                       new_key, &new_swizzled_signs);
+     }
+     if (!new_key.is_valid) {
+       continue;
+@@ -838,11 +889,19 @@
+   texture.WatchCallback(global_lock, argument != 0);
+   texture.texture_cache().texture_became_outdated_.store(
+       true, std::memory_order_release);
++  // [draw-prep-lite2] epoch bump; [load-check-exact] remember it for CPU writes.
++  const uint64_t epoch =
++      texture.texture_cache().load_check_epoch_.fetch_add(
++          1, std::memory_order_release) +
++      1;
++  texture.set_cpu_invalidated_epoch(global_lock, invalidated_by_gpu ? 0 : epoch);
+ }
+ 
+ void TextureCache::DestroyAllTextures(bool from_destructor) {
+   ResetTextureBindings(from_destructor);
+   textures_.clear();
++  ++textures_generation_;
++  BumpLoadCheckEpoch();  // [draw-prep-lite2] find memo invalid
+   COUNT_profile_set("gpu/texture_cache/textures", 0);
+ }
+ 
+@@ -861,11 +920,206 @@
+   }
+   assert_true(found_texture_it->second.get() == texture);
+   textures_.erase(found_texture_it);
++  ++textures_generation_;
++  BumpLoadCheckEpoch();  // [draw-prep-lite2] find memo invalid
+   COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
+   return true;
+ }
+ 
++namespace {
++bool TexKeyMemoVerifyEnabled() {
++  // getenv-ok: read once.
++  static const bool enabled = [] {
++    const char* v = std::getenv("FABLE2_TEX_KEY_MEMO_VERIFY");
++    return v && v[0] == '1';
++  }();
++  return enabled;
++}
++}  // namespace
++
++namespace {
++// [tex-key-memo] one log line every 2^20 memo lookups (hit rates, verify).
++void TexKeyMemoMaybeLog(const TextureCache::TexKeyMemoStats& st) {
++  const uint64_t n =
++      st.host_hits + st.host_misses + st.fetch_hits + st.fetch_misses;
++  if (n & ((UINT64_C(1) << 20) - 1)) {
++    return;
++  }
++  REXLOG_INFO(
++      "[tex-key-memo] host {} hits / {} misses, fetch {} hits / {} misses, "
++      "find {} hits / {} misses, verify mismatches host {} fetch {} find {}",
++      st.host_hits, st.host_misses, st.fetch_hits, st.fetch_misses,
++      st.find_hits, st.find_misses, st.host_verify_mismatches,
++      st.fetch_verify_mismatches, st.find_verify_mismatches);
++}
++}  // namespace
++
++bool TextureCache::TexKeyMemoEnabled() {
++  // getenv-ok: read once.
++  static const bool enabled = [] {
++    const char* v = std::getenv("FABLE2_TEX_KEY_MEMO");
++    const bool on = !(v && v[0] == '0');
++    REXLOG_INFO("[tex-key-memo] {} (FABLE2_TEX_KEY_MEMO={}){}",
++                on ? "on" : "off", v ? v : "unset",
++                TexKeyMemoVerifyEnabled() ? ", verify on" : "");
++    return on;
++  }();
++  return enabled;
++}
++
++void TextureCache::BindingInfoFromFetchConstantMemo(
++    uint32_t fetch_constant_index, const xenos::xe_gpu_texture_fetch_t& fetch,
++    TextureKey& key_out, uint8_t* swizzled_signs_out) const {
++  static_assert(sizeof(fetch) == sizeof(uint32_t) * 6);
++  if (!TexKeyMemoEnabled()) {
++    BindingInfoFromFetchConstant(fetch, key_out, swizzled_signs_out);
++    return;
++  }
++  uint32_t dwords[6];
++  std::memcpy(dwords, &fetch, sizeof(dwords));
++  uint64_t h = 0;
++  for (uint32_t d : dwords) {
++    h = (h ^ d) * UINT64_C(0x9E3779B97F4A7C15);
++  }
++  FetchDecodeMemoEntry& entry =
++      fetch_decode_memo_[h >> (64 - kFetchDecodeMemoSizeLog2)];
++  if (entry.valid && !std::memcmp(entry.dwords, dwords, sizeof(dwords))) {
++    ++tex_key_memo_stats_.fetch_hits;
++    TexKeyMemoMaybeLog(tex_key_memo_stats_);
++    if (TexKeyMemoVerifyEnabled()) {
++      TextureKey ref_key;
++      uint8_t ref_signs = kSwizzledSignsUnsigned;
++      BindingInfoFromFetchConstant(fetch, ref_key, &ref_signs);
++      if (ref_key != entry.key || ref_signs != entry.swizzled_signs) {
++        if (++tex_key_memo_stats_.fetch_verify_mismatches <= 16) {
++          REXLOG_WARN("[tex-key-memo] verify: fetch decode mismatch, slot {}",
++                      fetch_constant_index);
++        }
++      }
++    }
++    key_out = entry.key;
++    if (swizzled_signs_out) {
++      *swizzled_signs_out = entry.swizzled_signs;
++    }
++    return;
++  }
++  ++tex_key_memo_stats_.fetch_misses;
++  TexKeyMemoMaybeLog(tex_key_memo_stats_);
++  uint8_t signs = kSwizzledSignsUnsigned;
++  BindingInfoFromFetchConstant(fetch, key_out, &signs);
++  if (swizzled_signs_out) {
++    *swizzled_signs_out = signs;
++  }
++  // Only valid results: the invalid paths log, and must keep doing so.
++  entry.valid = key_out.is_valid != 0;
++  if (entry.valid) {
++    std::memcpy(entry.dwords, &fetch, sizeof(entry.dwords));
++    entry.key = key_out;
++    entry.swizzled_signs = signs;
++  }
++}
++
++
++bool TextureCache::TextureFindMemoEnabled() {
++  // getenv-ok: read once.
++  static const bool enabled = [] {
++    const char* v = std::getenv("FABLE2_DRAW_PREP_LITE2");
++    return !(v && v[0] == '0');
++  }();
++  return enabled;
++}
++
++TextureCache::Texture* TextureCache::FindTextureMemo(
++    const TextureKey& key) const {
++  if (!texture_find_memo_) {
++    texture_find_memo_.reset(
++        new TextureFindMemoEntry[size_t(1) << kTextureFindMemoSizeLog2]);
++  }
++  static_assert(sizeof(TextureKey) == 16);
++  uint64_t words[2];
++  std::memcpy(words, &key, sizeof(words));
++  const uint64_t h =
++      (words[0] ^ (words[1] * UINT64_C(0x9E3779B97F4A7C15))) *
++      UINT64_C(0xBF58476D1CE4E5B9);
++  TextureFindMemoEntry& entry =
++      texture_find_memo_[h >> (64 - kTextureFindMemoSizeLog2)];
++  if (entry.generation == textures_generation_ && entry.key == key) {
++    ++tex_key_memo_stats_.find_hits;
++    if (TexKeyMemoVerifyEnabled()) {
++      auto it = textures_.find(key);
++      Texture* ref = it != textures_.end() ? it->second.get() : nullptr;
++      if (ref != entry.texture &&
++          ++tex_key_memo_stats_.find_verify_mismatches <= 16) {
++        REXLOG_WARN("[draw-prep-lite2] verify: texture find mismatch, base page {:05X}",
++                    uint32_t(key.base_page));
++      }
++    }
++    return entry.texture;
++  }
++  ++tex_key_memo_stats_.find_misses;
++  auto it = textures_.find(key);
++  if (it == textures_.end()) {
++    return nullptr;
++  }
++  entry.key = key;
++  entry.texture = it->second.get();
++  entry.generation = textures_generation_;
++  return entry.texture;
++}
++
+ TextureCache::TextureKey TextureCache::GetHostTextureKey(TextureKey key) const {
++  if (!IsDrawResolutionScaled() || !key.tiled || !TexKeyMemoEnabled()) {
++    return GetHostTextureKeyUncached(key);
++  }
++  if (!host_key_memo_) {
++    host_key_memo_.reset(new HostKeyMemoEntry[size_t(1) << kHostKeyMemoSizeLog2]);
++  }
++  // Read before the lookup: a hit is exact as of this moment (writers bump it
++  // after changing the bits, under the global lock).
++  const uint64_t generation =
++      scaled_resolve_generation_.load(std::memory_order_acquire);
++  static_assert(sizeof(TextureKey) == 16);
++  uint64_t words[2];
++  std::memcpy(words, &key, sizeof(words));
++  const uint64_t h =
++      (words[0] ^ (words[1] * UINT64_C(0x9E3779B97F4A7C15))) *
++      UINT64_C(0xBF58476D1CE4E5B9);
++  HostKeyMemoEntry& entry = host_key_memo_[h >> (64 - kHostKeyMemoSizeLog2)];
++  if (entry.generation == generation && entry.guest_key == key) {
++    ++tex_key_memo_stats_.host_hits;
++    TexKeyMemoMaybeLog(tex_key_memo_stats_);
++    if (TexKeyMemoVerifyEnabled()) {
++      const TextureKey ref = GetHostTextureKeyUncached(key);
++      // A writer between the generation read and the reference check is a
++      // legitimate difference; only count it when the generation is unchanged.
++      if (ref != entry.host_key &&
++          scaled_resolve_generation_.load(std::memory_order_acquire) ==
++              generation) {
++        if (++tex_key_memo_stats_.host_verify_mismatches <= 16) {
++          REXLOG_WARN(
++              "[tex-key-memo] verify: host key mismatch, base page {:05X}",
++              uint32_t(key.base_page));
++        }
++      }
++    }
++    return entry.host_key;
++  }
++  // Entries exist only for supported formats (a pure function of the key), so a
++  // hit above implies support; check it on a miss, before memoizing.
++  if (!IsScaledResolveSupportedForFormat(key)) {
++    return GetHostTextureKeyUncached(key);
++  }
++  ++tex_key_memo_stats_.host_misses;
++  TexKeyMemoMaybeLog(tex_key_memo_stats_);
++  const TextureKey host_key = GetHostTextureKeyUncached(key);
++  entry.guest_key = key;
++  entry.host_key = host_key;
++  entry.generation = generation;
++  return host_key;
++}
++
++TextureCache::TextureKey TextureCache::GetHostTextureKeyUncached(
++    TextureKey key) const {
+   // Check if the texture is a scaled resolve texture.
+   if (IsDrawResolutionScaled() && key.tiled &&
+       IsScaledResolveSupportedForFormat(key)) {
+@@ -910,9 +1164,16 @@
+   // Try to find an existing texture.
+   // TODO(Triang3l): Reuse a texture with mip_page unchanged, but base_page
+   // previously 0, now not 0, to save memory - common case in streaming.
+-  auto found_texture_it = textures_.find(key);
+-  if (found_texture_it != textures_.end()) {
+-    return found_texture_it->second.get();
++  if (TextureFindMemoEnabled()) {
++    // [draw-prep-lite2]
++    if (Texture* found = FindTextureMemo(key)) {
++      return found;
++    }
++  } else {
++    auto found_texture_it = textures_.find(key);
++    if (found_texture_it != textures_.end()) {
++      return found_texture_it->second.get();
++    }
+   }
+ 
+   // Create the texture and add it to the map.
+@@ -926,6 +1187,7 @@
+     assert_true(new_texture->key() == key);
+     texture =
+         textures_.emplace(key, std::move(new_texture)).first->second.get();
++    BumpLoadCheckEpoch();  // [draw-prep-lite2]
+   }
+   COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
+   texture->LogAction("Created");
+@@ -1271,6 +1533,7 @@
+     bindings_reset |= UINT32_C(1) << i;
+   }
+   texture_bindings_in_sync_ &= ~bindings_reset;
++  BumpLoadCheckEpoch();  // [draw-prep-lite2]
+   if (!from_destructor && bindings_reset) {
+     UpdateTextureBindingsImpl(bindings_reset);
+   }
+@@ -1361,6 +1624,7 @@
+   uint32_t resolve_block_last = resolve_page_last >> 5;
+   uint32_t resolve_l2_block_first = resolve_block_first >> 6;
+   uint32_t resolve_l2_block_last = resolve_block_last >> 6;
++  bool scaled_resolve_changed = false;
+   for (uint32_t i = resolve_l2_block_first; i <= resolve_l2_block_last; ++i) {
+     uint64_t resolve_l2_block = scaled_resolve_pages_l2_[i];
+     // Pre-mask to only process blocks within the write range.
+@@ -1384,6 +1648,9 @@
+         resolve_keep_bits |=
+             ~((UINT32_C(1) << ((resolve_page_last & 31) + 1)) - 1);
+       }
++      if (scaled_resolve_pages_[resolve_block_index] & ~resolve_keep_bits) {
++        scaled_resolve_changed = true;
++      }
+       scaled_resolve_pages_[resolve_block_index] &= resolve_keep_bits;
+       if (scaled_resolve_pages_[resolve_block_index] == 0) {
+         scaled_resolve_pages_l2_[i] &=
+@@ -1391,6 +1658,10 @@
+       }
+     }
+   }
++  if (scaled_resolve_changed) {
++    // [tex-key-memo] after the bits, under the caller's global lock.
++    scaled_resolve_generation_.fetch_add(1, std::memory_order_release);
++  }
+ }
+ 
+ }  // namespace gpu

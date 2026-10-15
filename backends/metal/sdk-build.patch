@@ -1,0 +1,93 @@
+--- a/cmake/rex_version.cmake
++++ b/cmake/rex_version.cmake
+@@ -113,6 +113,13 @@
+         set(ARG_SOURCE_DIR "${CMAKE_SOURCE_DIR}")
+     endif()
+ 
++    # Source archives carry no git metadata (and may sit inside another
++    # repository), so a packaged build can pin the version it was cut from.
++    if(DEFINED REXGLUE_VERSION_OVERRIDE AND NOT "${REXGLUE_VERSION_OVERRIDE}" STREQUAL "")
++        set(${out_var} "${REXGLUE_VERSION_OVERRIDE}" PARENT_SCOPE)
++        return()
++    endif()
++
+     find_program(GIT_EXECUTABLE git)
+     if(NOT GIT_EXECUTABLE)
+         rex_compute_version(result
+--- a/cmake/rexglueConfig.cmake.in
++++ b/cmake/rexglueConfig.cmake.in
+@@ -21,7 +21,7 @@
+ if(REXGLUE_USE_VULKAN)
+     find_dependency(VulkanHeaders CONFIG)
+     find_dependency(VulkanMemoryAllocator CONFIG)
+-    if(APPLE)
++    if(APPLE AND EXISTS "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/libMoltenVK.dylib")
+         if(NOT TARGET rex::vulkan-loader)
+             add_library(rex::vulkan-loader SHARED IMPORTED)
+             set_target_properties(rex::vulkan-loader PROPERTIES
+--- a/cmake/rexglue_helpers.cmake
++++ b/cmake/rexglue_helpers.cmake
+@@ -17,6 +17,9 @@
+         set(_rexglue_vulkan_loader rex::vulkan-loader)
+         set(_rexglue_moltenvk rex::moltenvk)
+         set(_rexglue_moltenvk_icd "${REXGLUE_MOLTENVK_ICD}")
++    elseif(DEFINED REXGLUE_MOLTENVK_ICD AND NOT EXISTS "${REXGLUE_MOLTENVK_ICD}")
++        # Package built with REXGLUE_MACOS_VULKAN_RUNTIME=OFF: nothing to stage.
++        return()
+     else()
+         message(FATAL_ERROR "rexglue: pinned macOS Vulkan runtime targets are unavailable")
+     endif()
+--- a/cmake/rexglue_install.cmake	2026-10-09 12:44:59
++++ b/cmake/rexglue_install.cmake	2026-10-09 12:45:17
+@@ -137,7 +137,7 @@
+     )
+ endif()
+ 
+-if(APPLE AND REXGLUE_USE_VULKAN)
++if(APPLE AND REXGLUE_USE_VULKAN AND REXGLUE_MACOS_VULKAN_RUNTIME)
+     install(FILES "$<TARGET_FILE:Vulkan::Loader>"
+         DESTINATION ${CMAKE_INSTALL_LIBDIR}
+         CONFIGURATIONS Release
+--- a/thirdparty/CMakeLists.txt	2026-10-09 12:44:59
++++ b/thirdparty/CMakeLists.txt	2026-10-09 12:45:17
+@@ -1,6 +1,11 @@
+ # Third-party vendored dependencies for ReXGlue
+ include(${PROJECT_SOURCE_DIR}/cmake/rexglue_vulkan_stack.cmake)
+ 
++# macOS: build and install the pinned Vulkan loader + MoltenVK (runtime-loaded
++# only; nothing links them). OFF leaves them out of the package; consumers then
++# skip staging them (Metal-only hosts do not need them).
++option(REXGLUE_MACOS_VULKAN_RUNTIME "Build and install the pinned Vulkan loader and MoltenVK on macOS" ON)
++
+ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+ 
+ #=============================================================================
+@@ -49,7 +54,7 @@
+         vulkan-headers vulkan-memory-allocator
+         spirv-headers spirv-tools glslang
+     )
+-    if(APPLE)
++    if(APPLE AND REXGLUE_MACOS_VULKAN_RUNTIME)
+         list(APPEND REQUIRED_SUBMODULES vulkan-loader moltenvk)
+     endif()
+ endif()
+@@ -64,7 +69,9 @@
+ endif()
+ 
+ foreach(submodule ${REQUIRED_SUBMODULES})
+-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git")
++    # Source-archive builds mark each pinned submodule with .rexglue-pinned.
++    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.git" AND
++       NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${submodule}/.rexglue-pinned")
+         message(FATAL_ERROR
+             "Git submodule '${submodule}' is not initialized.\n"
+             "Please run: git submodule update --init --recursive\n"
+@@ -201,7 +208,7 @@
+     set(VMA_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
+     add_subdirectory(vulkan-memory-allocator)
+ 
+-    if(APPLE)
++    if(APPLE AND REXGLUE_MACOS_VULKAN_RUNTIME)
+         # Build the loader and MoltenVK revisions shipped by the pinned SDK.
+         # They remain runtime-loaded; no Vulkan implementation is linked into
+         # rexglue itself.

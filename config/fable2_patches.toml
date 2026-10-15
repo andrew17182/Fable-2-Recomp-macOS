@@ -1,0 +1,51 @@
+# =============================================================================
+# fable2_patches.toml - guest-image (data) patch table
+# =============================================================================
+#
+# Loaded by fable_2.exe from the directory the exe lives in, and applied to
+# the decrypted XEX image before the guest module launches. Format mirrors
+# the Xenia game-patches files (https://github.com/xenia-canary/game-patches).
+#
+# - If the file is missing, the game recreates it at startup with the built-in
+#   defaults (the embedded template in src/core/fable2_patches.cpp must stay in
+#   sync with this file).
+# - If the file fails to parse, the error is logged to logs/, a dialog is
+#   shown, and the built-in defaults are used instead - the game still runs.
+# - Each [[patch]] has:
+#     name        (string, required)
+#     description (string, optional)
+#     author      (string, optional)
+#     enabled     (bool,   default true)
+#     ops         (array of {width, address, value}; required)
+#       width   = "be8" | "be16" | "be32" | "be64"
+#       address = guest address, e.g. 0x83319511
+#       value   = bytes to write, big-endian
+#
+# SCOPE: DATA PATCHES ONLY. This build executes *native* recompiled code, so
+# guest .text bytes are never executed: an op inside the code region only
+# rewrites dead bytes (the log flags these as "no runtime effect"). Code
+# patches must be implemented as mid-asm hooks instead:
+#   [[entrypoint.midasm_hook]] in fable_2_manifest.toml + src/core/fable2_hooks.cpp
+# Data ops (BSS/.data/.rodata) DO take effect,
+# because the recompiled code reads/writes guest memory.
+#
+# NOTE: this is the patch table. fable2_config.toml (also next to the exe)
+# is the recomp's general user config - a different file.
+# =============================================================================
+
+# Doubles the guest tick rate (Xenia patch by Guy). The be32 op is a
+# code-region NOP and has no effect in this recomp (kept for 1:1 parity with
+# the Xenia entry); the be8 data op takes effect.
+# Field defaults (see the header above): name required, description/author
+# optional (default ""), enabled default true, ops required.
+[[patch]]
+name = "High Tick Rate"             # Default: (required, no default)
+description = "Doubles tickrate to 30hz. Vastly improves in-game UI framerate. Improves input delay. Minor side effects."  # Default: ""
+author = "Guy"                       # Default: ""
+# Enable/disable this patch: set true to turn it on (no rebuild needed).
+# Default: false
+enabled = false
+ops = [
+    { width = "be32", address = 0x8233AEB4, value = 0x60000000 },  # code-region NOP (inert in this recomp)
+    { width = "be8",  address = 0x83319511, value = 0x3E },        # data op (takes effect)
+]

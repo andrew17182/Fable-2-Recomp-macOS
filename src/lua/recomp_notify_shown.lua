@@ -1,0 +1,3 @@
+-- No-op acknowledgement file: recomp_notify.lua runs it so the host sees
+-- (via the RunScript dispatcher probe in src/core/fable2_f5_lua.h) that
+-- the message was shown. Keep it empty.
