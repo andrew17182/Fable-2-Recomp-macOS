@@ -14,7 +14,7 @@
 //   "Fable II Dev Launcher.app/Contents/MacOS/FableIIDevLauncher" --launch
 //       [--pick title|live:Hero000|library:NAME] [--no-skip-intro] [--no-boot]
 //       [--target-slot HeroNNN|none] [--test-control] [--fps settings|auto|30|60|uncapped]
-//       [--turbo-notice overlay|game] [--trace-preset standard|off|loading|gpu|everything]
+//       [--turbo-notice overlay|game] [--turbo-speed 1.1-4.0] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
 //       [--resolution auto|native|2|3] [--upscaling off|metalfx-spatial] [--effects original|full]
 //       [--display windowed|fullscreen] [--build playtest|latest] [--extra-env "NAME=VALUE ..."]
 //       [--<switch>|--no-<switch>] for every on/off setting (LaunchSettings.flags: fur-fix,
@@ -62,10 +62,21 @@ enum Backend {
     return (info["version"] as? String) ?? "unknown version"
   }
 
+  /// Whether the frozen playtest copy exists (a fresh checkout has none until Update Playtest Build creates it);
+  /// the same check as tools/fable2_dev_session.py launch.
+  static var playtestExists: Bool {
+    var dir: ObjCBool = false
+    return FileManager.default.fileExists(atPath: repoRoot + "/out/playtest/Fable II.app", isDirectory: &dir)
+      && dir.boolValue
+  }
+
+  /// Note shown when a Playtest pick launches Latest because there is no playtest copy.
+  static let playtestFallbackNote = "No playtest copy, so the latest build was used (Update Playtest Build creates one)."
+
   /// Whether the app a build choice launches has the shader converter (docs/no-converter.md): the playtest copy
   /// (out/playtest) or the latest build (out/build).
   static func hasConverter(_ build: BuildChoice) -> Bool {
-    let app = build == .playtest ? "/out/playtest/Fable II.app" : "/out/build/mac-arm64-metal-release/Fable II.app"
+    let app = build.effective(playtestExists: playtestExists) == .playtest ? "/out/playtest/Fable II.app" : "/out/build/mac-arm64-metal-release/Fable II.app"
     return LaunchSettings.hasConverter(macOSFolder: repoRoot + app + "/Contents/MacOS")
   }
 
@@ -109,7 +120,8 @@ enum Backend {
   /// The launch arguments for one pick. Shared by the Launch button and --launch.
   static func launchArguments(pick: String, targetSlot: String?, testControl: Bool,
                               settings s: LaunchSettings) -> [String] {
-    var args = ["launch", "--build", s.build.rawValue]
+    // Playtest without a playtest copy launches Latest (BuildChoice.effective), never a failed launch.
+    var args = ["launch", "--build", s.build.effective(playtestExists: Backend.playtestExists).rawValue]
     if pick.hasPrefix("live:") {
       args += ["--mode", "live", "--save", String(pick.dropFirst(5))]
     } else if pick.hasPrefix("library:") {
@@ -154,11 +166,17 @@ final class LauncherModel: SettingsModel {
   }
   @Published var targetSlot: String { didSet { defaults.set(targetSlot, forKey: "targetSlot") } }
   @Published var playtestVersion = Backend.playtestVersion
+  @Published var playtestExists = Backend.playtestExists
   @Published var others: [String] = []
   @Published var benchmarking = false
   @Published var running = false
   @Published var busy = false
   @Published var message = ""
+  /// Logs folder of a game that closed unexpectedly (crash or kill): the footer shows Show Logs next to the note.
+  @Published var crashLogs: String?
+  /// Play games (this launcher's, Fable II.app, fable_2 or a run_macos_*.command; never agent test games) seen
+  /// running at the last poll. When one ends the launcher comes back to the front with its window.
+  private var watchedGames = Set<Int>()
   @Published var lastSave = ""
   @Published var gameVersion = Backend.gameVersion
   /// State folder of the launcher's current (or last) session; nil for title-screen play.
@@ -175,6 +193,7 @@ final class LauncherModel: SettingsModel {
     targetSlot = UserDefaults.standard.string(forKey: "targetSlot") ?? "Hero000"
     super.init(store: store)
     converterProbe = { Backend.hasConverter($0) }
+    dropMissingPlaytest()
     if DevSnapshot.request != nil, let snapshotPick = argument(after: "--pick") { pick = snapshotPick }
     if poll {
       refresh()
@@ -190,6 +209,24 @@ final class LauncherModel: SettingsModel {
     return meta.title(item)
   }
   var isLive: Bool { pick.hasPrefix("live:") }
+
+  /// Continue from last save (2026-10-15): the newest save by save time among the live slots and the library's
+  /// play saves (agent test saves skipped); a tie goes to the live slot, the playthrough itself.
+  var continueItem: SaveItem? {
+    let candidates = live.filter { !$0.savedAt.isEmpty } + library.filter { !$0.test && !$0.savedAt.isEmpty }
+    return candidates.max { a, b in
+      a.savedAt != b.savedAt ? a.savedAt < b.savedAt : (a.id.hasPrefix("library:") && b.id.hasPrefix("live:"))
+    }
+  }
+
+  /// One click: boots straight into continueItem through the save-pick path (a session copy, FABLE2_BOOT_SAVE).
+  /// A live slot writes back to itself; a library save to the slot it was written back to, else library only.
+  /// The pick and write-back choice of the main window are not changed.
+  func continueLatest() {
+    guard let item = continueItem else { return }
+    let target = item.id.hasPrefix("live:") ? item.folder : (item.writtenBack.isEmpty ? "none" : item.writtenBack)
+    launch(pick: item.id, target: target, boot: true)
+  }
   var canLaunch: Bool { !running && !busy }
   var canBenchmark: Bool { !busy && !running && others.isEmpty }
 
@@ -205,8 +242,11 @@ final class LauncherModel: SettingsModel {
       let result = Backend.json(["list"])
       let version = Backend.gameVersion
       let playtest = Backend.playtestVersion
+      let exists = Backend.playtestExists
       DispatchQueue.main.async {
         self.apply(list: result); self.gameVersion = version; self.playtestVersion = playtest
+        self.playtestExists = exists
+        self.dropMissingPlaytest()
         self.refreshConverter()
       }
     }
@@ -263,6 +303,13 @@ final class LauncherModel: SettingsModel {
         self.refreshConverter()  // a rebuild may have switched the app between converter / no-converter
         self.running = data["running"] as? Bool ?? false
         self.others = data["others"] as? [String] ?? []
+        let games = Set((data["instances"] as? [[String: Any]] ?? []).compactMap { entry -> Int? in
+          guard ["play", "playtest", "untracked"].contains(entry["role"] as? String ?? ""),
+                entry["test_control"] as? Bool != true else { return nil }
+          return entry["pid"] as? Int
+        })
+        let ended = !self.watchedGames.subtracting(games).isEmpty
+        self.watchedGames = games
         if let session = data["session"] as? [String: Any] {
           self.sessionState = session["state"] as? String
         }
@@ -273,17 +320,42 @@ final class LauncherModel: SettingsModel {
             self.refresh()
           }
         }
-        if wasRunning && !self.running { self.message = "Game closed."; self.refresh() }
+        if wasRunning && !self.running {
+          let exit = data["last_exit"] as? [String: Any]
+          if exit?["kind"] as? String == "unclean" {
+            self.message = "The game closed unexpectedly (\(exit?["detail"] as? String ?? "no clean exit"))."
+            self.crashLogs = exit?["logs"] as? String
+          } else {
+            self.message = "Game closed."
+          }
+          self.refresh()
+        }
+        if (wasRunning && !self.running) || ended { LauncherReturn.bringBack() }
       }
     }
   }
 
-  func launch() {
+  /// Playtest picked but no playtest copy (fresh checkout, or the copy was removed): the pick becomes Latest, so
+  /// the picker never shows a choice that cannot launch. Playtest is never picked automatically.
+  func dropMissingPlaytest() {
+    playtestExists = Backend.playtestExists
+    if settings.build == .playtest && !playtestExists { settings.build = .latest }
+  }
+
+  func launch() { launch(pick: pick, target: pick == "title" ? nil : targetSlot, boot: nil) }
+
+  /// `boot`: overrides "Boot straight into save" (Continue always boots).
+  func launch(pick: String, target: String?, boot: Bool?) {
     reloadSettings()
-    let args = Backend.launchArguments(pick: pick, targetSlot: pick == "title" ? nil : targetSlot,
-                                       testControl: false, settings: settings)
+    let fellBack = settings.build == .playtest && !Backend.playtestExists
+    dropMissingPlaytest()
+    var launchSettings = settings
+    if let boot = boot { launchSettings.boot = boot }
+    let args = Backend.launchArguments(pick: pick, targetSlot: target, testControl: false, settings: launchSettings)
     busy = true
-    message = pick == "title" ? "Launching…" : "Preparing session and launching…"
+    crashLogs = nil
+    message = (fellBack ? Backend.playtestFallbackNote + " " : "")
+      + (pick == "title" ? "Launching…" : "Preparing session and launching…")
     lastSave = ""
     DispatchQueue.global().async {
       let result = Backend.json(args)
@@ -293,8 +365,9 @@ final class LauncherModel: SettingsModel {
           let info = result["result"] as? [String: Any]
           let session = info?["session"] as? String
           self.sessionState = session.map { $0 + "/test-state" }
-          self.message = session.map { "Running session \(URL(fileURLWithPath: $0).lastPathComponent)" }
-            ?? "Running on the live state folder."
+          self.message = (session.map { "Running session \(URL(fileURLWithPath: $0).lastPathComponent)" }
+            ?? "Running on the live state folder.")
+            + ((fellBack ? Backend.playtestFallbackNote : info?["note"] as? String).map { " " + $0 } ?? "")
           self.running = true
         } else {
           self.message = "Launch failed: \(result["error"] ?? "unknown error")"
@@ -364,7 +437,7 @@ final class LauncherModel: SettingsModel {
         }
       }
     }
-    let build = settings.build
+    let build = settings.build.effective(playtestExists: Backend.playtestExists)
     DispatchQueue.global().async {
       var args = ["run", "--build", build.rawValue]
       if !save.isEmpty { args += ["--save", save] }
@@ -408,9 +481,11 @@ final class LauncherModel: SettingsModel {
     DispatchQueue.global().async {
       let result = Backend.json(["update"], script: Backend.repoRoot + "/tools/fable2_playtest.py")
       let version = Backend.playtestVersion
+      let exists = Backend.playtestExists
       DispatchQueue.main.async {
         self.busy = false
         self.playtestVersion = version
+        self.playtestExists = exists
         if result["ok"] as? Bool == true {
           self.message = "Playtest build updated to \(version ?? "?")."
         } else {
@@ -449,11 +524,19 @@ struct LauncherView: View {
       Form {
         Section {
           Picker("Build", selection: $model.settings.build) {
-            Text("Playtest (frozen, \(model.playtestVersion ?? "not created yet"))").tag(BuildChoice.playtest)
             Text("Latest build (\(model.gameVersion))").tag(BuildChoice.latest)
+            if model.playtestExists {
+              Text("Playtest (frozen, \(model.playtestVersion ?? "unknown version"))").tag(BuildChoice.playtest)
+            } else {
+              Text("Playtest (no copy)").tag(BuildChoice.playtest).disabled(true)
+            }
           }
-          .help("Playtest: the frozen copy in out/playtest that agents never rebuild. "
-                + "Latest: out/build, replaced by every build.")
+          .help("Latest: out/build, replaced by every build (the default). "
+                + "Playtest: the frozen copy in out/playtest that agents never rebuild.")
+          if !model.playtestExists {
+            Text("No playtest copy; Update Playtest Build creates one.")
+              .font(.caption).foregroundStyle(.secondary)
+          }
           LabeledContent("Save") {
             Button("Choose Save…") { model.showPicker = true }
               .keyboardShortcut("o")
@@ -496,15 +579,46 @@ struct LauncherView: View {
       .fixedSize(horizontal: false, vertical: true)
 
       VStack(alignment: .leading, spacing: 10) {
-        HStack(spacing: 10) {
-          Button { model.launch() } label: {
-            Text(model.busy ? "Working…" : "Launch").font(.title3.weight(.semibold))
-              .frame(maxWidth: .infinity)
+        Toggle("Skip intro movies", isOn: model.binding(\.skipIntro))
+          .help("Off (default): the original logo movies and title intro play. On: straight to the title screen, "
+                + "with a shorter title fade (fast title). Same setting as Settings > General.")
+        if let item = model.continueItem {
+          // Continue from last save (2026-10-15): one click, the default button when a save exists.
+          VStack(alignment: .leading, spacing: 3) {
+            Button { model.continueLatest() } label: {
+              Text(model.busy ? "Working…" : "Continue from Last Save").font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!model.canLaunch)
+            .help("Boots straight into the newest save (live slots and library). ↩")
+            Text(model.meta.title(item)).font(.caption).fontWeight(.medium).lineLimit(1)
+            if !item.detail.isEmpty {
+              Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
           }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-          .disabled(!model.canLaunch)
+        }
+        HStack(spacing: 10) {
+          if model.continueItem != nil {
+            Button { model.launch() } label: {
+              Text(model.busy ? "Working…" : "Launch").font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .disabled(!model.canLaunch)
+            .help("Launch the pick above (the title screen or the chosen save).")
+          } else {
+            Button { model.launch() } label: {
+              Text(model.busy ? "Working…" : "Launch").font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
+            .disabled(!model.canLaunch)
+          }
           if model.running {
             Button("Close Game") { model.closeGame() }
               .controlSize(.large)
@@ -559,8 +673,14 @@ struct LauncherView: View {
       }
       if !model.lastSave.isEmpty { Text(model.lastSave).font(.caption) }
       if !model.message.isEmpty {
-        Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+          if let logs = model.crashLogs {
+            Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: logs, isDirectory: true)) }
+              .controlSize(.small)
+          }
+        }
       }
     }
   }
@@ -588,6 +708,29 @@ struct DevSettingsView: View {
 }
 
 // MARK: - App
+
+/// The launcher is assumed in use (2026-10-15): when a play game ends (this launcher's, or one started another way
+/// while the launcher runs) the app comes to the front with its launcher window, reopening it if it was closed.
+/// Never during a --snapshot or in background test mode (FABLE2_TEST_BACKGROUND=1).
+enum LauncherReturn {
+  /// Set by a scene that can open the launcher window (the player role's Window menu commands).
+  static var reopen: (() -> Void)?
+  static var titles: Set<String> { ["Fable II Launcher", "Fable II"] }
+  static func bringBack() {
+    guard DevSnapshot.request == nil, ProcessInfo.processInfo.environment["FABLE2_TEST_BACKGROUND"] != "1" else { return }
+    if NSApp.activationPolicy() != .regular { return }  // the player role's own Play hides it; gameEnded restores
+    if NSApp.isActive, let key = NSApp.keyWindow, titles.contains(key.title) { return }  // already back
+    let windows = NSApp.windows.filter { titles.contains($0.title) && ($0.isVisible || $0.isMiniaturized) }
+    let launcher = windows.first { $0.title == "Fable II Launcher" } ?? windows.first
+    if let window = launcher {
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      window.makeKeyAndOrderFront(nil)
+    } else {
+      reopen?()
+    }
+    NSApp.activate(ignoringOtherApps: true)
+  }
+}
 
 final class DevAppDelegate: NSObject, NSApplicationDelegate {
   func applicationWillFinishLaunching(_ notification: Notification) {
@@ -687,7 +830,9 @@ struct DevLauncherWindowHost: View {
 
 struct ToolsCommands: Commands {
   @ObservedObject var model: LauncherModel
+  @Environment(\.openWindow) private var openWindow
   var body: some Commands {
+    let _ = LauncherReturn.reopen = { [openWindow] in openWindow(id: "main") }
     CommandMenu("Tools") { DevToolItems(model: model) }
   }
 }
@@ -700,6 +845,13 @@ struct DevMainWindow: View {
     LauncherView(model: model).onAppear {
       if DevSnapshot.request?.tab == "picker" { model.showPicker = true }
       DevSnapshot.start(ready: { model.loaded }) { openSettings() }
+      // Testing: --press-continue / --press-launch press that front-page button once the save list is in (as the
+      // player's --press-play), so the whole button path, game end and return to the launcher run unattended.
+      for (flag, press) in [("--press-continue", { model.continueLatest() }), ("--press-launch", { model.launch() })]
+      where commandLine.contains(flag) {
+        func attempt() { if model.loaded { press() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: attempt) } }
+        attempt()
+      }
     }
   }
 }
@@ -708,7 +860,7 @@ struct DevLauncherApp: App {
   @NSApplicationDelegateAdaptor(DevAppDelegate.self) var delegate
   @StateObject private var model = LauncherModel()
   var body: some Scene {
-    Window("Fable II Dev Launcher", id: "main") { DevMainWindow(model: model) }
+    Window("Fable II Launcher", id: "main") { DevMainWindow(model: model) }
       .windowResizability(.contentSize)
       .commands { ToolsCommands(model: model) }
     Settings { DevSettingsView(model: model) }
@@ -742,6 +894,16 @@ func cliLaunch(_ argv: [String]) -> Int32 {
     case "--turbo-notice":
       guard let v = value.flatMap(TurboNotice.init(rawValue:)) else { return fail("--turbo-notice expects overlay or game") }
       s.turboNotice = v; i += 1
+    case "--turbo-speed":
+      guard let v = value.flatMap(Double.init), TurboSpeed.range.contains(v) else {
+        return fail("--turbo-speed expects 1.1 to 4.0")
+      }
+      s.turboSpeed = TurboSpeed.clean(v); i += 1
+    case "--turbo-audio":
+      guard let v = value.flatMap(TurboAudio.init(rawValue:)) else {
+        return fail("--turbo-audio expects natural, high-pitch or normal")
+      }
+      s.turboAudio = v; i += 1
     case "--trace-preset":
       guard let v = value.flatMap(TracePreset.init(rawValue:)) else {
         return fail("--trace-preset expects standard, off, loading, gpu or everything")
@@ -780,6 +942,9 @@ func cliLaunch(_ argv: [String]) -> Int32 {
   if pick.hasPrefix("live:") && !explicitTarget { target = nil }
   if pick == "title" { target = nil }
   let args = Backend.launchArguments(pick: pick, targetSlot: target, testControl: testControl, settings: s)
+  if s.build == .playtest && !Backend.playtestExists {  // launched as Latest (BuildChoice.effective)
+    FileHandle.standardError.write(Data((Backend.playtestFallbackNote + "\n").utf8))
+  }
   if printOnly {
     let data = (try? JSONSerialization.data(withJSONObject: args, options: [])) ?? Data()
     print(String(decoding: data, as: UTF8.self))
@@ -816,7 +981,7 @@ enum DevSnapshot {
   }
 
   @MainActor private static func write(_ request: (path: String, tab: String)) {
-    let main = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true || $0.title == "Fable II Dev Launcher" }
+    let main = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("main") == true || $0.title == "Fable II Launcher" }
     let window = request.tab == "picker" ? main?.attachedSheet
       : settingsTab == nil ? main
       : NSApp.windows.first { $0.isVisible && $0 !== main && $0.title == settingsTab!.title }

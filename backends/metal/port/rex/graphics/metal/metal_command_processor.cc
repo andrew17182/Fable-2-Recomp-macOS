@@ -491,6 +491,11 @@ void SampleThreadCpu() {
   frame_log::Record("tr_n_md_stencil_xfer", f, u.md_stencil_xfer);
   frame_log::Record("tr_n_md_carried", f, u.md_carried);
   frame_log::Record("tr_n_ssm_clear_la", f, u.ssm_clear_la);
+  frame_log::Record("tr_n_ssm_merged", f, u.ssm_merged);
+  frame_log::Record("tr_n_ssm_flushed", f, u.ssm_flushed);
+  frame_log::Record("tr_n_ssm_dontcare", f, u.ssm_dontcare);
+  frame_log::Record("tr_n_ssm_folded", f, u.ssm_folded);
+  frame_log::Record("tr_n_clr_const", f, u.clr_const);
   frame_log::Record("tr_n_fp_variant", f, u.fp_variant);
   frame_log::Record("tr_n_fp_variant_miss", f, u.fp_variant_miss);
   frame_log::Record("tr_n_tres_tile", f, u.tres_tile);
@@ -4270,7 +4275,13 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       tag = "c-mainpass";
       bit = 4;
     }
-    if (tag && !(dumped & bit)) {
+    // FABLE2_MAIN_DEPTH_DUMP_SKIP=<bits>: checkpoints left out (2 = b: the b
+    // dump flushes work [ssm-merge] would draw in the shadow-mask pass).
+    static const uint32_t skip = [] {
+      const char* v = std::getenv("FABLE2_MAIN_DEPTH_DUMP_SKIP");  // getenv-ok: once
+      return v ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
+    if (tag && !(dumped & bit) && !(skip & bit)) {
       dumped |= bit;
       if (FlushPreparedDrawQueue(PreparedDrawFlushReason::kRenderTargetUpdate)) {
         render_target_cache_->MainDepthDumpEdram(tag);
@@ -4724,14 +4735,26 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
   // FABLE2_NS_SPECIALIZE: the standard pipeline handle of this draw (null for
   // emulation pipelines), for the specialized-pipeline lookup below.
   MetalPipelineCache::PipelineHandle* spec_pipeline_handle = nullptr;
-  // Diagnostic: FABLE2_SKIP_VS=<hash hex> skips every draw with that vertex
-  // shader (what disappears shows what it draws).
+  // Diagnostic: FABLE2_SKIP_VS=<hash hex>[,<hash hex>...] skips every draw
+  // with those vertex shaders (what disappears shows what they draw).
   {
-    static const uint64_t skip_vs = [] {
+    static const std::vector<uint64_t> skip_vs = [] {
+      std::vector<uint64_t> list;
       const char* v = std::getenv("FABLE2_SKIP_VS");
-      return v ? std::strtoull(v, nullptr, 16) : 0ull;
+      while (v && *v) {
+        char* end = nullptr;
+        const uint64_t h = std::strtoull(v, &end, 16);
+        if (end == v) {
+          break;
+        }
+        list.push_back(h);
+        v = (*end == ',') ? end + 1 : end;
+      }
+      return list;
     }();
-    if (skip_vs && vertex_shader->ucode_data_hash() == skip_vs) {
+    if (!skip_vs.empty() &&
+        std::find(skip_vs.begin(), skip_vs.end(),
+                  vertex_shader->ucode_data_hash()) != skip_vs.end()) {
       draw_skip_reason_ = "ds_skip_vs";
       return pending_draw_pass_transfer_guard.Flush();
     }
@@ -4827,6 +4850,13 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
             factor_max);
         have_factors = !tess_cp_scratch_.empty();
       }
+      // FABLE2_TERRAIN_ADAPTIVE: every pass over a terrain patch tessellates
+      // with the same factors on the same path (the layers inherit the
+      // opaque passes' per-patch factors).
+      const bool terrain_shared_path =
+          TerrainLayerMatchMode() && have_factors &&
+          MatchTerrainPatchFactors(regs, vs_hash, primitive_processing_result,
+                                   tess_cp_scratch_);
       if (emu_stats::Enabled()) {
         const uint32_t kind =
             mode == xenos::TessellationMode::kAdaptive
@@ -4919,6 +4949,17 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
         } else {
           tess_cpu = !uniform;
         }
+      }
+      // Terrain under FABLE2_TERRAIN_ADAPTIVE: the opaque passes and the
+      // blended layers all take the reference pattern path in modes 1 and 3
+      // (one vertex function type and one pattern per factor tuple, so the
+      // same patch gets bit-identical positions in every pass; mixing
+      // Metal's tessellator and the reference let a layer fail the
+      // GreaterEqual test against the prepass). Mode 2 keeps everything on
+      // Metal's tessellator, which is consistent as well.
+      if (terrain_shared_path && (tess_mode == 1 || tess_mode == 3)) {
+        tess_exact = true;
+        tess_cpu = true;
       }
       // The reference pattern path (exact): runs of consecutive patches
       // sharing a pattern are drawn instanced.
@@ -5110,6 +5151,140 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
                         fmax_seen, bad_factor,
                         uint32_t(normalized_depth_control.zfunc),
                         uint32_t(normalized_depth_control.z_write_enable));
+      }
+      // FABLE2_TESS_FRAME_DUMP=<file> (diagnostic, default off,
+      // docs/adaptive-terrain-flashes-20261014.md): every tessellated draw of
+      // selected frames as one JSON line: shaders, path, depth state, the
+      // patch indices (continuous) or per-patch factors (adaptive) and the
+      // terrain constants, so tools/tess_frame_match.py can pair the patches
+      // of the opaque pass with the blended layers over the same ground.
+      // FABLE2_TESS_FRAME_DUMP_FRAMES=<first>:<every>:<count> (600:60:20).
+      static FILE* tess_dump_file = [] () -> FILE* {
+        const char* v = std::getenv("FABLE2_TESS_FRAME_DUMP");
+        return (v && *v) ? std::fopen(v, "w") : nullptr;
+      }();
+      if (tess_dump_file) {
+        static const std::array<uint64_t, 3> sel = [] {
+          std::array<uint64_t, 3> s = {600, 60, 20};
+          if (const char* v = std::getenv("FABLE2_TESS_FRAME_DUMP_FRAMES")) {
+            unsigned long long a = 0, b = 0, c = 0;
+            if (std::sscanf(v, "%llu:%llu:%llu", &a, &b, &c) == 3 && b) {
+              s = {a, b, c};
+            }
+          }
+          return s;
+        }();
+        const uint64_t f = frame_current_;
+        if (f >= sel[0] && (f - sel[0]) % sel[1] == 0 &&
+            (f - sel[0]) / sel[1] < sel[2]) {
+          static uint64_t draw_in_frame_frame = 0;
+          static uint32_t draw_in_frame = 0;
+          if (draw_in_frame_frame != f) {
+            draw_in_frame_frame = f;
+            draw_in_frame = 0;
+          }
+          std::string line = fmt::format(
+              "{{\"frame\":{},\"draw\":{},\"vs\":\"{:016X}\",\"ps\":\"{:016X}\","
+              "\"mode\":{},\"blended\":{},\"blend0\":\"{:08X}\","
+              "\"path\":\"{}\",\"zfunc\":{},\"zwrite\":{},\"zenable\":{},"
+              "\"depth_info\":\"{:08X}\",\"surface_info\":\"{:08X}\","
+              "\"color0_info\":\"{:08X}\",\"indx_offset\":{},\"min_index\":{},"
+              "\"max_index\":{},\"fmin\":{},\"fmax\":{},\"count\":{},"
+              "\"ib_type\":{},\"ib_fmt\":{},\"ib_endian\":{},"
+              "\"su_mode\":\"{:08X}\",\"poly_front\":[{},{}],"
+              "\"poly_back\":[{},{}],\"vport_z\":[{},{}]",
+              f, draw_in_frame++, vs_hash,
+              pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+              uint32_t(mode), tess_blended ? 1 : 0,
+              rendering_key.blendcontrol[0],
+              native_tess ? (native_tess_cpu ? "reference" : "tessellator")
+                          : "emulation",
+              uint32_t(normalized_depth_control.zfunc),
+              uint32_t(normalized_depth_control.z_write_enable),
+              uint32_t(normalized_depth_control.z_enable),
+              regs[XE_GPU_REG_RB_DEPTH_INFO], regs[XE_GPU_REG_RB_SURFACE_INFO],
+              regs[XE_GPU_REG_RB_COLOR_INFO], regs[XE_GPU_REG_VGT_INDX_OFFSET],
+              regs[XE_GPU_REG_VGT_MIN_VTX_INDX],
+              regs[XE_GPU_REG_VGT_MAX_VTX_INDX], factor_min, factor_max,
+              primitive_processing_result.host_draw_vertex_count,
+              uint32_t(primitive_processing_result.index_buffer_type),
+              uint32_t(primitive_processing_result.host_index_format),
+              uint32_t(primitive_processing_result.host_shader_index_endian),
+              regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
+              regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE),
+              regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET),
+              regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_SCALE),
+              regs.Get<float>(XE_GPU_REG_PA_SU_POLY_OFFSET_BACK_OFFSET),
+              regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE),
+              regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET));
+          // Constants the terrain domain shaders read (patch grid, scales,
+          // offsets, selectors) and the first 4 (the transform).
+          static const uint32_t kConsts[] = {0,   1,   2,   3,   8,   11,
+                                             14,  46,  47,  72,  113, 114,
+                                             115, 253, 254, 255};
+          line += ",\"c\":{";
+          for (size_t i = 0; i < std::size(kConsts); ++i) {
+            const uint32_t c = kConsts[i];
+            line += fmt::format(
+                "{}\"{}\":[{},{},{},{}]", i ? "," : "", c,
+                regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4),
+                regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4 + 1),
+                regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4 + 2),
+                regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4 + 3));
+          }
+          line += "},\"tf\":{";
+          for (uint32_t t = 16; t <= 19; ++t) {
+            line += fmt::format(
+                "{}\"{}\":\"{:08X}\"", t > 16 ? "," : "", t,
+                regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + t * 6 + 1]);
+          }
+          line += "}";
+          // The factors each patch was drawn with (adaptive; continuous
+          // layers after FABLE2_TERRAIN_LAYER_MATCH), then the indices.
+          if (have_factors) {
+            line += ",\"factors\":[";
+            for (size_t i = 0; i < tess_cp_scratch_.size(); ++i) {
+              line += fmt::format("{}{}", i ? "," : "", tess_cp_scratch_[i]);
+            }
+            line += "]";
+          }
+          if (mode != xenos::TessellationMode::kAdaptive &&
+              primitive_processing_result.index_buffer_type ==
+                  PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA) {
+            const uint32_t n = primitive_processing_result.host_draw_vertex_count;
+            const bool i32 = primitive_processing_result.host_index_format ==
+                             xenos::IndexFormat::kInt32;
+            const uint8_t* ib = static_cast<const uint8_t*>(
+                memory_->TranslatePhysical(
+                    primitive_processing_result.guest_index_base));
+            const xenos::Endian endian =
+                primitive_processing_result.host_shader_index_endian;
+            line += ",\"indices\":[";
+            for (uint32_t i = 0; ib && i < n; ++i) {
+              uint32_t v;
+              if (i32) {
+                std::memcpy(&v, ib + i * 4, 4);
+              } else {
+                uint16_t h;
+                std::memcpy(&h, ib + i * 2, 2);
+                v = h;
+              }
+              if (endian == xenos::Endian::k8in16 ||
+                  endian == xenos::Endian::k8in32) {
+                v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+              }
+              if (endian == xenos::Endian::k8in32 ||
+                  endian == xenos::Endian::k16in32) {
+                v = (v >> 16) | (v << 16);
+              }
+              line += fmt::format("{}{}", i ? "," : "", v);
+            }
+            line += "]";
+          }
+          line += "}\n";
+          std::fwrite(line.data(), 1, line.size(), tess_dump_file);
+          std::fflush(tess_dump_file);
+        }
       }
     }
   }
@@ -8902,14 +9077,16 @@ void MetalCommandProcessor::NativeTessTrace(uint64_t vs, uint64_t ps,
     REXLOG_INFO(
         "[tess-trace] device {} apple7 {} apple8 {} apple9 {} apple10 {}; "
         "tessellator fractional-even, half factors, CCW output, max 64; "
-        "FABLE2_NATIVE_TESS={} blended={} terrain-adaptive={} snap-uv={}",
+        "FABLE2_NATIVE_TESS={} blended={} terrain-adaptive={} "
+        "layer-match={} snap-uv={}",
         device_->name()->utf8String(),
         device_->supportsFamily(MTL::GPUFamilyApple7) ? 1 : 0,
         device_->supportsFamily(MTL::GPUFamilyApple8) ? 1 : 0,
         device_->supportsFamily(MTL::GPUFamilyApple9) ? 1 : 0,
         device_->supportsFamily(MTL::GPUFamily(1010)) ? 1 : 0,
         NativeTessMode(), NativeTessBlendedMode() ? 1 : 0,
-        TerrainAdaptiveMode() ? 1 : 0, NativeTessSnapUvMode() ? 1 : 0);
+        TerrainAdaptiveMode() ? 1 : 0, TerrainLayerMatchMode() ? 1 : 0,
+        NativeTessSnapUvMode() ? 1 : 0);
   }
   static std::unordered_set<uint64_t> seen;
   static std::map<std::string, uint64_t> counts;
@@ -8941,6 +9118,128 @@ void MetalCommandProcessor::NativeTessTrace(uint64_t vs, uint64_t ps,
     counts.clear();
     window_start = frame_current_;
   }
+}
+
+bool MetalCommandProcessor::MatchTerrainPatchFactors(
+    const RegisterFile& regs, uint64_t vs_hash,
+    const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+    std::vector<float>& factors) {
+  // Fable II terrain (guest ucode, docs/adaptive-terrain-flashes-20261014.md):
+  // the adaptive opaque terrain (depth prepass and colour passes) and the
+  // continuous material layers drawn over it with zfunc GreaterEqual. On the
+  // guest the layers tessellate at the uniform maximum; the game's adaptive
+  // factors are the maximum for every visible layered patch except those
+  // crossing the view's edge, where a layer then lands behind the prepass
+  // depth and the unlayered base (white or black) shows for a frame.
+  constexpr uint64_t kTerrainVs = UINT64_C(0x5003700B7C9B1C16);
+  constexpr uint64_t kLayerVsA = UINT64_C(0xC30A97D946FA2BE4);
+  constexpr uint64_t kLayerVsB = UINT64_C(0xFB68A7F2301210E1);
+  const xenos::TessellationMode mode =
+      primitive_processing_result.tessellation_mode;
+  const bool opaque =
+      vs_hash == kTerrainVs && mode == xenos::TessellationMode::kAdaptive;
+  const bool layer = (vs_hash == kLayerVsA || vs_hash == kLayerVsB) &&
+                     mode == xenos::TessellationMode::kContinuous;
+  if (!opaque && !layer) {
+    return false;
+  }
+  if (terrain_patch_factors_frame_ != frame_current_) {
+    terrain_patch_factors_frame_ = frame_current_;
+    terrain_patch_factors_.clear();
+  }
+  auto c = [&](uint32_t index, uint32_t component) {
+    return regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + index * 4 +
+                           component);
+  };
+  const uint32_t key_base[2] = {
+      regs[XE_GPU_REG_RB_DEPTH_INFO],
+      // Heightmap (tf16) base address.
+      regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 16 * 6 + 1] &
+          0xFFFFF000u};
+  const uint32_t index_offset = regs[XE_GPU_REG_VGT_INDX_OFFSET];
+  const uint32_t index_min = regs[XE_GPU_REG_VGT_MIN_VTX_INDX];
+  const uint32_t index_max = regs[XE_GPU_REG_VGT_MAX_VTX_INDX];
+  // Patch -> ground key, as both domain shaders compute it: idx (+ c113.x
+  // for the opaque shader), row = floor(idx * c11.y), col = idx - row *
+  // c11.x, origin = (col, row) * size + offset.
+  auto key_of = [&](uint32_t vertex_index, float add, float size_x,
+                    float size_y, float off_x, float off_y) {
+    uint32_t idx = (vertex_index + index_offset) & 0x00FFFFFFu;
+    idx = std::min(std::max(idx, index_min), index_max);
+    const float x = float(idx) + add;
+    const float row = std::floor(x * c(11, 1));
+    const float col = x - row * c(11, 0);
+    const float key_data[3] = {col * size_x + off_x, row * size_y + off_y,
+                               size_x};
+    uint32_t words[5] = {key_base[0], key_base[1]};
+    std::memcpy(words + 2, key_data, sizeof(key_data));
+    return XXH3_64bits(words, sizeof(words));
+  };
+  const uint32_t patches = uint32_t(factors.size() / 4);
+  if (opaque) {
+    for (uint32_t p = 0; p < patches; ++p) {
+      std::array<float, 4>& f = terrain_patch_factors_[key_of(
+          p, c(113, 0), c(8, 0), c(8, 1), c(47, 0), c(47, 1))];
+      std::copy_n(factors.data() + size_t(p) * 4, 4, f.begin());
+    }
+    return true;
+  }
+  // Layers: one patch per index (or per draw position when auto-indexed).
+  const uint8_t* indices = nullptr;
+  bool indices_32 = false;
+  if (primitive_processing_result.index_buffer_type ==
+      PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA) {
+    indices = static_cast<const uint8_t*>(memory_->TranslatePhysical(
+        primitive_processing_result.guest_index_base));
+    indices_32 = primitive_processing_result.host_index_format ==
+                 xenos::IndexFormat::kInt32;
+    if (!indices) {
+      return true;
+    }
+  } else if (primitive_processing_result.index_buffer_type !=
+             PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
+    return true;  // the shared path, no factors to inherit
+  }
+  const xenos::Endian endian =
+      primitive_processing_result.host_shader_index_endian;
+  static uint64_t matched = 0, unmatched = 0;
+  for (uint32_t p = 0; p < patches; ++p) {
+    uint32_t v = p;
+    if (indices) {
+      if (indices_32) {
+        std::memcpy(&v, indices + size_t(p) * 4, 4);
+      } else {
+        uint16_t h;
+        std::memcpy(&h, indices + size_t(p) * 2, 2);
+        v = h;
+      }
+      if (endian == xenos::Endian::k8in16 || endian == xenos::Endian::k8in32) {
+        v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+      }
+      if (endian == xenos::Endian::k8in32 || endian == xenos::Endian::k16in32) {
+        v = (v >> 16) | (v << 16);
+      }
+    }
+    auto it = terrain_patch_factors_.find(
+        key_of(v, 0.0f, c(46, 0), c(46, 1), c(113, 0), c(113, 1)));
+    if (it != terrain_patch_factors_.end()) {
+      std::copy(it->second.begin(), it->second.end(),
+                factors.data() + size_t(p) * 4);
+      ++matched;
+    } else {
+      ++unmatched;
+    }
+  }
+  if (NativeTessTraceEnabled()) {
+    static uint64_t last_frame = 0;
+    if (frame_current_ >= last_frame + 600) {
+      last_frame = frame_current_;
+      REXLOG_INFO("[tess-trace] terrain layers: {} patches took the opaque "
+                  "pass's factors, {} had no opaque patch (kept uniform)",
+                  matched, unmatched);
+    }
+  }
+  return true;
 }
 
 bool MetalCommandProcessor::ReadAdaptiveTessFactors(

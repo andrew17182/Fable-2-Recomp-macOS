@@ -3,8 +3,11 @@
 // Every guest time source goes through rex::chrono::Clock: the PPC timebase
 // (mftb -> QueryGuestTickCount), the GPU vblank timer, system time and timed
 // waits. Setting the guest time scalar therefore speeds up simulation,
-// animation, AI and timers together. Host audio callbacks stay real-time, so
-// sound plays at normal speed and drifts.
+// animation, AI and timers together. Audio follows through the SDK output
+// stage (rex::audio::SetPlaybackRate, patches/sdk/audio-playback-rate.patch):
+// the host consumes guest audio at the turbo rate and time-stretches
+// (AUNewTimePitch) or resamples (AUVarispeed) it into real time, per
+// [patches] turbo_audio / FABLE2_TURBO_AUDIO; "normal" keeps the old 1x audio.
 //
 // Rendering: vblanks arrive scale x faster, so the frame-dispatch hook
 // (fable2_hook_fps_60 at 0x82B9C8E8) waits 2 x scale vblanks per frame while
@@ -13,8 +16,9 @@
 // UX: off at startup; F7 or number-row 7 toggles it live (src/input/window_keyboard_mouse.h,
 // also via the background test channel key "f7"). [patches] turbo_scale is the
 // speed used while on (default 2.0; 1.1..4.0 in 0.1 steps - the SDK clock ratio
-// is quantized to tenths; 1.0 disables the hotkey). FABLE2_TURBO_SCALE=<x>
-// overrides the scale AND starts turbo on (automated tests).
+// is quantized to tenths; 1.0 disables the hotkey). FABLE2_TURBO_SPEED=<x>
+// (Dev Launcher / Player "Turbo speed") overrides the scale; FABLE2_TURBO_SCALE=<x>
+// overrides it AND starts turbo on (automated tests).
 //
 // A toggle only changes the guest/host tick ratio; the accumulated guest tick
 // count is kept, so the guest clock does not jump (src/core/fable2_guest_clock.h).
@@ -29,6 +33,9 @@
 #include <string>
 #include <thread>
 #include <rex/chrono/clock.h>
+#if __has_include(<rex/audio/downmix.h>)
+#include <rex/audio/downmix.h>
+#endif
 #include "fable2_flight_recorder.h"
 #include <rex/cvar.h>
 #include <rex/logging/macros.h>
@@ -51,11 +58,14 @@ inline const char* EnvScale() {
 inline double ConfiguredScale() {
   static const double scale = [] {
     double value = fable2::config::Get().turbo_scale;
-    if (const char* env = EnvScale()) {
+    // FABLE2_TURBO_SPEED (launcher setting) then FABLE2_TURBO_SCALE (tests) override the TOML.
+    for (const char* name : {"FABLE2_TURBO_SPEED", "FABLE2_TURBO_SCALE"}) {
+      const char* env = std::getenv(name);
+      if (!env || !*env) continue;
       char* end = nullptr;
       const double parsed = std::strtod(env, &end);
       if (end && !*end) value = parsed;
-      else REXSYS_WARN("[turbo] ignoring invalid FABLE2_TURBO_SCALE='{}'", env);
+      else REXSYS_WARN("[turbo] ignoring invalid {}='{}'", name, env);
     }
     if (!(value >= 1.0 && value <= 4.0)) {
       REXSYS_WARN("[turbo] scale {} outside 1.0..4.0; turbo disabled", value);
@@ -64,6 +74,42 @@ inline double ConfiguredScale() {
     return std::round(value * 10.0) / 10.0;
   }();
   return scale;
+}
+
+// Audio while turbo is on: [patches] turbo_audio, FABLE2_TURBO_AUDIO overrides.
+inline fable2::config::Values::TurboAudio AudioMode() {
+  static const auto mode = [] {
+    auto value = fable2::config::Get().turbo_audio;
+    if (const char* env = std::getenv("FABLE2_TURBO_AUDIO"); env && *env) {
+      if (const auto parsed = fable2::config::ParseTurboAudio(env)) value = *parsed;
+      else REXSYS_WARN("[turbo] ignoring FABLE2_TURBO_AUDIO='{}' (natural|high-pitch|normal)", env);
+    }
+    return value;
+  }();
+  return mode;
+}
+
+// Tell the SDK output stage how fast to consume guest audio (rate 1 = original path).
+inline void ApplyAudioRate(bool on, double scale) {
+#if defined(REX_AUDIO_PLAYBACK_RATE)
+  using TA = fable2::config::Values::TurboAudio;
+  const TA mode = AudioMode();
+  const auto sdk_mode = mode == TA::kNatural     ? rex::audio::PlaybackRateMode::kNaturalPitch
+                        : mode == TA::kHighPitch ? rex::audio::PlaybackRateMode::kHighPitch
+                                                 : rex::audio::PlaybackRateMode::kNormal;
+  rex::audio::SetPlaybackRate(on ? float(scale) : 1.0f, sdk_mode);
+#else
+  (void)on;
+  (void)scale;
+#endif
+}
+
+inline bool AudioFollows() {
+#if defined(REX_AUDIO_PLAYBACK_RATE)
+  return AudioMode() != fable2::config::Values::TurboAudio::kNormal;
+#else
+  return false;
+#endif
 }
 
 inline std::atomic<bool>& ActiveFlag() {
@@ -147,15 +193,17 @@ inline void SetActive(bool on) {
   if (applied) fable2::guestspeed::g_speed.store(on ? scale : 1.0, std::memory_order_relaxed);
   const uint64_t after = rex::chrono::Clock::QueryGuestTickCount();
   ActiveFlag().store(on, std::memory_order_relaxed);
+  if (applied) ApplyAudioRate(on, scale);
   fable2::fr::SetTag(fable2::fr::kTagTurbo, on ? 1 : 0);
   REXSYS_INFO(
       "[turbo] {} (scale {:.1f}x, guest speed {:.2f}, duration scalar {:.2f}{}, frame interval {} vblanks, "
-      "guest ticks {} -> {})",
+      "audio {}, guest ticks {} -> {})",
       on ? "ON" : "off", scale, fable2::guestspeed::Get(), rex::chrono::Clock::guest_time_scalar(),
       sdk_fixed ? " (SDK divides durations; turbo wait fix not needed)"
       : WaitFix() ? " (turbo wait fix; FABLE2_TURBO_WAIT_FIX=0 disables)"
                   : " (SDK, waits run long)",
-      on ? FrameInterval() : 2, before, after);
+      on ? FrameInterval() : 2,
+      AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)", before, after);
   if (g_notice && scale > 1.0) {
     char text[48];
     std::snprintf(text, sizeof(text), "Turbo %gx %s", scale, on ? "on" : "off");
@@ -199,8 +247,10 @@ inline void StartClockReport() {
 // is set (tests); F7/7 toggles it.
 inline void Init() {
   const double scale = ConfiguredScale();
-  REXSYS_INFO("[turbo] ready: F7/7 toggles {:.1f}x (turbo_scale{})", scale,
-              EnvScale() ? ", FABLE2_TURBO_SCALE" : "");
+  const char* speed_env = std::getenv("FABLE2_TURBO_SPEED");
+  REXSYS_INFO("[turbo] ready: F7/7 toggles {:.1f}x (turbo_scale{}), turbo audio {}", scale,
+              EnvScale() ? ", FABLE2_TURBO_SCALE" : speed_env && *speed_env ? ", FABLE2_TURBO_SPEED" : "",
+              AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)");
   if (EnvScale() && scale > 1.0) SetActive(true);
   StartClockReport();
 }

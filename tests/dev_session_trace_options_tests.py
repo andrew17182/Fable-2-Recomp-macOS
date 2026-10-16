@@ -125,7 +125,7 @@ class LaunchOptionTests(unittest.TestCase):
     def test_test_session_seeds_and_publishes_the_agent_cache(self):
         fp = dict(key='0123456789abcdef', components=dict(toolchain='t'))
         patch.object(dev.agent_cache, 'app_key', return_value=fp).start()
-        patch.object(dev.agent_cache, 'branch_fingerprints', return_value={'perf-staging': fp}).start()
+        patch.object(dev.agent_cache, 'branch_fingerprints', return_value={'main': fp}).start()
         shutil.rmtree(self.state / 'cache')  # the launch replaces the live clone with the agent cache seed
         record = dev.launch('library', 'fixture', 'none', test_control=True)
         rec = record['agent_cache']

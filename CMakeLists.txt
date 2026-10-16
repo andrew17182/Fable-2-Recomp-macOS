@@ -231,6 +231,19 @@ if(APPLE)
         COMMAND fable_2_window_title_tests
         COMMENT "Checking the window title (tests/window_title_tests.cpp)")
     add_dependencies(fable_2 fable_2_window_title_tests)
+
+    # Native save-compressor search (src/core/hotfunc/save/, FABLE2_NATIVE_SAVE_COMPRESS): the native zlib
+    # longest_match against the recompiler's literal sub_82B52630 on every call of a zlib 1.2.3 deflate driver
+    # plus a state fuzz (docs/load-fixes-20261016.md). `--full`, captured save folders and `--bench` by hand.
+    add_executable(fable_2_save_compress_tests tests/save_compress_tests.cpp)
+    target_compile_options(fable_2_save_compress_tests PRIVATE -UNDEBUG)
+    target_include_directories(fable_2_save_compress_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/default" src/core/hotfunc/save)
+    target_link_libraries(fable_2_save_compress_tests PRIVATE rex::runtime)
+    add_custom_command(TARGET fable_2_save_compress_tests POST_BUILD
+        COMMAND fable_2_save_compress_tests
+        COMMENT "Checking the native save-compressor search (tests/save_compress_tests.cpp)")
+    add_dependencies(fable_2 fable_2_save_compress_tests)
 endif()
 
 # Build id for the flight recorder's trace/session.json.

@@ -170,7 +170,29 @@ struct SettingsTabView: View {
           ForEach(TurboNotice.allCases) { style in Text(style.title).tag(style) }
         }
         .help("How the \"Turbo 2x on/off\" notice (F7) is shown (docs/turbo.md).")
+        LabeledContent("Turbo speed") {
+          HStack {
+            Slider(value: Binding(get: { model.settings.turboSpeed },
+                                  set: { model.settings.turboSpeed = TurboSpeed.clean($0) }),
+                   in: TurboSpeed.range, step: 0.1)
+            Stepper(TurboSpeed.label(model.settings.turboSpeed),
+                    value: Binding(get: { model.settings.turboSpeed },
+                                   set: { model.settings.turboSpeed = TurboSpeed.clean($0) }),
+                    in: TurboSpeed.range, step: 0.1)
+              .monospacedDigit()
+          }
+        }
+        .help("How fast the game runs while turbo is on. Press F7 (or 7) in game to turn turbo on or off; "
+              + "it starts off every launch. 1.1× to 4.0×, default 2.0× (docs/turbo.md).")
+        Picker("Turbo audio", selection: $model.settings.turboAudio) {
+          ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
+        }
+        .help("Sound while turbo (F7) is on. Natural pitch: speech and music speed up with the game "
+              + "without sounding higher (Apple time-stretch). High pitch: sped up like a fast-forwarded "
+              + "tape. Normal speed: audio stays at 1× and drifts behind the game (the old behaviour). "
+              + "No effect while turbo is off.")
       }
+      section(.general, "Mods")
     case .display:
       Section("Resolution") {
         Picker("Internal resolution", selection: $model.settings.resolution) {

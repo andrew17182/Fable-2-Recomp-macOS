@@ -519,7 +519,12 @@ with their own modification.
   - The exact path costs ~0.3 ms of render-thread CPU per frame, writing ~1.6M indices.
   - GPU time is between the default and the hardware path, within run-to-run noise of both.
 
-**M3 white flashes (open, 2026-10-14).**
+**M3 white flashes (fixed 2026-10-15, [adaptive-terrain-flashes-20261014.md](adaptive-terrain-flashes-20261014.md)).**
+- Cause: with `FABLE2_TERRAIN_ADAPTIVE=1` the blended terrain layers kept the uniform maximum on Metal's
+  tessellator, while the opaque terrain and its prepass under them used the guest's adaptive factors on the
+  reference path. Wherever a layer fell behind the prepass depth (GreaterEqual), the unlayered base showed, and it
+  is white. Fix: `FABLE2_TERRAIN_LAYER_MATCH` (default on); the layers take the opaque patch's factors and path.
+  The notes below are the investigation as it went.
 - The M3 Pro test Mac (apple9) shows white flashes on geometry while the camera moves, with native tessellation on. The
   M5 Max (apple10) does not, and turning native tessellation off fixes it.
 - Diagnostic: `FABLE2_NATIVE_TESS_TRACE=1`, which logs the path per VS/PS combination, factor ranges, depth state and

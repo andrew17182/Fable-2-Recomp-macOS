@@ -276,6 +276,7 @@ def _launch_held(hold, display_sync, record, replay, state_source, checkpoint, a
     # Window-title tag (src/core/fable2_window_title.h); a caller's FABLE2_WINDOW_TAG (warm-up) wins.
     env.setdefault('FABLE2_WINDOW_TAG', common.window_tag())
     env.update(FABLE2_APP_STATE_ROOT=str(state), FABLE2_GAME_DATA_ROOT=str(ROOT), FABLE2_TEST_CONTROL_DIR=str(control))
+    common.force_test_intro_skip(env, ROOT)  # tests always skip the intros + fast title (FABLE2_TEST_INTRO=1 opts out)
     extra_args = [str(a) for a in game_args or []]  # e.g. --async_shader_compilation=false (cache warm-up)
     # REX_VSYNC=0 (environment or out/test-control-env.json; f2diag/dev-session "uncapped") turns vsync off. Before
     # 2026-10-14 this always passed --vsync=true, which outranked REX_VSYNC, so "uncapped" test-control runs were capped.

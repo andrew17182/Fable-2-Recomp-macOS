@@ -78,7 +78,7 @@ Delete `fable2_window.toml` while the game is closed to reset the position.
 
 ### Test-window placement
 
-Dev Launcher play sessions copy the live `fable2_window.toml` and write a moved
+Launcher play sessions copy the live `fable2_window.toml` and write a moved
 window back to it when the game exits. Agent/test games keep their own placement
 instead (`tools/fable2_test_windows.py`), so moving a test window never moves the
 play window and the next test window opens where you left the last one:
@@ -86,7 +86,7 @@ play window and the next test window opens where you left the last one:
 - Covers every test launch: `fable2_test_control.py launch` and the MCP `launch`,
   `fable2_dev_session.py launch --test-control` (so `f2diag run ...` and the
   portable warm-up), `fable2_cache_warm.py`, and `fable2_benchmark.py run`
-  (the Dev Launcher's Run Benchmark).
+  (the launcher's Run Benchmark).
 - Store: `<main checkout>/out/instances/test-windows/<key>.toml`, shared by the
   main checkout and every agent slot. Key `<checkout>-<n>`: `main` or `agent-N`,
   plus the concurrent index `n` (the 1st, 2nd... test game running at the same

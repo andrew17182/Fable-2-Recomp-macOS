@@ -56,6 +56,7 @@ const std::set<std::string> kExpectedKeys = {
     "input.mouse_look_scale",
     "patches.fps_60",
     "patches.turbo_scale",
+    "patches.turbo_audio",
     "patches.unlock_website",
     "patches.unlock_ce",
     "patches.hero_dog_texture_readback",
@@ -117,6 +118,9 @@ int main() {
       if (name == "patches.fps_60") {
         CHECK(node.value_exact<std::string>() == std::string("auto"));
         changed.at_path("patches").as_table()->insert_or_assign("fps_60", false);
+      } else if (name == "patches.turbo_audio") {
+        CHECK(node.value_exact<std::string>() == std::string("natural"));
+        changed.at_path("patches").as_table()->insert_or_assign("turbo_audio", "normal");
       } else if (name == "graphics.upscaling") {
         CHECK(node.value_exact<std::string>() == std::string("off"));
         changed.at_path("graphics").as_table()->insert_or_assign("upscaling", "metalfx-spatial");

@@ -71,9 +71,10 @@ No Xcode, Python or Terminal needed.
    (a few minutes; the image is only read). If this Mac already has the portable Fable II with its
    game files, they are reused instead.
 4. Plug in the power adapter, close other apps and leave the Mac alone. The game opens and closes by
-   itself 9 times (cold first launch, 1x/2x/3x resolution uncapped and at 60 FPS, then two traced
-   runs at 1x and 2x that record per-pass GPU timing), about 6 minutes on an M5 Max, longer on
-   smaller Macs (plus the first-time copy). Cancel stops it.
+   itself 10 times (cold first launch; 1x and 2x resolution uncapped and at 60 FPS; 3x uncapped;
+   2x uncapped again with one renderer switch on; then traced runs at 1x and 2x, with and without
+   that switch, that record per-pass GPU timing), about 4 minutes on an M5 Max, 5-6 minutes on an
+   M3 Pro (plus the first-time copy). Cancel stops it.
 5. macOS may ask whether "Fable II Benchmark" may access your Desktop: allow it, that is where the
    report goes. At the end, "Show Report" opens the folder
        Desktop/Fable II Benchmark/<chip>-<model>-<date>/

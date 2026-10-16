@@ -298,6 +298,15 @@ int main(int argc, char **argv) {
     for (NSString *name in @[@"fable2_config.toml", @"fable2_patches.toml"])
       CopyDefault([resources stringByAppendingPathComponent:name], [state stringByAppendingPathComponent:name]);
     setenv("FABLE2_APP_STATE_ROOT", state.fileSystemRepresentation, 1);
+    // Opened directly (Finder, Dock, Setup's Play; a launcher always sets the variable): follow the Fable II
+    // Launcher's saved "Skip intro movies" (defaults domain local.fable2recomp.devlauncher, off by default), so the
+    // switch means the same however the game starts (2026-10-15: a direct open played the intros with it on).
+    if (!portable && !getenv("FABLE2_SKIP_INTRO_MOVIES")) {
+      CFPropertyListRef value = CFPreferencesCopyAppValue(CFSTR("skipIntro"), CFSTR("local.fable2recomp.devlauncher"));
+      BOOL on = value && CFGetTypeID(value) == CFBooleanGetTypeID() && CFBooleanGetValue((CFBooleanRef)value);
+      if (value) CFRelease(value);
+      setenv("FABLE2_SKIP_INTRO_MOVIES", on ? "1" : "0", 1);
+    }
     // The frozen playtest copy (tools/fable2_playtest.py marks its Info.plist) titles its window
     // "Fable II Playtest <version>" however it is opened (local agent docs).
     if ([[bundle objectForInfoDictionaryKey:@"Fable2Playtest"] boolValue] && !getenv("FABLE2_INSTANCE_ROLE"))

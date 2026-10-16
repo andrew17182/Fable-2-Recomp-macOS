@@ -156,6 +156,17 @@ struct UploadTraceCounters {
   // [ssmask] (tr_n_ssm_clear_la, docs/ssmask-20261014.md): in-pass
   // whole-target deferred clears turned into the pass's clear load action.
   uint32_t ssm_clear_la = 0;
+  // [ssm-merge] FABLE2_SSM_MERGE (docs/ssm-merge-20261015.md): stencil-only
+  // alias clears whose transfers and clears went into the next draw pass
+  // (merged), went the standalone way at the next cache call (flushed), and
+  // passes whose depth load became DontCare because the in-pass clear and
+  // transfers cover the whole target (dontcare).
+  uint32_t ssm_merged = 0, ssm_flushed = 0, ssm_dontcare = 0;
+  // ssm_folded: dead stencil-only clears dropped (FABLE2_SSM_STENCIL_FOLD).
+  uint32_t ssm_folded = 0;
+  // clr_const: transfer sources read from a constant clear texture
+  // (FABLE2_CLEAR_CONST_SOURCE) instead of flushing their pending clear.
+  uint32_t clr_const = 0;
   // [ssmask] FABLE2_EFFECTS_FOOTPRINT_VARIANT: draws given the pixel-shader
   // variant with the footprint code, and draws whose variant without it met
   // a scaled texture behind a non-depth offset fetch (must stay 0).

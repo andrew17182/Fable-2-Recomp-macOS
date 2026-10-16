@@ -7,7 +7,10 @@ what each role can reach, from the same data its windows and menus are built fro
   - developer mode off: none of the Dev Launcher's windows or tools are shown;
   - developer mode on without a checkout: the Dev Launcher window is there (with the "needs a source checkout" note),
     the repository tools are not;
-  - the separate DevLauncher target is gone: build_dev_launcher.sh builds the player's entry point.
+  - the separate DevLauncher target is gone: build_dev_launcher.sh builds the player's entry point;
+  - the build choice defaults to Latest; a saved "playtest" (the old default) becomes Latest once (version flag),
+    a later deliberate Playtest is kept; with no playtest copy (a fresh clone) Playtest launches Latest with a note.
+    These run `--launch --print-args` against scratch checkout roots, with a throwaway defaults domain.
 Scratch state folders only. Runs under /usr/bin/python3 (3.9)."""
 import json
 import os
@@ -33,19 +36,24 @@ class UnifiedLauncherTests(unittest.TestCase):
         subprocess.run(['xcrun', 'swiftc', '-O', '-target', 'arm64-apple-macos15.0', '-o', str(binary)]
                        + [str(s) for s in APP], check=True, capture_output=True)
         cls.apps = {}
+        # devprefs: the Dev Launcher role under a throwaway bundle id, so build-choice tests own their defaults domain.
+        cls.domain = 'org.fable2recomp.test.devprefs%d' % os.getpid()
         for role, extra in (('dev', dict(Fable2DevLauncher=True, Fable2DeveloperModeDefault=True,
                                          Fable2RepoRoot=str(ROOT))),
+                            ('devprefs', dict(Fable2DevLauncher=True, Fable2DeveloperModeDefault=True)),
                             ('player', dict(Fable2BuildsGame=True, Fable2StateFolder='Fable II test'))):
             app = cls.root / role / 'Test.app'
             (app / 'Contents/MacOS').mkdir(parents=True)
             shutil.copy2(binary, app / 'Contents/MacOS/FableIIPlayer')
-            info = dict(CFBundleExecutable='FableIIPlayer', CFBundleIdentifier='org.fable2recomp.test.' + role,
+            bundle_id = cls.domain if role == 'devprefs' else 'org.fable2recomp.test.' + role
+            info = dict(CFBundleExecutable='FableIIPlayer', CFBundleIdentifier=bundle_id,
                         CFBundlePackageType='APPL', **extra)
             (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
             cls.apps[role] = app / 'Contents/MacOS/FableIIPlayer'
 
     @classmethod
     def tearDownClass(cls):
+        subprocess.run(['defaults', 'delete', cls.domain], capture_output=True)
         cls.temp.cleanup()
 
     def caps(self, role, developer=None, checkout=True):
@@ -78,6 +86,61 @@ class UnifiedLauncherTests(unittest.TestCase):
         self.assertIsNone(player['checkout'])
         self.assertIn('window:dev-launcher', player['capabilities'])
         self.assertFalse([c for c in player['capabilities'] if c.startswith('tool:')])
+
+    # Build choice (2026-10-15: a fresh clone has no out/playtest; the old Playtest default failed every launch).
+    def roots(self):
+        fresh = Path(tempfile.mkdtemp(dir=str(self.root)))  # a fresh clone: no out/playtest
+        frozen = Path(tempfile.mkdtemp(dir=str(self.root)))
+        (frozen / 'out/playtest/Fable II.app/Contents/MacOS').mkdir(parents=True)
+        (frozen / 'out/playtest/playtest.json').write_text('{"version": "test"}')
+        return fresh, frozen
+
+    def prefs(self, **values):
+        subprocess.run(['defaults', 'delete', self.domain], capture_output=True)
+        for key, value in values.items():
+            kind = '-int' if isinstance(value, int) else '-string'
+            subprocess.run(['defaults', 'write', self.domain, key, kind, str(value)], check=True)
+
+    def read_pref(self, key):
+        r = subprocess.run(['defaults', 'read', self.domain, key], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    def launch_build(self, root, *extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('FABLE2_', 'REX_'))}
+        env['FABLE2_REPO_ROOT'] = str(root)
+        r = subprocess.run([str(self.apps['devprefs']), '--launch', '--print-args', *extra], env=env,
+                           capture_output=True, text=True, timeout=60, check=True)
+        args = json.loads(r.stdout)
+        return args[args.index('--build') + 1], r.stderr
+
+    def test_build_defaults_to_latest(self):
+        fresh, frozen = self.roots()
+        for root in (fresh, frozen):
+            self.prefs()
+            self.assertEqual(self.launch_build(root)[0], 'latest')
+
+    def test_saved_playtest_migrates_to_latest_once(self):
+        _, frozen = self.roots()
+        self.prefs(build='playtest')  # the old default, saved before the migration existed
+        self.assertEqual(self.launch_build(frozen)[0], 'latest')
+        self.assertEqual(self.read_pref('build'), 'latest')
+        self.assertEqual(self.read_pref('buildChoiceMigration'), '1')
+        # A deliberate Playtest pick after the migration is kept.
+        self.prefs(build='playtest', buildChoiceMigration=1)
+        self.assertEqual(self.launch_build(frozen)[0], 'playtest')
+        self.assertEqual(self.read_pref('build'), 'playtest')
+
+    def test_missing_playtest_copy_launches_latest_with_note(self):
+        fresh, frozen = self.roots()
+        self.prefs(build='playtest', buildChoiceMigration=1)
+        build, note = self.launch_build(fresh)
+        self.assertEqual(build, 'latest')
+        self.assertIn('No playtest copy', note)
+        self.prefs()
+        build, note = self.launch_build(fresh, '--build', 'playtest')
+        self.assertEqual(build, 'latest')
+        self.assertIn('No playtest copy', note)
+        self.assertEqual(self.launch_build(frozen, '--build', 'playtest'), ('playtest', ''))
 
     def test_one_target(self):
         script = (ROOT / 'tools/macos/build_dev_launcher.sh').read_text()

@@ -309,6 +309,26 @@ class Fable2App : public rex::ReXApp {
     fable2::fr::SetTag(fable2::fr::kTagFpsMode, fable2::fps::Use60() ? 60 : 30);
     fable2::fr::SetTag(fable2::fr::kTagTurbo, fable2::turbo::Active() ? 1 : 0);
     fable2::turbo_notice::Install(game_data_root(), [this] { return immediate_drawer(); });
+    fable2::character_editor::SetGameDataRoot(game_data_root());  // opt-in mod (docs/character-editor.md)
+    {
+      // Skip intro (src/core/fable2_skip_intro.h): the effective decision, and whether the stand-in movies the
+      // logo opens are redirected to exist. Missing stand-ins mean the full movies play (fresh clone, 2026-10-15;
+      // tools/fable2_skip_intro.py makes them). Fast title (FABLE2_TITLE_FAST) follows skip intro.
+      const char* skip = std::getenv("FABLE2_SKIP_INTRO_MOVIES");
+      const bool on = skip && skip[0] == '1';
+      int present = 0;
+      std::error_code ec;
+      for (const char* name : {"ms.bik", "lh.bik", "mw.bik"})
+        if (std::filesystem::is_regular_file(game_data_root() / "out/skipintro" / name, ec)) ++present;
+      if (!on)
+        REXSYS_INFO("[skip-intro] off: the logo movies play (FABLE2_SKIP_INTRO_MOVIES={})", skip ? skip : "unset");
+      else if (present == 3)
+        REXSYS_INFO("[skip-intro] on: logo movies redirected to {}/out/skipintro (3/3 stand-ins)",
+                    game_data_root().string());
+      else
+        REXSYS_WARN("[skip-intro] on, but only {}/3 stand-in movies in {}/out/skipintro: the missing ones play in "
+                    "full (python3 tools/fable2_skip_intro.py ensure)", present, game_data_root().string());
+    }
 #ifdef __APPLE__
     // FPS counter (src/core/fable2_fps_counter.h): F9 toggles; start state from
     // [graphics] fps_counter / FABLE2_FPS_COUNTER.
@@ -604,6 +624,11 @@ class Fable2App : public rex::ReXApp {
     // mtime-respecting copy can leave a stale/truncated manifest in place;
     // this appends any file that is on disk but unlisted. Idempotent.
     fable2::manifestheal::EnsureComplete(game_data_root());
+    // [bank-prep] The headless shader prep reads the disc's shader bank from here (Metal plugin,
+    // docs/shader-precompile-20261015.md).
+    if (const char* root = std::getenv("FABLE2_GAME_DATA_ROOT"); !root || !*root) {  // getenv-ok: once
+      setenv("FABLE2_GAME_DATA_ROOT", game_data_root().string().c_str(), 1);
+    }
 
     // Resolve the host path the same way the SDK does (game:\ / d:\ ->
     // game_data_root). The SDK's path may use either slash direction

@@ -1,0 +1,3 @@
+-- character_editor_backup.lua: intentionally empty. character_editor.lua RunScript()s this file to ask
+-- the host to back up the save; the host's RunScript probe sees the path and makes the copy
+-- (src/core/fable2_character_editor.h), then answers in character_editor_status.lua.

@@ -56,7 +56,7 @@ if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
     target_compile_options(rexgpu-metal PRIVATE -ffile-prefix-map=$ENV{HOME}=~)
 endif()
 target_compile_options(rexgpu-metal PRIVATE -ffile-prefix-map=${FABLE2_REPO_ROOT}=.)
-target_link_libraries(rexgpu-metal PRIVATE rex::runtime rex::xxhash ${FABLE2_CONVERTER_LIBS}
+target_link_libraries(rexgpu-metal PRIVATE rex::runtime rex::xxhash ${FABLE2_CONVERTER_LIBS} z
     "-framework Metal" "-framework Foundation" "-framework AppKit"
     "-framework QuartzCore" "-framework MetalKit" "-framework MetalFX"
     "-framework ImageIO" "-framework CoreGraphics")  # ImageIO: flash-kit example PNGs (metal_flash_detect.h)

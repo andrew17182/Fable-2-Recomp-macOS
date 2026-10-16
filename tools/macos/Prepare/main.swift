@@ -5,7 +5,7 @@
 // It reuses the setup app's disc reader (tools/macos/Setup/GDFX.swift) and hashing
 // (Support.swift); it is compiled together with those two files.
 //
-//   FableIIPrepare --target <GameData> [--iso <image>] [--expected-xex <sha256>] [--lua <dir>]
+//   FableIIPrepare --target <GameData> [--iso <image> [--iso-fd N]] [--expected-xex <sha256>] [--lua <dir>]
 //                  [--result <plist>] [--headless] [--progress] [--stop-on-mismatch]
 //       Ask for the disc image (unless --iso), extract default.xex, data/, $SystemUpdate/ and
 //       nxeart into <GameData>, then stage our side files (below). Exit 0 = ready, 3 = cancelled,
@@ -43,6 +43,8 @@ let runtimeWrittenLua: Set<String> = ["recomp_notify_text.lua"]
 struct PrepareOptions {
   var target: String?
   var iso: String?
+  /// An open file descriptor of the image (inherited from the player app); --iso then only names it.
+  var isoFD: Int32?
   var expectedXex: String?
   var lua: String?
   var result: String?
@@ -62,6 +64,7 @@ struct PrepareOptions {
       switch args[i] {
       case "--target": o.target = value()
       case "--iso": o.iso = value()
+      case "--iso-fd": o.isoFD = value().flatMap { Int32($0) }
       case "--expected-xex": o.expectedXex = value()?.lowercased()
       case "--lua": o.lua = value()
       case "--result": o.result = value()
@@ -302,10 +305,26 @@ func prepare(_ o: PrepareOptions, target: URL, progress: Progress) -> Int32 {
     let iso = isoPath!
     do {
       log("disc image: \(iso)")
-      let attributes = try fm.attributesOfItem(atPath: iso)
-      let isoSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-      let isoModified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-      let disc = try DiscImage(path: iso)
+      let isoSize: UInt64
+      let isoModified: Double
+      let disc: DiscImage
+      if let inherited = o.isoFD, isoPath == o.iso {
+        // Opened by the player app (macOS privacy: the image may be in Downloads, chosen in its open panel).
+        var info = stat()
+        let copy = dup(inherited)
+        guard copy >= 0, fstat(copy, &info) == 0 else {
+          if copy >= 0 { close(copy) }
+          throw PrepareError.message("The disc image handed over by the app could not be read (\(String(cString: strerror(errno)))).")
+        }
+        isoSize = UInt64(info.st_size)
+        isoModified = Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1e9
+        disc = try DiscImage(fd: copy, path: iso)
+      } else {
+        let attributes = try fm.attributesOfItem(atPath: iso)
+        isoSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        isoModified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        disc = try DiscImage(path: iso)
+      }
       let root = try disc.rootEntries().filter { Setup.discEntries.contains($0.name) }
       let names = Set(root.map { $0.name })
       guard Setup.requiredDiscEntries.isSubset(of: names) else {
@@ -313,7 +332,7 @@ func prepare(_ o: PrepareOptions, target: URL, progress: Progress) -> Int32 {
       }
       // A marker from a different image means sizes alone can't be trusted: extract everything again.
       var marker = readMarker(target)
-      let sameImage = marker.map { $0.isoSize == isoSize && $0.isoPath == iso && $0.isoModified == isoModified } ?? true
+      let sameImage = marker.map { $0.isoSize == isoSize && $0.isoPath == iso && abs($0.isoModified - isoModified) < 0.001 } ?? true
       if !sameImage { log("game data came from another image; extracting everything again") }
       marker = Marker(isoPath: iso, isoSize: isoSize, isoModified: isoModified, xexSHA256: nil, xexMatches: nil,
                       complete: false)

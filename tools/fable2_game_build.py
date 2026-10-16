@@ -9,8 +9,10 @@ installed, turns that plus the player's extracted default.xex into a runnable ga
   1. cmake      find CMake 3.25 or later, else download Kitware's official build (version pinned, SHA-256 checked)
   2. sync       copy the kit into <state>/Build (only files whose content changed, so make stays incremental)
   3. codegen    rexglue init (first time), configure, rexglue codegen, configure again
-  4. compile    the recomp patches, fable_2_register.cpp alone (the largest, -O0 TU), then everything with a
-                job count sized by RAM; memory pressure or swap growth stops make and resumes with fewer jobs
+  4. compile    the recomp patches, then everything with a job count sized by RAM (fable_2_register.cpp, the
+                -O0 TU, starts in the first wave); memory pressure or swap growth stops make and resumes with
+                fewer jobs. Generated code is compiled without debug info (function names stay in the symbol
+                table); --debug-info line-tables-only and --register-first restore the earlier build
   5. link       (part of make)
   6. assemble   <state>/Game/Fable II.bundle: the built fable_2 with the runtime libraries, ad-hoc signed here
   7. done       <state>/Build/build-state.json (what the app checks before it plays)
@@ -23,6 +25,7 @@ ever leaves it. Output is line based for the app's progress window; every comman
   [eta] <seconds>              estimated time left (compile only)
   [memory] <text>              a job-count change from the memory watch
   [error] <text>               plain-English failure (then exit 1); exit 3 = cancelled (SIGTERM / SIGINT)
+  [denied] <errno> <path>      reading <path> was refused (macOS privacy or permissions; before the [error] line)
 
   /usr/bin/python3 -I -B -u fable2_game_build.py build --kit KIT --state STATE --game-data GAMEDATA
         [--jobs N] [--measure] [--ignore-system-cmake] [--cmake-url URL] [--clean]
@@ -52,6 +55,9 @@ CMAKE_PIN = dict(version='4.1.2',
                  url='https://github.com/Kitware/CMake/releases/download/v4.1.2/cmake-4.1.2-macos-universal.tar.gz',
                  sha256='3be85f5b999e327b1ac7d804cbc9acd767059e9f603c42ec2765f6ab68fbd367')
 PRESET = 'mac-arm64-release'
+# Debug info for the generated code (REXGLUE_RECOMP_DEBUG_INFO): none saves ~7% of the compile CPU; function names
+# stay in the symbol table for crash reports, only file:line of generated code is lost (docs/release-app.md).
+RECOMP_DEBUG_INFO = 'none'
 REGISTER_OBJECT = 'generated/default/fable_2_register.cpp.o'
 # Not .app: a .bundle is not listed as an application by Spotlight or Launchpad (same bundle id and Info.plist,
 # so the running game is still Fable II in the Dock).
@@ -523,7 +529,10 @@ def build(args):
             shutil.rmtree(scaffold, ignore_errors=True)
     configure = [cmake, '--preset', PRESET, '-G', 'Unix Makefiles', '-DCMAKE_PREFIX_PATH=' + str(sdk),
                  '-DREXGLUE_SDK_ROOT=' + str(sdk), '-DCMAKE_C_FLAGS=-mcpu=apple-m1', '-DCMAKE_CXX_FLAGS=-mcpu=apple-m1',
-                 '-DFABLE2_GPU_PLUGIN_XENOS=OFF']
+                 '-DFABLE2_GPU_PLUGIN_XENOS=OFF', '-DREXGLUE_RECOMP_DEBUG_INFO=' + args.debug_info,
+                 # The build's own Python steps (recomp patches, version header) run under the same /usr/bin/python3
+                 # (Command Line Tools) as this script, never a Homebrew Python that happens to be next to CMake.
+                 '-DPython3_EXECUTABLE=/usr/bin/python3']
     measure_dir = build_dir / 'measure'
     if args.measure:
         if measure_dir.exists(): shutil.rmtree(measure_dir)
@@ -557,7 +566,7 @@ def build(args):
     jobs = plan['jobs']
     say('Jobs: %d (%s)' % (jobs, plan['why']))
     stage('compile', 'Compiling the game (%d jobs)' % jobs)
-    progress('compile', 0, 'Compiling the largest file first…')
+    progress('compile', 0, 'Compiling the game…')
     watch = MemoryWatch()
     watch.start()
     compile_started = time.monotonic()
@@ -582,10 +591,13 @@ def build(args):
                     state['eta_at'] = time.monotonic()
                     say('[eta] %d' % int(elapsed / state['pct'] * (100 - state['pct'])))
     try:
-        # The register TU alone first: one function that registers ~61,000 entry points (-O0), the largest job.
-        status_code = run([cmake, '--build', binary_dir, '--target', REGISTER_OBJECT], cwd=src, env=env)
-        if status_code and not watch.tripped.is_set():
-            raise BuildError('Compiling fable_2_register.cpp failed. See the details.')
+        if args.register_first:
+            # The earlier build: the register TU (one -O0 function that registers ~61,000 entry points) alone
+            # first. By default it is one of the first jobs of the parallel build instead (it is listed before the
+            # recomp units and needs no PCH), which keeps the other cores busy during its ~5-7 s.
+            status_code = run([cmake, '--build', binary_dir, '--target', REGISTER_OBJECT], cwd=src, env=env)
+            if status_code and not watch.tripped.is_set():
+                raise BuildError('Compiling fable_2_register.cpp failed. See the details.')
         backoffs = []
         while True:
             watch.rearm()
@@ -616,6 +628,7 @@ def build(args):
                   rexglue_sha256=rexglue_sha, xex_sha256=xex_sha, jobs=plan['jobs'], final_jobs=jobs, plan=plan,
                   memory=dict(backoffs=backoffs, peak_pressure_level=watch.peak_pressure,
                               peak_swap_growth_mb=round(watch.peak_swap_growth)),
+                  debug_info=args.debug_info, register_first=bool(args.register_first),
                   steps=times, seconds=round(time.monotonic() - started, 1), engine=str(app / 'Contents/MacOS/fable_2'),
                   finished=time.strftime('%Y-%m-%d %H:%M:%S'), measured=bool(args.measure), **notes)
     write_state(build_dir, result)
@@ -666,6 +679,10 @@ def main():
     b.add_argument('--cmake-url', help='CMake archive URL (testing: a file:// copy)')
     b.add_argument('--cmake-sha256')
     b.add_argument('--clean', action='store_true', help='remove the build folder first (full recompile)')
+    b.add_argument('--debug-info', choices=('none', 'line-tables-only', 'full'), default=RECOMP_DEBUG_INFO,
+                   help='debug info for the generated code (default %(default)s; line-tables-only = the earlier build)')
+    b.add_argument('--register-first', action='store_true',
+                   help='compile fable_2_register.cpp alone before the parallel build (the earlier build)')
     p = sub.add_parser('plan')
     p.add_argument('--jobs', type=int)
     m = sub.add_parser('measure-report')
@@ -693,6 +710,12 @@ def main():
         return 3
     except BuildError as error:
         say('[error] ' + str(error))
+        return 1
+    except PermissionError as error:
+        # macOS privacy (Downloads, Desktop, Documents, iCloud Drive, other volumes) or file permissions: the app
+        # explains it and offers Move to Applications / Privacy Settings / Try Again (docs/release-app.md).
+        say('[denied] %d %s' % (error.errno or 1, error.filename or ''))
+        say('[error] macOS did not allow reading %s (%s).' % (error.filename or 'a file', error.strerror))
         return 1
     except Exception as error:  # unexpected: still a readable line for the window
         say('[error] Unexpected problem: %s: %s' % (type(error).__name__, error))

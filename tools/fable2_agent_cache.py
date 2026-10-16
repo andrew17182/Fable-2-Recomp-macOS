@@ -18,7 +18,7 @@ and shader-storage code, the SDK patch hunks of the DXBC translator) and the too
 (backends/metal/dependencies.json: Metal shader converter, DXC). build_macos_metal.py records it in
 out/build/mac-arm64-metal-release/metal-build.json (`shader_cache_key`), so it describes what was built.
 A key is *publishable* when its fingerprint equals the one of an integration branch tip (FABLE2_AGENT_CACHE_BRANCHES,
-default perf-staging,macos). Builds with other shader code (experiments) seed read-only from the closest key.
+default main). Builds with other shader code (experiments) seed read-only from the closest key.
 
 Modes (dev_session --cache-snapshot / f2diag --cache-snapshot / FABLE2_AGENT_CACHE):
   auto (default)  seed from the build's key (latest generation; created from the live cache once), publish on a
@@ -142,7 +142,7 @@ def source_fingerprint(root=ROOT):
 def branch_fingerprints(root=ROOT):
     """{branch: fingerprint} for the integration branches (FABLE2_AGENT_CACHE_BRANCHES)."""
     out = {}
-    for ref in [b.strip() for b in os.environ.get('FABLE2_AGENT_CACHE_BRANCHES', 'perf-staging,macos').split(',')]:
+    for ref in [b.strip() for b in os.environ.get('FABLE2_AGENT_CACHE_BRANCHES', 'main').split(',')]:
         if not ref: continue
         if subprocess.run(['git', '-C', str(root), 'rev-parse', '--verify', '--quiet', ref + '^{commit}'],
                           capture_output=True).returncode != 0:
@@ -174,7 +174,7 @@ def publishable(build_fp, root=ROOT):
     for ref, fp in branch_fingerprints(root).items():
         if fp['key'] == build_fp['key']: return True, 'matches %s' % ref
     return False, 'shader code differs from %s (experimental: read-only)' % os.environ.get(
-        'FABLE2_AGENT_CACHE_BRANCHES', 'perf-staging,macos')
+        'FABLE2_AGENT_CACHE_BRANCHES', 'main')
 
 
 # ---------------------------------------------------------------- storage helpers

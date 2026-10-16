@@ -46,27 +46,29 @@ BARRIER_RE = re.compile(r"^(\t// (lwsync|sync) *)\n(?!\t(?:FABLE2|REX)_GUEST_)",
 CODEGEN_FENCE_RE = re.compile(r"^\tREX_GUEST_(?:LW)?SYNC\(\);$", re.M)
 
 
-def apply_guest_barriers(files):
-    added = 0
-    for path in files:
-        with open(path, "rb") as f:
-            data = f.read().decode("utf-8")
+def _guest_barriers_file(path):
+    """One file: insert the fences, then count them. Returns (inserted, marked, emitted by codegen)."""
+    with open(path, "rb") as f:
+        data = f.read().decode("utf-8")
 
-        def repl(m):
-            macro = "FABLE2_GUEST_LWSYNC" if m.group(2) == "lwsync" else "FABLE2_GUEST_SYNC"
-            return m.group(1) + "\n\t" + macro + "(); " + BARRIER_MARKER + "\n"
+    def repl(m):
+        macro = "FABLE2_GUEST_LWSYNC" if m.group(2) == "lwsync" else "FABLE2_GUEST_SYNC"
+        return m.group(1) + "\n\t" + macro + "(); " + BARRIER_MARKER + "\n"
 
-        new, n = BARRIER_RE.subn(repl, data)
-        if n:
-            with open(path, "wb") as f:
-                f.write(new.encode("utf-8"))
-            added += n
-    total = codegen = 0
-    for path in files:
-        with open(path, "rb") as f:
-            data = f.read().decode("utf-8")
-        total += data.count(BARRIER_MARKER)
-        codegen += len(CODEGEN_FENCE_RE.findall(data))
+    new, n = BARRIER_RE.subn(repl, data)
+    if n:
+        with open(path, "wb") as f:
+            f.write(new.encode("utf-8"))
+        data = new
+    return n, data.count(BARRIER_MARKER), len(CODEGEN_FENCE_RE.findall(data))
+
+
+def apply_guest_barriers(files, pool_map=map):
+    added = total = codegen = 0
+    for n, marked, emitted in pool_map(_guest_barriers_file, files):
+        added += n
+        total += marked
+        codegen += emitted
     print(f"[recomp-patches] guest barriers: {added} inserted now, {total} present"
           f" (+ {codegen} emitted by codegen)")
     return added
@@ -142,14 +144,12 @@ def _section_is_atomic(lines, start, end, labels):
     return True
 
 
-def apply_fast_msr(files):
-    converted = remaining = 0
-    for path in files:
-        with open(path, "rb") as f:
-            data = f.read().decode("utf-8")
-        if "REX_ENTER_GLOBAL_LOCK();" not in data:
-            remaining += 0
-            continue
+def _fast_msr_file(path):
+    """One file: mark the atomic sections, then count. Returns (converted, atomic, locked)."""
+    with open(path, "rb") as f:
+        data = f.read().decode("utf-8")
+    converted = 0
+    if "REX_ENTER_GLOBAL_LOCK();" in data:
         lines = data.split("\n")
         starts = [i for i, l in enumerate(lines) if _FUNC_START.match(l)] + [len(lines)]
         changed = False
@@ -168,17 +168,31 @@ def apply_fast_msr(files):
                 changed = True
             converted += len(atomic)
         if changed:
+            data = "\n".join(lines)
             with open(path, "wb") as f:
-                f.write("\n".join(lines).encode("utf-8"))
-    total_atomic = total_enter = 0
-    for path in files:
-        with open(path, "rb") as f:
-            d = f.read().decode("utf-8")
-        total_atomic += d.count(FAST_MSR_MARKER)
-        total_enter += d.count("REX_ENTER_GLOBAL_LOCK();")
+                f.write(data.encode("utf-8"))
+    return converted, data.count(FAST_MSR_MARKER), data.count("REX_ENTER_GLOBAL_LOCK();")
+
+
+def apply_fast_msr(files, pool_map=map):
+    converted = total_atomic = total_enter = 0
+    for n, atomic, enter in pool_map(_fast_msr_file, files):
+        converted += n
+        total_atomic += atomic
+        total_enter += enter
     print(f"[recomp-patches] fast-msr: {converted} atomic sections marked now; "
           f"{total_atomic} atomic, {total_enter} locked sections present")
     return converted
+
+
+def _pool():
+    """Worker processes for the per-file passes (each file is independent; results are summed, so the output
+    is the same as one process). FABLE2_RECOMP_PATCH_JOBS=1 runs everything in this process."""
+    jobs = int(os.environ.get("FABLE2_RECOMP_PATCH_JOBS") or os.cpu_count() or 1)
+    if jobs <= 1:
+        return None
+    import multiprocessing
+    return multiprocessing.get_context("spawn").Pool(min(jobs, 16))
 
 
 def main() -> int:
@@ -194,8 +208,16 @@ def main() -> int:
         return 1
 
     applied_total = apply_startup_handoff(GENERATED_DIR)
-    applied_total += apply_guest_barriers([os.path.join(GENERATED_DIR, f) for f in files])
-    applied_total += apply_fast_msr([os.path.join(GENERATED_DIR, f) for f in files])
+    paths = [os.path.join(GENERATED_DIR, f) for f in files]
+    pool = _pool()
+    try:
+        pool_map = pool.map if pool else map
+        applied_total += apply_guest_barriers(paths, pool_map)
+        applied_total += apply_fast_msr(paths, pool_map)
+    finally:
+        if pool:
+            pool.close()
+            pool.join()
     for name, anchor, replacement in PATCHES:
         marker = MARKER + name + "]"  # MARKER ends with a space
         found = False

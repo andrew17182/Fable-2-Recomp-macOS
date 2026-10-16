@@ -161,6 +161,31 @@ void MetalGraphicsSystem::RunShaderPrep() {
   };
   REXLOG_INFO("[shader-prep] headless shader preparation: the guest is not started; waiting for the warm-up "
               "queues (status {})", status_path.empty() ? std::string("log only") : status_path.string());
+  // [bank-prep] FABLE2_SHADER_PREP_BANK (default on; =0 off; =<file.sbk> another bank): also translate and
+  // compile the shaders of the player's own disc shader bank (docs/shader-precompile-20261015.md). The game
+  // sets FABLE2_GAME_DATA_ROOT to the folder holding data/.
+  if (cache && cp) {
+    const char* bank_env = std::getenv("FABLE2_SHADER_PREP_BANK");  // getenv-ok: once
+    const std::string bank_value = bank_env ? bank_env : "";
+    std::filesystem::path bank_path;
+    if (bank_value.size() > 4 && bank_value.compare(bank_value.size() - 4, 4, ".sbk") == 0) {
+      bank_path = bank_value;
+    } else if (bank_value != "0") {
+      if (const char* root = std::getenv("FABLE2_GAME_DATA_ROOT"); root && *root) {  // getenv-ok: once
+        bank_path = std::filesystem::path(root) / "data/Shaders/ShadersRelease.sbk";
+      }
+    }
+    if (bank_path.empty()) {
+      REXLOG_INFO("[bank-prep] off ({})", bank_value == "0" ? "FABLE2_SHADER_PREP_BANK=0" : "no game data root");
+    } else {
+      std::atomic<bool> queued{false};
+      cp->CallInThread([cache, bank_path, &queued] {
+        cache->StartBankPrecompile(bank_path);
+        queued.store(true, std::memory_order_release);
+      });
+      ui::metal::WaitForMetalStartup([&queued] { return queued.load(std::memory_order_acquire); });
+    }
+  }
   // Idle = every queue empty. Work hands over between queues (a created pipeline queues its pixel shader for
   // optimization, an optimized shader queues swaps), so idle must hold across a short settle window before it
   // counts; the timeout is a guard.

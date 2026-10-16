@@ -21,6 +21,8 @@ struct SaveItem: Identifiable, Hashable {
   var test = false    // made by an agent test session
   var hero = ""       // "Hero 1 · Hero000"
   var search = ""     // lowercased text the search field matches
+  var savedAt = ""    // "yyyy-MM-dd HH:mm:ss" of mainsave.bin (sortable): Continue picks the newest
+  var writtenBack = "" // library entry: the live slot it was written back to ("" = library only)
 
   static let parse: DateFormatter = {
     let f = DateFormatter()
@@ -58,7 +60,7 @@ struct SaveItem: Identifiable, Hashable {
     let when = friendlyDate(info["saved_mtime"] as? String)
     if !when.isEmpty { parts.append("saved " + when) }
     return SaveItem(id: "live:" + folder, title: "\(name) (\(folder))", detail: parts.joined(separator: " · "),
-                    folder: folder)
+                    folder: folder, savedAt: info["saved_mtime"] as? String ?? "")
   }
 
   static func library(_ info: [String: Any]) -> SaveItem {
@@ -80,7 +82,8 @@ struct SaveItem: Identifiable, Hashable {
                   .compactMap { $0 as? String } + titleParts).joined(separator: " ").lowercased()
     return SaveItem(id: "library:" + name, title: titleParts.joined(separator: " · "),
                     detail: detail.joined(separator: " · "), folder: folder, name: name,
-                    group: info["group"] as? String ?? name, test: test, hero: hero, search: search)
+                    group: info["group"] as? String ?? name, test: test, hero: hero, search: search,
+                    savedAt: info["saved_mtime"] as? String ?? "", writtenBack: info["written_back_to"] as? String ?? "")
   }
 }
 

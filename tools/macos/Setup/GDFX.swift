@@ -55,10 +55,17 @@ final class DiscImage {
   private(set) var rootSector: UInt32 = 0
   private(set) var rootSize: UInt32 = 0
 
-  init(path: String) throws {
-    self.path = path
-    fd = open(path, O_RDONLY)
+  convenience init(path: String) throws {
+    let fd = open(path, O_RDONLY)
     if fd < 0 { throw DiscError.open(path) }
+    try self.init(fd: fd, path: path)
+  }
+
+  /// An image already opened by the caller (the player app hands its open file to FableIIPrepare, --iso-fd, so the
+  /// extractor never opens a path in a privacy-protected folder itself). Takes ownership of `fd`.
+  init(fd: Int32, path: String) throws {
+    self.path = path
+    self.fd = fd
     var info = stat()
     fstat(fd, &info)
     length = Int64(info.st_size)
@@ -94,7 +101,7 @@ final class DiscImage {
     var offset: Int64 = 0
     while offset < length {
       let count = Int(min(Int64(chunk), length - offset))
-      if count < Self.magic.count { break }
+      if count < Self.magic.count || (offset > 0 && count <= Self.magic.count) { break }  // tail already scanned (overlap)
       let bytes = try read(at: offset, count: count)
       var i = 0
       let first = Self.magic[0]

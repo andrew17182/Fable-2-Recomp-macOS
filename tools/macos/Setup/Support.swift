@@ -69,10 +69,12 @@ struct Paths {
   var cmakeHome: URL { out.appendingPathComponent("tools/cmake") }
   var cmakeBin: URL { cmakeHome.appendingPathComponent("CMake.app/Contents/bin") }
   var gameApp: URL { out.appendingPathComponent("build/mac-arm64-metal-release/Fable II.app") }
-  var launcherApp: URL { out.appendingPathComponent("dev-launcher/Fable II Dev Launcher.app") }
+  var launcherApp: URL { out.appendingPathComponent("dev-launcher/Fable II Launcher.app") }
   /// Copies placed in the project folder itself (next to Install.command) at the end of setup.
   var rootGameApp: URL { root.appendingPathComponent("Fable II.app") }
-  var rootLauncherApp: URL { root.appendingPathComponent("Fable II Dev Launcher.app") }
+  var rootLauncherApp: URL { root.appendingPathComponent("Fable II Launcher.app") }
+  /// The launcher's name before 2026-10-15 ("Fable II Dev Launcher.app"); setup removes that copy.
+  var oldRootLauncherApp: URL { root.appendingPathComponent("Fable II Dev Launcher.app") }
   var buildScript: URL { root.appendingPathComponent("tools/build_macos_metal.py") }
   var launcherScript: URL { root.appendingPathComponent("tools/macos/build_dev_launcher.sh") }
   var warmScript: URL { root.appendingPathComponent("tools/fable2_cache_warm.py") }

@@ -885,6 +885,16 @@ void MetalRenderTargetCache::Shutdown(bool from_destructor) {
   if (!from_destructor) {
     ClearCache();
   }
+  for (auto& e : stencil_const_textures_) {
+    if (e.second) e.second->release();
+  }
+  stencil_const_textures_.clear();
+  stencil_const_sources_.clear();
+  for (auto& e : clear_const_textures_) {
+    if (e.texture) e.texture->release();
+  }
+  clear_const_textures_.clear();
+  clear_const_sources_.clear();
 
   // Clean up dummy target
   dummy_color_target_owner_.reset();
@@ -1760,6 +1770,7 @@ void MetalRenderTargetCache::MarkRenderPassDescriptorDirty() {
 
 void MetalRenderTargetCache::ClearCache() {
   ClearPendingDrawPassTransfers();
+  queued_stencil_alias_ = QueuedStencilAlias();
   // [deferred-clears] the targets are destroyed with their contents.
   deferred_clears_.clear();
 
@@ -1781,6 +1792,7 @@ void MetalRenderTargetCache::ClearCache() {
 
 void MetalRenderTargetCache::BeginFrame() {
   (void)FlushPendingDrawPassTransfers(/*requeue_clears=*/true);
+  (void)FlushQueuedStencilAlias();
   if (DeferredClearsSwapFlush()) {
     (void)FlushDeferredClears(DeferredClearFlushReason::kSwap);
   }
@@ -1877,6 +1889,46 @@ bool MetalRenderTargetCache::Update(
         accumulated_targets[i],
         const_cast<std::vector<Transfer>&>(update_transfers[i]));
   }
+  // [ssm-merge] a queued stencil-only alias clear joins this draw pass when
+  // the pass binds its variant as depth and has no transfers of its own into
+  // it or out of it; otherwise its standalone work is encoded first (no GPU
+  // work has been encoded since it was queued, and the base update only
+  // recorded transfers).
+  bool ssm_inject = false;
+  if (queued_stencil_alias_.render_target) {
+    MetalRenderTarget* qrt = queued_stencil_alias_.render_target;
+    bool ok = REXCVAR_GET(metal_transfer_in_draw_pass) &&
+              accumulated_targets[0] == qrt && update_transfers[0].empty();
+    for (uint32_t i = 0; ok && i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+      for (const Transfer& t : update_transfers[i]) {
+        if (t.source == qrt || t.host_depth_source == qrt) ok = false;
+        for (const Transfer& q : queued_stencil_alias_.transfers) {
+          if (t.source == q.source || accumulated_targets[i] == q.source) {
+            ok = false;
+          }
+        }
+      }
+    }
+    if (ok) {
+      bool self_host_depth = false;
+      queue_reject_line_ = 0;
+      ok = CanQueueDrawPassTransfers(0, accumulated_targets,
+                                     queued_stencil_alias_.transfers,
+                                     &self_host_depth);
+    }
+    if (ok) {
+      const_cast<std::vector<Transfer>&>(update_transfers[0]) =
+          queued_stencil_alias_.transfers;
+      ssm_inject = true;
+    } else if (!FlushQueuedStencilAlias()) {
+      return false;
+    }
+  }
+  stencil_const_sources_.clear();
+  clear_const_sources_.clear();
+  if (SsmStencilFoldEnabled()) {
+    FoldDeadStencilClears(accumulated_targets, update_transfers);
+  }
   if (ShadowTraceActive()) {
     for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
       if (!accumulated_targets[i]) continue;
@@ -1908,9 +1960,18 @@ bool MetalRenderTargetCache::Update(
                       REXCVAR_GET(metal_transfer_in_draw_pass);
       for (const Transfer& t : update_transfers[i]) {
         if (t.source == accumulated_targets[i] ||
-            t.host_depth_source == accumulated_targets[i]) {
+            (t.host_depth_source == accumulated_targets[i] &&
+             !(ssm_inject && i == 0))) {
+          // [ssm-merge] the queued carried clear never overlaps a transfer
+          // rectangle (checked when queued), so K1's self host-depth store
+          // over those rectangles does not need it first.
           keep_dst = false;
         }
+      }
+      if (ssm_inject && i == 0 &&
+          !(PassMergeClearDstEnabled() &&
+            REXCVAR_GET(metal_transfer_in_draw_pass))) {
+        keep_dst = false;
       }
       if (keep_dst) {
         for (const DeferredClear& c : deferred_clears_) {
@@ -1924,9 +1985,17 @@ bool MetalRenderTargetCache::Update(
                                DeferredClearFlushReason::kTransfer);
       }
       for (const Transfer& t : update_transfers[i]) {
-        FlushDeferredClearsFor(t.source, DeferredClearFlushReason::kTransfer);
-        FlushDeferredClearsFor(t.host_depth_source,
-                               DeferredClearFlushReason::kTransfer);
+        // [clear-const] or read the pending clear from a constant texture.
+        if (!TryClearConstSource(t.source, accumulated_targets)) {
+          FlushDeferredClearsFor(t.source, DeferredClearFlushReason::kTransfer);
+        }
+        // [ssm-merge] the self host-depth source is the destination: its
+        // carried clear stays for the pass (disjoint from the transfers).
+        if (!(ssm_inject && i == 0 &&
+              t.host_depth_source == accumulated_targets[0])) {
+          FlushDeferredClearsFor(t.host_depth_source,
+                                 DeferredClearFlushReason::kTransfer);
+        }
       }
     }
   }
@@ -2027,6 +2096,55 @@ bool MetalRenderTargetCache::Update(
           1 + xenos::kMaxColorRenderTargets, accumulated_targets,
           fallback_transfers.data(), nullptr, nullptr, nullptr);
     }
+    if (ssm_inject) {
+      // [ssm-merge] the stencil-only clear after the transfers.
+      QueuedStencilAlias q = std::move(queued_stencil_alias_);
+      queued_stencil_alias_ = QueuedStencilAlias();
+      DeferredClear pc;
+      pc.render_target = q.render_target;
+      pc.clear_value = q.stencil_value;
+      pc.rectangle = q.rectangle;
+      if (pending_draw_pass_transfer_mask_ & 1u) {
+        pending_draw_pass_post_clear_ = true;
+        pending_draw_pass_post_clear_value_ = pc;
+        // Carried clear (drawn first in the pass) + transfer quads cover the
+        // whole target: no load.
+        const bool carried_in_pass =
+            !q.has_carried || ((pending_draw_pass_clear_mask_ & 1u) &&
+                               pending_draw_pass_clear_targets_[0] ==
+                                   q.render_target);
+        static uint32_t logged_c = 0;
+        if (AliasClearTraceEnabled() && logged_c++ < 4) {
+          REXLOG_INFO("[ssm-merge] has_carried {} carried_in_pass {} "
+                      "clear_mask {:X}",
+                      q.has_carried, carried_in_pass,
+                      pending_draw_pass_clear_mask_);
+        }
+        if (carried_in_pass && StencilAliasCoversTarget(q)) {
+          pending_draw_pass_full_overwrite_mask_ |= 1u;
+          MarkRenderPassDescriptorDirty();
+          ++UploadTrace().ssm_dontcare;
+        }
+      } else {
+        // The transfers took a pass of their own above (after the carried
+        // clear): the stencil clear is an ordinary deferred clear now.
+        ++UploadTrace().ssm_flushed;
+        deferred_clears_.push_back(pc);
+        TransferAttachmentFormats clear_formats;
+        if (!(pending_draw_pass_clear_mask_ & 1u) &&
+            GetCurrentTransferAttachmentFormats(clear_formats) &&
+            CanDrawDeferredClearInPass(0, q.render_target, clear_formats)) {
+          pending_draw_pass_clear_targets_[0] = q.render_target;
+          pending_draw_pass_clear_values_[0] = pc.clear_value;
+          pending_draw_pass_clear_rects_[0] = pc.rectangle;
+          pending_draw_pass_clear_mask_ |= 1u;
+          deferred_clears_.pop_back();
+        } else {
+          FlushDeferredClearsFor(q.render_target,
+                                 DeferredClearFlushReason::kPreflight);
+        }
+      }
+    }
     if (HasPendingDrawPassTransfers()) {
       TransferAttachmentFormats attachment_formats;
       if (!GetCurrentTransferAttachmentFormats(attachment_formats) ||
@@ -2046,6 +2164,11 @@ bool MetalRenderTargetCache::Update(
   if (targets_changed) {
     MarkRenderPassDescriptorDirty();
   }
+  // [ssm-merge] the constant stencil applies only to this update's transfers.
+  if (!HasPendingDrawPassTransfers()) {
+    stencil_const_sources_.clear();
+    clear_const_sources_.clear();
+  }
 
   return true;
 }
@@ -2063,6 +2186,10 @@ void MetalRenderTargetCache::ClearPendingDrawPassTransfers() {
   pending_draw_pass_full_overwrite_mask_ = 0;
   pending_draw_pass_load_dontcare_mask_ = 0;
   pending_draw_pass_self_host_depth_stored_ = false;
+  pending_draw_pass_post_clear_ = false;
+  pending_draw_pass_post_clear_value_ = DeferredClear();
+  stencil_const_sources_.clear();
+  clear_const_sources_.clear();
   if (load_dontcare_descriptor_used) {
     MarkRenderPassDescriptorDirty();
   }
@@ -2711,6 +2838,40 @@ bool MetalRenderTargetCache::EncodePendingDrawPassTransfers(
   if (mutations_out) {
     *mutations_out |= transfer_mutations;
   }
+  if (success && pending_draw_pass_post_clear_) {
+    // [ssm-merge] the stencil-only clear after the transfer quads, in the
+    // same pass (a separate clear pass after the transfer pass before).
+    const DeferredClear& pc = pending_draw_pass_post_clear_value_;
+    TransferAttachmentFormats active_formats;
+    auto* da = pass_descriptor->depthAttachment();
+    if (!GetActiveTransferAttachmentFormats(pass_descriptor, active_formats) ||
+        !CanDrawDeferredClearInPass(0, pc.render_target, active_formats) ||
+        !da || da->texture() != pc.render_target->texture()) {
+      return false;
+    }
+    ResetDrawPassRasterizerState(encoder);
+    if (mutations_out) {
+      *mutations_out |= kDrawPassTransferEncoderMutationRasterizer;
+    }
+    std::array<RenderTarget*, 1 + xenos::kMaxColorRenderTargets> targets = {};
+    targets[0] = pc.render_target;
+    std::array<std::vector<Transfer>, 1 + xenos::kMaxColorRenderTargets>
+        no_transfers;
+    std::array<uint64_t, 1 + xenos::kMaxColorRenderTargets> values = {};
+    values[0] = pc.clear_value;
+    DrawPassTransferEncoderMutationMask clear_mutations =
+        kDrawPassTransferEncoderMutationNone;
+    success = PerformTransfersAndResolveClears(
+        1 + xenos::kMaxColorRenderTargets, targets.data(), no_transfers.data(),
+        values.data(), &pc.rectangle, nullptr, encoder, pass_descriptor,
+        &clear_mutations);
+    if (mutations_out) {
+      *mutations_out |= clear_mutations;
+    }
+    if (success) {
+      ++UploadTrace().ssm_merged;
+    }
+  }
   if (success) {
     ClearPendingDrawPassTransfers();
   }
@@ -2770,6 +2931,20 @@ bool MetalRenderTargetCache::FlushPendingDrawPassTransfers(
       nullptr, nullptr);
   if (!success) {
     return false;
+  }
+  if (pending_draw_pass_post_clear_) {
+    // [ssm-merge] the stencil clear still follows the transfers: deferred
+    // again when the draw was not encoded (nothing read the target), else
+    // its own pass now.
+    DeferredClear pc = pending_draw_pass_post_clear_value_;
+    pending_draw_pass_post_clear_ = false;
+    ++UploadTrace().ssm_flushed;
+    if (requeue_clears) {
+      deferred_clears_.push_back(pc);
+    } else if (!EncodeResolveClearPass(pc.render_target, pc.clear_value,
+                                       pc.rectangle)) {
+      return false;
+    }
   }
   ClearPendingDrawPassTransfers();
   return true;
@@ -3441,6 +3616,7 @@ bool MetalRenderTargetCache::IsHostDepthEncodingDifferent(
 }
 
 void MetalRenderTargetCache::RestoreEdramSnapshot(const void* snapshot) {
+  (void)FlushQueuedStencilAlias();
   (void)FlushDeferredClears(DeferredClearFlushReason::kOther);
   if (!snapshot) {
     return;
@@ -5503,7 +5679,64 @@ bool MetalRenderTargetCache::TryStencilOnlyAliasClear(
     }
   }
   const size_t transfer_count = transfers[0].size();
-  if (transfer_count) {
+  const uint64_t value = kClearValueStencilOnly | (req.depth_value & 0xFF);
+  // [ssm-merge] queue the transfers and the stencil clear for the next draw
+  // pass that binds the variant (FlushQueuedStencilAlias does the standalone
+  // work below if anything else comes first).
+  bool queued = false;
+  if (transfer_count && SsmMergeEnabled() && DeferredClearsEnabled() &&
+      REXCVAR_GET(metal_transfer_in_draw_pass)) {
+    QueuedStencilAlias q;
+    q.render_target = rt;
+    q.transfers = transfers[0];
+    q.stencil_value = value;
+    q.rectangle = rect;
+    bool ok = true;
+    if (carried_index != SIZE_MAX) {
+      for (const DeferredClear& c : deferred_clears_) {
+        if (c.render_target == rt) {
+          if (q.has_carried) ok = false;  // never more than one
+          q.has_carried = true;
+          q.carried_rectangle = c.rectangle;
+        }
+      }
+      ok = ok && q.has_carried;
+    } else {
+      for (const DeferredClear& c : deferred_clears_) {
+        if (c.render_target == rt) ok = false;
+      }
+    }
+    // The carried clear must not overlap any transfer rectangle: the draw
+    // pass draws it before the transfer quads, and K1 stores the variant's
+    // own host depth over the transfer rectangles before the pass opens.
+    std::vector<TransferRectanglePlan> plans;
+    if (ok && !BuildTransferRectanglePlans(key, q.transfers, nullptr, true,
+                                           plans)) {
+      ok = false;
+    }
+    if (ok && q.has_carried) {
+      const Transfer::Rectangle& c = q.carried_rectangle;
+      for (const TransferRectanglePlan& plan : plans) {
+        for (uint32_t r = 0; r < plan.rectangle_count; ++r) {
+          const Transfer::Rectangle& t = plan.rectangles[r];
+          const bool x_apart = t.x_pixels >= c.x_pixels + c.width_pixels ||
+                               c.x_pixels >= t.x_pixels + t.width_pixels;
+          const bool y_apart = t.y_pixels >= c.y_pixels + c.height_pixels ||
+                               c.y_pixels >= t.y_pixels + t.height_pixels;
+          if (!x_apart && !y_apart) ok = false;
+        }
+      }
+    }
+    if (ok) {
+      queued_stencil_alias_ = std::move(q);
+      queued = true;
+      u.md_stencil_xfer += uint32_t(transfer_count);
+      ++u.ac_deferred;
+    }
+  }
+  if (queued) {
+    // Nothing is encoded now.
+  } else if (transfer_count) {
     if (carried_index != SIZE_MAX) {
       // Flushing the transfer sources above encodes only other targets'
       // clears; the carried entry is still the variant's single one.
@@ -5536,8 +5769,9 @@ bool MetalRenderTargetCache::TryStencilOnlyAliasClear(
   } else if (carried_index != SIZE_MAX) {
     FlushDeferredClearsFor(rt, DeferredClearFlushReason::kReclear);
   }
-  const uint64_t value = kClearValueStencilOnly | (req.depth_value & 0xFF);
-  if (DeferredClearsEnabled()) {
+  if (queued) {
+    // The stencil clear is part of the queued work.
+  } else if (DeferredClearsEnabled()) {
     DeferredClear clear;
     clear.render_target = rt;
     clear.clear_value = value;
@@ -5562,6 +5796,332 @@ bool MetalRenderTargetCache::TryStencilOnlyAliasClear(
   return true;
 }
 
+bool MetalRenderTargetCache::SsmMergeEnabled() {
+  static const bool on = [] {
+    // Default off (docs/ssm-merge-20261015.md): exact, but on the M5 Max the
+    // removed pass overlapped texture uploads for free, so 2x GPU time rose
+    // about 0.1 ms; opt in with =1 (meant for bandwidth-bound Macs).
+    const char* v = std::getenv("FABLE2_SSM_MERGE");  // getenv-ok: once
+    const bool enabled = v && v[0] == '1';
+    REXLOG_INFO("[ssm-merge] stencil-only alias clear transfers inside the "
+                "next draw pass {} (FABLE2_SSM_MERGE={})",
+                enabled ? "on" : "off", v ? v : "unset");
+    return enabled;
+  }();
+  return on;
+}
+
+bool MetalRenderTargetCache::SsmStencilFoldEnabled() {
+  static const bool on = [] {
+    const char* v = std::getenv("FABLE2_SSM_STENCIL_FOLD");  // getenv-ok: once
+    const bool enabled = !(v && v[0] == '0');
+    REXLOG_INFO("[ssm-merge] dead stencil-only clears folded into the "
+                "transfers that move their tiles away {} "
+                "(FABLE2_SSM_STENCIL_FOLD={})",
+                enabled ? "on" : "off", v ? v : "unset");
+    return enabled;
+  }();
+  return on;
+}
+
+MTL::Texture* MetalRenderTargetCache::GetConstantStencilTexture(
+    uint32_t width, uint32_t height, uint8_t value) {
+  const uint64_t k = (uint64_t(width) << 40) | (uint64_t(height) << 8) | value;
+  auto it = stencil_const_textures_.find(k);
+  if (it != stencil_const_textures_.end()) return it->second;
+  MTL::TextureDescriptor* d = MTL::TextureDescriptor::texture2DDescriptor(
+      MTL::PixelFormatR8Uint, width, height, false);
+  d->setUsage(MTL::TextureUsageShaderRead);
+  d->setStorageMode(MTL::StorageModeShared);
+  MTL::Texture* t = device_->newTexture(d);
+  if (t) {
+    std::vector<uint8_t> bytes(size_t(width) * height, value);
+    t->replaceRegion(MTL::Region(0, 0, width, height), 0, bytes.data(),
+                     width);
+    t->setLabel(NS::String::string("ssm constant stencil",
+                                   NS::UTF8StringEncoding));
+  }
+  stencil_const_textures_[k] = t;
+  return t;
+}
+
+void MetalRenderTargetCache::FoldDeadStencilClears(
+    RenderTarget* const* accumulated_targets,
+    const std::vector<Transfer>* update_transfers) {
+  if (!DeferredClearsEnabled() || deferred_clears_.empty()) return;
+  for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+    for (const Transfer& t : update_transfers[i]) {
+      auto* src = static_cast<MetalRenderTarget*>(t.source);
+      if (!src || stencil_const_sources_.count(src)) continue;
+      const RenderTargetKey key = src->key();
+      MTL::Texture* tex = src->texture();
+      if (!key.is_depth || key.msaa_samples != xenos::MsaaSamples::k1X ||
+          !tex || tex->sampleCount() > 1) {
+        continue;
+      }
+      bool bound = false;
+      for (uint32_t j = 0; j < 1 + xenos::kMaxColorRenderTargets; ++j) {
+        if (accumulated_targets[j] == src) bound = true;
+      }
+      if (bound) continue;
+      size_t index = SIZE_MAX;
+      uint32_t count = 0;
+      for (size_t c = 0; c < deferred_clears_.size(); ++c) {
+        if (deferred_clears_[c].render_target == src) {
+          index = c;
+          ++count;
+        }
+      }
+      if (count != 1) continue;
+      const DeferredClear& dc = deferred_clears_[index];
+      if (!(dc.clear_value & kClearValueStencilOnly)) continue;
+      const Transfer::Rectangle& r = dc.rectangle;
+      const uint32_t sx = RenderTargetScaleX(key), sy = RenderTargetScaleY(key);
+      if (r.x_pixels || r.y_pixels || r.width_pixels * sx < tex->width() ||
+          r.height_pixels * sy < tex->height()) {
+        continue;
+      }
+      // Every tile of the cleared rows now belongs to another target.
+      const uint32_t pitch = key.GetPitchTiles();
+      const uint32_t rows =
+          (r.height_pixels + xenos::kEdramTileHeightSamples - 1) /
+          xenos::kEdramTileHeightSamples;
+      const uint32_t length = rows * pitch;
+      if (!pitch || !length || length > xenos::kEdramTileCount) continue;
+      bool owned = false;
+      for (uint32_t tile = 0; tile < length && !owned; ++tile) {
+        if (GetTileOwner((key.base_tiles + tile) &
+                         (xenos::kEdramTileCount - 1)) == key) {
+          owned = true;
+        }
+      }
+      if (owned) continue;
+      stencil_const_sources_[src] = uint8_t(dc.clear_value & 0xFF);
+      deferred_clears_.erase(deferred_clears_.begin() + index);
+      ++UploadTrace().ssm_folded;
+    }
+  }
+}
+
+bool MetalRenderTargetCache::ClearConstSourceEnabled() {
+  static const bool on = [] {
+    const char* v = std::getenv("FABLE2_CLEAR_CONST_SOURCE");  // getenv-ok: once
+    const bool enabled = !(v && v[0] == '0');
+    REXLOG_INFO("[clear-const] transfers read a pending whole-target clear "
+                "from a constant texture {} (FABLE2_CLEAR_CONST_SOURCE={})",
+                enabled ? "on" : "off", v ? v : "unset");
+    return enabled;
+  }();
+  return on;
+}
+
+MTL::Texture* MetalRenderTargetCache::GetConstantClearColorTexture(
+    MetalRenderTarget* rt, uint64_t clear_value) {
+  MTL::Texture* src = rt ? rt->transfer_texture() : nullptr;
+  if (!src || src != rt->draw_texture() || src->sampleCount() > 1) {
+    return nullptr;
+  }
+  const MTL::PixelFormat fmt = src->pixelFormat();
+  const uint32_t w = uint32_t(src->width()), h = uint32_t(src->height());
+  for (const ClearConstTexture& c : clear_const_textures_) {
+    if (c.format == fmt && c.width == w && c.height == h &&
+        c.value == clear_value) {
+      return c.texture;
+    }
+  }
+  // A few shapes only (one per frame size in practice); never evicted, since
+  // command buffers in flight may still read them.
+  if (clear_const_textures_.size() >= 4) return nullptr;
+  MTL::ClearColor color = MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
+  double depth = 1.0;
+  uint32_t stencil = 0;
+  if (!ClearValueAsLoadAction(rt->key(), clear_value, &color, &depth,
+                              &stencil)) {
+    return nullptr;
+  }
+  MTL::TextureDescriptor* d =
+      MTL::TextureDescriptor::texture2DDescriptor(fmt, w, h, false);
+  d->setUsage(MTL::TextureUsageShaderRead | MTL::TextureUsageRenderTarget);
+  d->setStorageMode(MTL::StorageModePrivate);
+  MTL::Texture* t = device_->newTexture(d);
+  if (!t) return nullptr;
+  t->setLabel(NS::String::string("clear-const source", NS::UTF8StringEncoding));
+  MTL::CommandBuffer* cmd = command_processor_.RequestTransferCommandBuffer(
+      MetalCommandProcessor::TransferRequestSource::kRenderTargetTransfer);
+  if (!cmd) {
+    t->release();
+    return nullptr;
+  }
+  // The same clear load action the in-pass whole-target clear uses
+  // (ClearValueAsLoadAction: formats exact both ways).
+  MTL::RenderPassDescriptor* rpd = MTL::RenderPassDescriptor::alloc()->init();
+  auto* a0 = rpd->colorAttachments()->object(0);
+  a0->setTexture(t);
+  a0->setLoadAction(MTL::LoadActionClear);
+  a0->setStoreAction(MTL::StoreActionStore);
+  a0->setClearColor(color);
+  MTL::RenderCommandEncoder* enc = cmd->renderCommandEncoder(rpd);
+  rpd->release();
+  if (!enc) {
+    t->release();
+    return nullptr;
+  }
+  enc->setLabel(NS::String::string("clear-const fill", NS::UTF8StringEncoding));
+  enc->endEncoding();
+  clear_const_textures_.push_back({fmt, w, h, clear_value, t});
+  REXLOG_INFO("[clear-const] constant source texture {}x{} format {} value "
+              "{:016X}",
+              w, h, uint32_t(fmt), clear_value);
+  return t;
+}
+
+bool MetalRenderTargetCache::TryClearConstSource(
+    RenderTarget* source, RenderTarget* const* accumulated_targets) {
+  auto* src = static_cast<MetalRenderTarget*>(source);
+  if (!src || !ClearConstSourceEnabled() || !DeferredClearsEnabled() ||
+      !ClearLoadActionEnabled()) {
+    return false;
+  }
+  if (clear_const_sources_.count(src)) return true;
+  const RenderTargetKey key = src->key();
+  if (key.is_depth || key.msaa_samples != xenos::MsaaSamples::k1X) {
+    return false;
+  }
+  // Formats whose clear is exact as a load action (ApplyClearLoadActions).
+  switch (key.GetColorFormat()) {
+    case xenos::ColorRenderTargetFormat::k_8_8_8_8:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10:
+    case xenos::ColorRenderTargetFormat::k_2_10_10_10_AS_10_10_10_10:
+      break;
+    default:
+      return false;
+  }
+  for (uint32_t j = 0; j < 1 + xenos::kMaxColorRenderTargets; ++j) {
+    if (accumulated_targets[j] == src) return false;
+    if ((pending_draw_pass_clear_mask_ & (uint32_t(1) << j)) &&
+        pending_draw_pass_clear_targets_[j] == src) {
+      return false;
+    }
+  }
+  size_t index = SIZE_MAX;
+  uint32_t count = 0;
+  for (size_t c = 0; c < deferred_clears_.size(); ++c) {
+    if (deferred_clears_[c].render_target == src) {
+      index = c;
+      ++count;
+    }
+  }
+  if (count != 1) return false;
+  const DeferredClear& dc = deferred_clears_[index];
+  bool full_target = false;
+  DeferredClearTouchedKb(src, dc.rectangle, RenderTargetScaleX(key),
+                         RenderTargetScaleY(key), &full_target);
+  if (!full_target) return false;
+  MTL::Texture* t = GetConstantClearColorTexture(src, dc.clear_value);
+  if (!t) return false;
+  clear_const_sources_[src] = t;
+  ++UploadTrace().clr_const;
+  return true;
+}
+
+bool MetalRenderTargetCache::FlushQueuedStencilAlias() {
+  if (!queued_stencil_alias_.render_target) return true;
+  QueuedStencilAlias q = std::move(queued_stencil_alias_);
+  queued_stencil_alias_ = QueuedStencilAlias();
+  ++UploadTrace().ssm_flushed;
+  // Exactly what TryStencilOnlyAliasClear does without the merge: the
+  // transfers with the carried clear in one pass, then the stencil clear
+  // deferred.
+  RenderTarget* targets[1 + xenos::kMaxColorRenderTargets] = {};
+  std::vector<Transfer> transfers[1 + xenos::kMaxColorRenderTargets];
+  targets[0] = q.render_target;
+  transfers[0] = q.transfers;
+  bool ok = true;
+  DeferredClear carried;
+  bool found = false;
+  if (q.has_carried) {
+    for (size_t c = 0; c < deferred_clears_.size(); ++c) {
+      if (deferred_clears_[c].render_target == q.render_target) {
+        carried = deferred_clears_[c];
+        deferred_clears_.erase(deferred_clears_.begin() + c);
+        found = true;
+        break;
+      }
+    }
+  }
+  if (found) {
+    uint64_t values[1 + xenos::kMaxColorRenderTargets] = {};
+    values[0] = carried.clear_value;
+    ok = PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                          targets, transfers, values,
+                                          &carried.rectangle, nullptr);
+    ++UploadTrace().md_carried;
+  } else {
+    ok = PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                          targets, transfers, nullptr,
+                                          nullptr, nullptr);
+  }
+  DeferredClear clear;
+  clear.render_target = q.render_target;
+  clear.clear_value = q.stencil_value;
+  clear.rectangle = q.rectangle;
+  deferred_clears_.push_back(clear);
+  return ok;
+}
+
+bool MetalRenderTargetCache::StencilAliasCoversTarget(
+    const QueuedStencilAlias& q) const {
+  // Full-width row bands (carried clear + transfer rectangles) that cover
+  // every row of the variant's texture: the depth/stencil load can be
+  // DontCare (every sample is written by in-pass quads before any draw).
+  MetalRenderTarget* rt = q.render_target;
+  MTL::Texture* tex = rt ? rt->draw_texture() : nullptr;
+  if (!tex || tex->sampleCount() > 1) return false;
+  const RenderTargetKey key = rt->key();
+  const uint32_t sx = RenderTargetScaleX(key), sy = RenderTargetScaleY(key);
+  const uint32_t width = uint32_t(tex->width());
+  const uint32_t height = uint32_t(tex->height());
+  std::vector<std::pair<uint32_t, uint32_t>> bands;
+  auto add = [&](const Transfer::Rectangle& r) {
+    if (r.x_pixels || r.width_pixels * sx != width) {
+      static uint32_t logged_w = 0;
+      if (AliasClearTraceEnabled() && logged_w++ < 4) {
+        REXLOG_INFO("[ssm-merge] cover check: band x {} w {} (x{}) vs width {}",
+                    r.x_pixels, r.width_pixels, sx, width);
+      }
+      return false;
+    }
+    bands.emplace_back(r.y_pixels * sy, (r.y_pixels + r.height_pixels) * sy);
+    return true;
+  };
+  if (q.has_carried && !add(q.carried_rectangle)) return false;
+  std::vector<TransferRectanglePlan> plans;
+  if (!BuildTransferRectanglePlans(key, q.transfers, nullptr, true, plans)) {
+    return false;
+  }
+  for (const TransferRectanglePlan& plan : plans) {
+    for (uint32_t r = 0; r < plan.rectangle_count; ++r) {
+      if (!add(plan.rectangles[r])) return false;
+    }
+  }
+  std::sort(bands.begin(), bands.end());
+  uint32_t covered = 0;
+  bool gap = false;
+  for (const auto& b : bands) {
+    if (b.first > covered) gap = true;
+    covered = std::max(covered, b.second);
+  }
+  static uint32_t logged = 0;
+  if (AliasClearTraceEnabled() && logged < 4) {
+    ++logged;
+    std::string bs;
+    for (const auto& b : bands) bs += fmt::format(" [{},{})", b.first, b.second);
+    REXLOG_INFO("[ssm-merge] cover check {}x{} bands{} -> {}", width, height,
+                bs, (!gap && covered >= height) ? "full" : "partial");
+  }
+  return !gap && covered >= height;
+}
+
 uint64_t MetalRenderTargetCache::MainDepthDumpFrame() {
   static const uint64_t frame = [] {
     const char* v = std::getenv("FABLE2_MAIN_DEPTH_DUMP");
@@ -5572,6 +6132,7 @@ uint64_t MetalRenderTargetCache::MainDepthDumpFrame() {
 }
 
 void MetalRenderTargetCache::MainDepthDumpEdram(const char* tag) {
+  (void)FlushQueuedStencilAlias();
   const char* dir = std::getenv("FABLE2_MAIN_DEPTH_DUMP_DIR");
   if (!dir || !dir[0] || !edram_buffer_ ||
       GetPath() != Path::kHostRenderTargets) {
@@ -5839,6 +6400,8 @@ bool MetalRenderTargetCache::TryDepthWordAliasClear(
 
 bool MetalRenderTargetCache::TryAliasClear(const AliasClearRequest& req) {
   UploadTraceCounters& u = UploadTrace();
+  // [ssm-merge] an earlier stencil-only clear's queued work comes first.
+  if (!FlushQueuedStencilAlias()) return false;
   if (req.stencil_only) {
     return TryStencilOnlyAliasClear(req);
   }
@@ -6155,9 +6718,16 @@ uint32_t MetalRenderTargetCache::ApplyClearLoadActions(
         static_cast<MetalRenderTarget*>(pending_draw_pass_clear_targets_[i]);
     if (!rt) continue;
     const uint64_t value = pending_draw_pass_clear_values_[i];
-    // A stencil-only clear keeps the depth: never a load action.
-    if (value & kClearValueStencilOnly) continue;
     const RenderTargetKey key = rt->key();
+    // A stencil-only clear keeps the depth: never a load action. The flag
+    // exists for depth targets only: a 32bpp colour clear value is repeated
+    // in both halves, so bit 63 is just the colour word's top bit there
+    // ([clear-const]: such colour clears were drawn as quads before;
+    // FABLE2_CLEAR_CONST_SOURCE=0 keeps that).
+    if ((value & kClearValueStencilOnly) &&
+        (key.is_depth || !ClearConstSourceEnabled())) {
+      continue;
+    }
     // Formats whose clear value converts exactly both ways (the clear quad's
     // float constants and the load action's clear value are the same
     // numbers; unorm and fp16 hold them exactly).
@@ -6387,6 +6957,9 @@ bool MetalRenderTargetCache::Resolve(rex::memory::Memory& memory, uint32_t& writ
                                      const ResolvePlan* prepared_resolve_plan) {
   written_address = 0;
   written_length = 0;
+  // [ssm-merge] (TileResolvePrecheck refuses while work is queued, so no
+  // tile-resolve pass is open here when this encodes.)
+  (void)FlushQueuedStencilAlias();
   ResolvePlan resolve_plan_storage;
   if (!prepared_resolve_plan) {
     if (!PrepareResolvePlan(memory, resolve_plan_storage)) {
@@ -7964,6 +8537,13 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
           // Bind source textures.
           if (mode_info.source_is_color) {
             MTL::Texture* source_texture = source_rt->transfer_texture();
+            {
+              // [clear-const] the source's pending clear, as a texture.
+              auto cc = clear_const_sources_.find(source_rt);
+              if (cc != clear_const_sources_.end() && cc->second) {
+                source_texture = cc->second;
+              }
+            }
             if (!source_texture) {
               continue;
             }
@@ -7979,7 +8559,16 @@ bool MetalRenderTargetCache::PerformTransfersAndResolveClears(
               bind_transfer_fragment_texture(0, depth_texture);
             }
             if (needs_source_stencil) {
-              MTL::Texture* stencil_texture = GetStencilTextureView(source_rt);
+              MTL::Texture* stencil_texture = nullptr;
+              auto sc = stencil_const_sources_.find(source_rt);
+              if (sc != stencil_const_sources_.end() && source_rt->texture()) {
+                // [ssm-merge] the folded stencil-only clear's byte.
+                stencil_texture = GetConstantStencilTexture(
+                    uint32_t(source_rt->texture()->width()),
+                    uint32_t(source_rt->texture()->height()), sc->second);
+              } else {
+                stencil_texture = GetStencilTextureView(source_rt);
+              }
               if (!stencil_texture) {
                 continue;
               }

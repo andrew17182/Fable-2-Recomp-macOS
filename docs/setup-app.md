@@ -36,10 +36,10 @@ disc image into a playable build, without the command line.
      download, ~1 GB more disk in `out/sdk-src`. Measured on a fresh copy (18 jobs, 2026-10-10):
      deps 20 s, sdksrc 68 s, code generation 25 s, game 61 s, shader compiler 37 s, renderer 15 s,
      packaging 2 s; 3 min 52 s for the whole setup. Later builds reuse it until an SDK input changes.
-   - **Dev Launcher:** `tools/macos/build_dev_launcher.sh` (without `--install`), which builds
+   - **Launcher:** `tools/macos/build_dev_launcher.sh` (without `--install`), which builds
      into `out/dev-launcher/`.
    - **Place the apps:** copies `Fable II.app` (from `out/build/mac-arm64-metal-release/`) and
-     `Fable II Dev Launcher.app` (from `out/dev-launcher/`) into the project folder, next to
+     `Fable II Launcher.app` (from `out/dev-launcher/`) into the project folder, next to
      `Install.command`, with `ditto` under a temporary name that is then swapped in. Both
      copies are gitignored. The game app is movable (its game folder is an absolute path in
      `Contents/Resources/LocalDefaults.plist`) and the launcher finds the project through its

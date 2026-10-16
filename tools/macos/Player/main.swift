@@ -25,9 +25,11 @@
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
 //   --show-launcher      as holding Option
-//   --snapshot PATH.png [--window play|welcome|progress|general|display|controls|performance|fixes|advanced]
+//   --snapshot PATH.png [--window play|ready|welcome|progress|move|denied|general|display|controls|performance|fixes|advanced]
 //                        show that window without taking focus, save it to a PNG and quit (progress: once
-//                        the extraction has started, with details shown)
+//                        the extraction has started, with details shown; move: the Move to Applications offer;
+//                        denied: once a refused access is shown)
+//   --access-check PATH, --bundle-location [APP], --move-to-applications: the access helpers as JSON (tests)
 import AppKit
 import Darwin
 import SwiftUI
@@ -37,7 +39,7 @@ import UniformTypeIdentifiers
 
 /// Flags this app consumes; the rest are passed to the game.
 let playerFlags: Set<String> = ["--play", "--press-play", "--print-env", "--reuse", "--show-launcher", "--start-fresh",
-                                 "--archive-saves", "--list-archives", "--relaunched"]
+                                 "--archive-saves", "--list-archives", "--relaunched", "--move-to-applications"]
 let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive"]
 var gameArguments: [String] {
   var out: [String] = []
@@ -219,6 +221,98 @@ struct SaveSummary {
   let count: Int
 }
 
+/// Import saves (release app, 2026-10-15): the release app has its own state folder, so it starts without the saves
+/// of a portable or dev install ("~/Library/Application Support/Fable II Recomp/saves"). Copies (never moves) hero
+/// saves into this app's saves/; an existing hero save is only replaced when asked (the old one is backed up first).
+enum SaveImport {
+  /// Saves folders of other installs on this Mac (FABLE2_IMPORT_SAVES_FROM overrides, for tests).
+  static func otherInstalls() -> [String] {
+    if let path = Paths.environment["FABLE2_IMPORT_SAVES_FROM"], !path.isEmpty {
+      return heroes(in: savesFolder(path)).isEmpty ? [] : [savesFolder(path)]
+    }
+    let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.path
+    let own = (Paths.state as NSString).standardizingPath
+    return ["Fable II Recomp"].map { support + "/" + $0 }
+      .filter { ($0 as NSString).standardizingPath != own }
+      .map { $0 + "/saves" }
+      .filter { !heroes(in: $0).isEmpty }
+  }
+
+  /// A state folder or a saves folder -> the saves folder.
+  static func savesFolder(_ path: String) -> String {
+    FileManager.default.fileExists(atPath: path + "/saves") ? path + "/saves" : path
+  }
+
+  /// Hero saves under a saves folder: "<profile>/4D5307F1/00000001/HeroNNN" (relative paths), with a header.
+  static func heroes(in saves: String) -> [String] {
+    let fm = FileManager.default
+    var out: [String] = []
+    for profile in ((try? fm.contentsOfDirectory(atPath: saves)) ?? []).sorted() {
+      let container = profile + "/4D5307F1"
+      for hero in ((try? fm.contentsOfDirectory(atPath: saves + "/" + container + "/00000001")) ?? []).sorted()
+      where hero.hasPrefix("Hero") && fm.fileExists(atPath: saves + "/" + container + "/Headers/00000001/" + hero + ".header") {
+        out.append(container + "/00000001/" + hero)
+      }
+    }
+    return out
+  }
+
+  static func header(of hero: String) -> String {
+    let parts = hero.components(separatedBy: "/")
+    return parts[0] + "/4D5307F1/Headers/00000001/" + parts[3] + ".header"
+  }
+
+  /// Hero saves of `source` that this app already has.
+  static func conflicts(from source: String, to dest: String = Paths.state + "/saves") -> [String] {
+    heroes(in: savesFolder(source)).filter { FileManager.default.fileExists(atPath: dest + "/" + $0) }
+  }
+
+  struct Result { var imported: [String] = []; var replaced: [String] = []; var skipped: [String] = []; var backup: String? }
+
+  /// Copies every hero save (folder + header) of `source`, plus the profile data this app does not have yet.
+  /// Existing hero saves: kept unless `replace`, then moved to saves-backup-<stamp> first.
+  static func run(from source: String, replace: Bool, to dest: String = Paths.state + "/saves") throws -> Result {
+    let fm = FileManager.default
+    let saves = savesFolder(source)
+    var result = Result()
+    let stamp: String = {
+      let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd_HH-mm-ss"; return f.string(from: Date())
+    }()
+    let backup = (dest as NSString).deletingLastPathComponent + "/saves-backup-" + stamp
+    func copy(_ rel: String) throws {
+      let target = dest + "/" + rel
+      try fm.createDirectory(atPath: (target as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+      try fm.copyItem(atPath: saves + "/" + rel, toPath: target)
+    }
+    for hero in heroes(in: saves) {
+      let exists = fm.fileExists(atPath: dest + "/" + hero)
+      if exists && !replace { result.skipped.append(hero); continue }
+      if exists {
+        for rel in [hero, header(of: hero)] where fm.fileExists(atPath: dest + "/" + rel) {
+          let moved = backup + "/" + rel
+          try fm.createDirectory(atPath: (moved as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+          try fm.moveItem(atPath: dest + "/" + rel, toPath: moved)
+        }
+        result.backup = backup
+      }
+      try copy(hero)
+      if fm.fileExists(atPath: dest + "/" + header(of: hero)) { try fm.removeItem(atPath: dest + "/" + header(of: hero)) }
+      try copy(header(of: hero))
+      if exists { result.replaced.append(hero) } else { result.imported.append(hero) }
+    }
+    // Profile data (options, achievements) only when this app has none for that profile yet.
+    for profile in (try? fm.contentsOfDirectory(atPath: saves)) ?? [] {
+      let rel = profile + "/4D5307F1/profile"
+      if fm.fileExists(atPath: saves + "/" + rel) && !fm.fileExists(atPath: dest + "/" + rel) { try copy(rel) }
+    }
+    appendLog(Paths.logs + "/player.log", "import saves from \(saves): imported \(result.imported), replaced "
+              + "\(result.replaced), kept \(result.skipped)")
+    return result
+  }
+
+  static func name(_ hero: String) -> String { hero.components(separatedBy: "/").last ?? hero }
+}
+
 enum Saves {
   /// Words of an internal name: "QC075_JourneyToRavenscar" -> "Journey To Ravenscar", "BowerLake" -> "Bower Lake".
   static func words(_ raw: String) -> String {
@@ -279,63 +373,158 @@ enum Saves {
   }
 }
 
+// MARK: - Helper processes and access tests
+
+/// A helper process with its output streamed to the main queue. Unlike Process, it can hand one open file to the
+/// child as descriptor 3 (the disc image, opened by this app: docs/release-app.md "Protected folders").
+final class ChildProcess {
+  let pid: pid_t
+  private(set) var running = true
+  private init(pid: pid_t) { self.pid = pid }
+
+  struct SpawnError: Error, CustomStringConvertible {
+    let code: Int32
+    var description: String { String(cString: strerror(code)) }
+  }
+
+  /// `output` gets text as it arrives; `ended` the exit status (-1 after a signal), after the last output.
+  static func spawn(_ path: String, _ arguments: [String], inheriting fd: Int32? = nil,
+                    output: @escaping (String) -> Void, ended: @escaping (Int32) -> Void) throws -> ChildProcess {
+    var fds: [Int32] = [0, 0]
+    guard pipe(&fds) == 0 else { throw SpawnError(code: errno) }
+    var actions: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&actions)
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+    posix_spawn_file_actions_adddup2(&actions, fds[1], 1)
+    posix_spawn_file_actions_adddup2(&actions, fds[1], 2)
+    if let fd = fd {
+      if fd == 3 { posix_spawn_file_actions_addinherit_np(&actions, 3) } else { posix_spawn_file_actions_adddup2(&actions, fd, 3) }
+    }
+    var attributes: posix_spawnattr_t?
+    posix_spawnattr_init(&attributes)
+    defer { posix_spawnattr_destroy(&attributes) }
+    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))  // nothing else leaks into the child
+    let argv = ([path] + arguments).map { strdup($0) } + [nil]
+    defer { argv.forEach { free($0) } }
+    var pid: pid_t = 0
+    let code = posix_spawn(&pid, path, &actions, &attributes, argv, environ)
+    close(fds[1])
+    guard code == 0 else { close(fds[0]); throw SpawnError(code: code) }
+    let child = ChildProcess(pid: pid)
+    let reader = FileHandle(fileDescriptor: fds[0], closeOnDealloc: true)
+    reader.readabilityHandler = { handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      DispatchQueue.main.async { output(String(decoding: data, as: UTF8.self)) }
+    }
+    Thread.detachNewThread {
+      var status: Int32 = 0
+      while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+      let exited = status & 0x7f == 0
+      DispatchQueue.main.async {
+        reader.readabilityHandler = nil
+        let rest = reader.readDataToEndOfFile()
+        output(String(decoding: rest, as: UTF8.self) + "\n")
+        child.running = false
+        ended(exited ? (status >> 8) & 0xff : -1)
+      }
+    }
+    return child
+  }
+
+  func terminate() { if running { kill(pid, SIGTERM) } }
+}
+
+/// FABLE2_TEST_RETRY_WHEN=<file>: while access is refused, press Try Again once that file appears (it is removed
+/// first, so a second refusal waits for a new one). The readiness signal is the file; nothing waits a fixed time.
+enum AccessTest {
+  static func watchRetry(_ retry: @escaping () -> Void) -> Timer? {
+    guard let marker = Paths.environment["FABLE2_TEST_RETRY_WHEN"], marker.hasPrefix("/") else { return nil }
+    return Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { timer in
+      guard FileManager.default.fileExists(atPath: marker) else { return }
+      timer.invalidate()
+      try? FileManager.default.removeItem(atPath: marker)
+      retry()
+    }
+  }
+}
+
 // MARK: - Extraction (FableIIPrepare)
 
 final class PrepareRunner: ObservableObject {
-  enum Phase: Equatable { case idle, running, mismatch(String), failed(String), done }
+  enum Phase: Equatable { case idle, running, mismatch(String), failed(String), denied(AppAccess.Problem), done }
   @Published var phase = Phase.idle
   @Published var fraction = 0.0
   @Published var detail = "Reading the disc image…"
   @Published var log = ""
-  private var process: Process?
+  /// After Try Again: when it was checked and that access is still refused (shown under the explanation).
+  @Published var retryNote = ""
+  private var process: ChildProcess?
   private var buffer = ""
+  private var retryWatch: Timer?
   var image: String?
+  var lastStopOnMismatch = true
   var onDone: (() -> Void)?
 
   /// Extracts `image` into the managed folder (FableIIPrepare --headless --progress). With
   /// `stopOnMismatch` it stops after default.xex when its hash differs, so the player can choose.
+  /// This process opens the image (an open-panel or drag-and-drop pick grants it access even in a privacy-protected
+  /// folder) and the extractor reads that open file (--iso-fd 3): it never opens the path itself.
   func start(image: String, stopOnMismatch: Bool = true) {
+    let wasDenied: Bool = { if case .denied = phase { return true } else { return false } }()
     self.image = image
+    lastStopOnMismatch = stopOnMismatch
+    retryWatch?.invalidate()
     let fm = FileManager.default
     try? fm.createDirectory(atPath: Paths.logs, withIntermediateDirectories: true)
+    let imageFD = open(image, O_RDONLY | O_CLOEXEC)
+    if imageFD < 0 {
+      let code = errno
+      let problem = AppAccess.classify(code: code, path: image) ?? .other(path: image, code: code)
+      appendLog(Paths.prepareLog, "[player] cannot open the disc image \(image): \(String(cString: strerror(code)))")
+      denied(problem, again: wasDenied)
+      return
+    }
+    retryNote = ""
     let result = Paths.state + "/prepare-result.plist"
     try? fm.removeItem(atPath: result)
     var args = ["--target", Paths.managed, "--lua", Paths.resources + "/recomp-lua", "--result", result,
-                "--iso", image, "--headless", "--progress"]
+                "--iso", image, "--iso-fd", "3", "--headless", "--progress"]
     if let expected = Paths.expectedXex, !expected.isEmpty { args += ["--expected-xex", expected] }
     if stopOnMismatch { args.append("--stop-on-mismatch") }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: Paths.macOS + "/FableIIPrepare")
-    process.arguments = args
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = pipe
-    pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-      let data = handle.availableData
-      guard !data.isEmpty else { return }
-      DispatchQueue.main.async { self?.consume(String(decoding: data, as: UTF8.self)) }
-    }
-    process.terminationHandler = { [weak self] p in
-      DispatchQueue.main.async {
-        pipe.fileHandleForReading.readabilityHandler = nil
-        let rest = pipe.fileHandleForReading.readDataToEndOfFile()
-        self?.consume(String(decoding: rest, as: UTF8.self) + "\n")
-        self?.finished(status: p.terminationReason == .exit ? p.terminationStatus : -1)
-      }
-    }
     phase = .running
     fraction = 0
     detail = "Reading the disc image…"
     appendLog(Paths.prepareLog, "[player] extracting the game files from \(image)")
-    do { try process.run() } catch {
-      phase = .failed("Could not start the extractor: \(error.localizedDescription)")
-      return
+    do {
+      process = try ChildProcess.spawn(Paths.macOS + "/FableIIPrepare", args, inheriting: imageFD,
+                                       output: { [weak self] text in self?.consume(text) },
+                                       ended: { [weak self] status in self?.finished(status: status) })
+    } catch {
+      phase = .failed("Could not start the extractor: \(error)")
     }
-    self.process = process
+    close(imageFD)  // the extractor has its own copy
+  }
+
+  /// Access refused: explain it (the window offers Choose Disc Image…, Privacy Settings and Try Again).
+  private func denied(_ problem: AppAccess.Problem, again: Bool) {
+    phase = .denied(problem)
+    let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+    retryNote = again ? "Checked again at \(time): still no access." : ""
+    appendLog(Paths.logs + "/player.log", "[access] \(again ? "still denied" : "denied") (disc image): \(problem.kind) \(problem.path)")
+    retryWatch = AccessTest.watchRetry { [weak self] in self?.tryAgain() }
+  }
+
+  /// Try Again: opens the same image again (a new check of the access, not a replay of the old result).
+  func tryAgain() {
+    guard let image = image else { return }
+    appendLog(Paths.logs + "/player.log", "[access] try again (disc image)")
+    start(image: image, stopOnMismatch: lastStopOnMismatch)
   }
 
   func cancel() {
-    guard let process = process, process.isRunning else { return }
+    guard let process = process, process.running else { return }
     appendLog(Paths.prepareLog, "[player] extraction cancelled; the files copied so far are kept and the next try resumes")
     process.terminate()
   }
@@ -422,14 +611,28 @@ final class ShaderPrepRunner: ObservableObject {
   }
   static var needed: Bool {
     if ProcessInfo.processInfo.environment["FABLE2_PLAYER_SHADER_PREP"] == "0" || Snapshot.path != nil { return false }
-    // Nothing to prepare yet: no bundled seed and no pipeline lists remembered on this Mac (a first install of the
-    // release app, which ships no game-derived shaders). The game compiles while playing and remembers its lists;
-    // the next launch of a new version prepares them.
-    if !hasLists { return false }
+    // Nothing to prepare: no bundled seed, no pipeline lists remembered on this Mac and (setting off, or no disc
+    // files yet) no shader bank to compile. The game then compiles while playing and remembers its lists.
+    let bank = bankEnabled && hasBank
+    if !hasLists && !bank { return false }
     guard let data = FileManager.default.contents(atPath: markerPath),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+    // A preparation without the shader bank does not count once the bank is on.
+    if bank && json["bank"] as? Bool != true { return true }
     return json["stamp"] as? String != stamp
   }
+  /// The disc's shader bank (docs/shader-precompile-20261015.md): every shader of the game, read from the player's
+  /// own extracted files by the headless prep (FABLE2_SHADER_PREP_BANK). Nothing game-derived ships with the app.
+  static var hasBank: Bool {
+    FileManager.default.fileExists(atPath: GameFiles.root + "/data/Shaders/ShadersRelease.sbk")
+  }
+  /// Settings > "Prepare all of the disc's shaders at install" (shaderPrepBank, default on) or
+  /// FABLE2_SHADER_PREP_BANK=0.
+  static var bankEnabled: Bool {
+    if ProcessInfo.processInfo.environment["FABLE2_SHADER_PREP_BANK"] == "0" { return false }
+    return PlistSettingsStore(path: Paths.settingsPlist).object(forKey: "shaderPrepBank") as? Bool ?? true
+  }
+  private var bankRun = false
   static var hasLists: Bool {
     let fm = FileManager.default
     if fm.fileExists(atPath: Paths.resources + "/native-shaders") || recipe != nil { return true }
@@ -444,6 +647,7 @@ final class ShaderPrepRunner: ObservableObject {
     index = 0
     skipped = false
     started = Date()
+    bankRun = Self.bankEnabled && Self.hasBank
     phase = .running
     appendLog(Paths.prepareLog, "[player] preparing shaders for \(scales.map { "\($0)x" }.joined(separator: ", "))")
     releaseLock?()
@@ -487,6 +691,9 @@ final class ShaderPrepRunner: ObservableObject {
     }
     env["FABLE2_SHADER_PREP"] = status
     env["FABLE2_RES_SCALE"] = "\(scale)"
+    // The disc's shader bank at the first scale only (the one the Play window uses, ~25-50 s); the other scales
+    // prepare the remembered lists and the renderer's own pipelines.
+    env["FABLE2_SHADER_PREP_BANK"] = bankRun && index == 0 ? "1" : "0"
     env["FABLE2_PLAYER_LAUNCH"] = "1"
     env["FABLE2_TEST_BACKGROUND"] = "1"  // never takes focus
     env.removeValue(forKey: "FABLE2_BOOT_SAVE")
@@ -504,7 +711,7 @@ final class ShaderPrepRunner: ObservableObject {
         let ok = p.terminationReason == .exit && p.terminationStatus == 0 && (json?["done"] as? Bool ?? false)
         appendLog(Paths.prepareLog, String(format: "[player] shader prep %dx: %@ in %.1f s (%@)", scale,
                                            ok ? "done" : "stopped", Date().timeIntervalSince(begun),
-                                           json.map { "\($0["pipelines_compiled"] ?? "?") pipelines compiled, \($0["native_xlate"] ?? "?") native shaders" } ?? "no status"))
+                                           json.map { "\($0["pipelines_compiled"] ?? "?") pipelines compiled, \($0["native_xlate"] ?? "?") native shaders, disc bank \(($0["bank"] as? [String: Any])?["translations"] ?? 0)" } ?? "no status"))
         if !ok && !self.skipped { appendLog(Paths.prepareLog, "[player] shader prep stopped (exit \(p.terminationStatus)); the game compiles the rest while playing") }
         self.index += 1
         if ok { self.runNext() } else { self.finish(success: false) }
@@ -531,7 +738,12 @@ final class ShaderPrepRunner: ObservableObject {
     let inner = json["done"] as? Bool == true ? 1.0 : 1.0 - Double(pending) / Double(maxPending)
     fraction = (Double(index) + max(0, min(inner, 1))) / Double(scales.count)
     let compiled = json["pipelines_compiled"] as? Int ?? 0
-    detail = "Preparing shaders for \(scales[index])× resolution… \(compiled) pipelines"
+    let bank = json["bank"] as? [String: Any] ?? [:]
+    if let total = bank["translations"] as? Int, total > 0, let pending = bank["pending"] as? Int, pending > 0 {
+      detail = "Preparing shaders for \(scales[index])× resolution… \(total - pending) of \(total) from the game disc"
+    } else {
+      detail = "Preparing shaders for \(scales[index])× resolution… \(compiled) pipelines"
+    }
   }
 
   func skip() {
@@ -547,7 +759,7 @@ final class ShaderPrepRunner: ObservableObject {
     guard phase == .running else { return }
     if success && !skipped {
       let json: [String: Any] = ["stamp": Self.stamp, "scales": scales, "seconds": Date().timeIntervalSince(started),
-                                 "when": ISO8601DateFormatter().string(from: Date())]
+                                 "when": ISO8601DateFormatter().string(from: Date()), "bank": bankRun]
       if let data = try? JSONSerialization.data(withJSONObject: json) {
         FileManager.default.createFile(atPath: Self.markerPath, contents: data)
       }
@@ -578,6 +790,41 @@ enum GameBuild {
   }
   /// An earlier build exists (an update rebuilds incrementally).
   static var isUpdate: Bool { record?["kit_id"] != nil }
+  /// The build kit copied out of the app by this process before the build (docs/release-app.md "Protected folders"):
+  /// /usr/bin/python3 and the tools it runs then never read the app bundle, which macOS privacy would question when
+  /// the app sits in Downloads, Desktop, Documents or iCloud Drive. Removed after a successful build.
+  static var stagedKit: String { build + "/kit" }
+
+  /// Copies (APFS clone when it can) the app's kit into stagedKit unless this kit is there already. nil: ready.
+  static func stageKit() -> AppAccess.Problem? {
+    let fm = FileManager.default
+    let source = Paths.kit, target = stagedKit, stamp = target + "/.staged-kit-id"
+    if !Paths.kitID.isEmpty, (try? String(contentsOfFile: stamp, encoding: .utf8)) == Paths.kitID,
+       fm.fileExists(atPath: target + "/kit.json") { return nil }
+    if let problem = AppAccess.check(source + "/kit.json") { return problem }
+    do { try fm.createDirectory(atPath: build, withIntermediateDirectories: true) } catch {
+      return AppAccess.classify(code: AppAccess.errnoOf(error), path: build) ?? .other(path: build, code: EIO)
+    }
+    try? fm.removeItem(atPath: target)
+    let started = Date()
+    var how = "clone"
+    if clonefile(source, target, 0) != 0 {
+      let code = errno
+      try? fm.removeItem(atPath: target)
+      if code == EPERM || code == EACCES { return AppAccess.classify(code: code, path: source) }
+      how = "copy"
+      do { try fm.copyItem(atPath: source, toPath: target) } catch {
+        try? fm.removeItem(atPath: target)
+        let path = (error as NSError).userInfo[NSFilePathErrorKey] as? String ?? source
+        let code = AppAccess.errnoOf(error)
+        return AppAccess.classify(code: code, path: path) ?? .other(path: path, code: code)
+      }
+    }
+    try? Paths.kitID.write(toFile: stamp, atomically: true, encoding: .utf8)
+    appendLog(logPath, String(format: "[player] build kit copied out of the app (%@, %.2f s): %@", how,
+                              Date().timeIntervalSince(started), target))
+    return nil
+  }
   static var machine: String {
     var size = 0
     sysctlbyname("hw.model", nil, &size, nil, 0)
@@ -587,9 +834,9 @@ enum GameBuild {
     return String(format: "%@, %d cores, %.0f GB, macOS %@", String(cString: model), ProcessInfo.processInfo.processorCount,
                   ram, ProcessInfo.processInfo.operatingSystemVersionString)
   }
-  /// First-build estimate before any progress is known (docs/release-app.md, "Measurements"): 745 s of compile CPU
-  /// and ~30 s of code generation on an M5 core, scaled by the chip generation's speed, over the parallelism of
-  /// the job count (performance cores count fully, efficiency cores 0.4).
+  /// First-build estimate before any progress is known (docs/release-app.md, "Build time"): 650 s of compile CPU
+  /// and ~10 s of code generation and configuration on an M5 core, scaled by the chip generation's speed, over the
+  /// parallelism of the job count (performance cores count fully, efficiency cores 0.4), plus a short tail.
   static var estimateMinutes: Int {
     func sysctlInt(_ name: String) -> Double {
       var value: Int32 = 0
@@ -604,7 +851,7 @@ enum GameBuild {
     let parallel = max(1, min(jobs, perf + 0.4 * efficiency))
     let slowness: [Int: Double] = [1: 1.8, 2: 1.6, 3: 1.4, 4: 1.15]
     let factor = slowness[AutoResolution.generation(of: GpuInfo.read.model ?? "")] ?? 1.0
-    let seconds = factor * (30 + 745 / parallel + 25)  // codegen + compile + the longest single file
+    let seconds = factor * (10 + 650 / parallel + 5)  // codegen + compile + the tail
     return max(1, Int((seconds / 60).rounded(.up)))
   }
 }
@@ -647,7 +894,9 @@ enum DeveloperTools {
 }
 
 final class BuildRunner: ObservableObject {
-  enum Phase: Equatable { case idle, needsTools, waitingForTools, running, cancelled, failed(String), done }
+  enum Phase: Equatable {
+    case idle, needsTools, waitingForTools, running, cancelled, failed(String), denied(AppAccess.Problem), done
+  }
   struct Step: Identifiable, Equatable {
     let key: String
     let title: String
@@ -665,6 +914,10 @@ final class BuildRunner: ObservableObject {
   @Published var eta: Int?
   @Published var log = ""
   @Published var seconds: [String: Double] = [:]
+  /// After Try Again: when it was checked and that access is still refused (shown under the explanation).
+  @Published var retryNote = ""
+  private var wasDenied = false
+  private var retryWatch: Timer?
   private var process: Process?
   private var buffer = ""
   private var poll: Timer?
@@ -675,6 +928,9 @@ final class BuildRunner: ObservableObject {
   /// Checks the developer tools, then runs the build (or waits for the tools' installer).
   func start() {
     try? FileManager.default.createDirectory(atPath: Paths.logs, withIntermediateDirectories: true)
+    wasDenied = { if case .denied = phase { return true } else { return false } }()
+    if wasDenied { appendLog(Paths.logs + "/player.log", "[access] try again (build)") }
+    retryWatch?.invalidate()
     finished = []
     current = "tools"
     started = Date()
@@ -716,8 +972,14 @@ final class BuildRunner: ObservableObject {
     seconds["tools"] = Date().timeIntervalSince(stepStarted)
     finished.insert("tools")
     stepStarted = Date()
-    var args = ["-I", "-B", "-u", Paths.kit + "/game-src/tools/fable2_game_build.py", "build",
-                "--kit", Paths.kit, "--state", Paths.state, "--game-data", GameFiles.root]
+    // The kit leaves the app bundle through this process first (macOS privacy, docs/release-app.md).
+    if let problem = GameBuild.stageKit() {
+      appendLog(GameBuild.logPath, "[player] the build kit could not be read: \(problem.kind) \(problem.path)")
+      return denied(problem)
+    }
+    let kit = GameBuild.stagedKit
+    var args = ["-I", "-B", "-u", kit + "/game-src/tools/fable2_game_build.py", "build",
+                "--kit", kit, "--state", Paths.state, "--game-data", GameFiles.root]
     if let extra = Paths.environment["FABLE2_GAME_BUILD_ARGS"], !extra.isEmpty {
       args += extra.split(separator: " ").map(String.init)  // tests: --measure, --jobs N, --ignore-system-cmake, …
     }
@@ -797,20 +1059,42 @@ final class BuildRunner: ObservableObject {
       fraction = 1
       phase = .done
       appendLog(GameBuild.logPath, String(format: "[player] game built in %.0f s", Date().timeIntervalSince(started)))
+      wasDenied = false
+      retryNote = ""
+      try? FileManager.default.removeItem(atPath: GameBuild.stagedKit)  // the build has its own copies now
       onDone?()
     case 3, 15, -1:
       phase = .cancelled
     default:
+      if let problem = AppAccess.classify(output: log), problem.kind == "privacy" || problem.kind == "permissions" {
+        return denied(problem)
+      }
       let error = log.split(separator: "\n").last { $0.hasPrefix("[error] ") }
         .map { String($0.dropFirst("[error] ".count)) }
       phase = .failed(error ?? "The build stopped (exit \(status)). See the details below.")
     }
   }
 
+  /// Access refused (macOS privacy or file permissions): the window explains it and offers Move to Applications,
+  /// Privacy Settings and Try Again, which checks again (a new attempt, not the old result).
+  private func denied(_ problem: AppAccess.Problem) {
+    phase = .denied(problem)
+    let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+    retryNote = wasDenied ? "Checked again at \(time): still no access." : ""
+    appendLog(Paths.logs + "/player.log", "[access] \(wasDenied ? "still denied" : "denied") (build): \(problem.kind) \(problem.path)")
+    retryWatch = AccessTest.watchRetry { [weak self] in self?.start() }
+  }
+
+  var showsCopyDetails: Bool {
+    switch phase { case .failed, .denied: return true; default: return false }
+  }
+
   /// Text for "Copy Details": the error, this Mac, the app and the end of the log.
   var report: String {
     var lines = ["Fable II build report", "App: \(Paths.version) (kit \(Paths.kitID))", "Mac: \(GameBuild.machine)"]
     if case .failed(let error) = phase { lines.append("Error: \(error)") }
+    if case .denied(let problem) = phase { lines.append("Access refused (\(problem.kind)): \(problem.path)") }
+    lines.append("App location: \(AppAccess.location(of: Paths.bundle.bundleURL).json)")
     lines.append("Log (\(GameBuild.logPath)), last lines:")
     lines += log.split(separator: "\n", omittingEmptySubsequences: false).suffix(200).map(String.init)
     return lines.joined(separator: "\n")
@@ -824,7 +1108,7 @@ enum StartMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
-enum Screen { case welcome, preparing, building, play }
+enum Screen { case move, welcome, preparing, building, play }
 
 final class PlayerModel: SettingsModel {
   @Published var screen: Screen
@@ -847,6 +1131,14 @@ final class PlayerModel: SettingsModel {
     }
   }
   @Published var showArchives = false
+  /// Where this app runs from (docs/release-app.md "Protected folders and Move to Applications").
+  let location = AppAccess.location(of: Paths.bundle.bundleURL)
+  @Published var moveError = ""
+  /// Shown on the Play window after the game was built (first launch or an update): the build never starts the
+  /// game by itself, so the player can look at the settings first (--play, a test flag, still plays when ready).
+  @Published var readyNote = ""
+  private var buildWasUpdate = false
+  @Published var moveDontAsk = false
   private var hiddenWindows: [NSWindow] = []
   let prepare = PrepareRunner()
   let shaderPrep = ShaderPrepRunner()
@@ -862,13 +1154,21 @@ final class PlayerModel: SettingsModel {
     // One settings file, one store object: the checkout and the Dev Launcher window share it.
     DevCheckout.store = store
     DevHost.shared.store = store
-    screen = !GameFiles.ready ? .welcome : GameBuild.ready ? .play : .building
+    screen = Self.offersMove(AppAccess.location(of: Paths.bundle.bundleURL), store: store) ? .move : Self.normalScreen
     super.init(store: store)
     // The game next to this executable: no-converter (release/portable) builds force the native switches on.
     let hasConverter = LaunchSettings.hasConverter(macOSFolder: Paths.macOS)
     converterProbe = { _ in hasConverter }
     prepare.onDone = { [weak self] in self?.filesReady() }
-    builder.onDone = { [weak self] in self?.filesReady() }
+    builder.onDone = { [weak self] in
+      guard let self = self else { return }
+      self.readyNote = self.buildWasUpdate
+        ? "Fable II is updated and ready. Check the settings if you like, then press Play."
+        : "The game is built and ready. Check the settings if you like, then press Play."
+      appendLog(Paths.logs + "/player.log", "[player] game built (\(self.buildWasUpdate ? "update" : "first build")); "
+                + "the Play window waits for the player")
+      self.filesReady()
+    }
     shaderPrep.onDone = { [weak self] in self?.showPlay() }
     shaderPrep.releaseLock = { [weak self] in
       guard let self = self else { return }
@@ -882,12 +1182,176 @@ final class PlayerModel: SettingsModel {
     refresh()
   }
 
+  /// The screen after the Move to Applications offer.
+  static var normalScreen: Screen { !GameFiles.ready ? .welcome : GameBuild.ready ? .play : .building }
+
+  /// The release app offers to move itself first when it runs from Downloads, Desktop, Documents, iCloud Drive,
+  /// another volume, a disk image or a translocated copy, before anything reads its build kit
+  /// (FABLE2_TEST_OFFER_MOVE=1 offers it in other apps too, for tests). "Don't ask again" is remembered.
+  static func offersMove(_ location: AppAccess.Location, store: PlistSettingsStore) -> Bool {
+    guard Paths.buildsGame || Paths.environment["FABLE2_TEST_OFFER_MOVE"] == "1" else { return false }
+    if Snapshot.path != nil { return Snapshot.window == "move" }
+    if store.object(forKey: "moveOfferDeclined") as? Bool == true { return false }
+    return location.shouldOfferMove
+  }
+
+  /// "Not Now": continue from here (the build kit is still copied out of the app by this process first).
+  func declineMove() {
+    if moveDontAsk { store.set(true, forKey: "moveOfferDeclined") }
+    appendLog(Paths.logs + "/player.log", "[move] not moved (\(moveDontAsk ? "don't ask again" : "not now")): \(location.json)")
+    moveError = ""
+    screen = Self.normalScreen
+    refresh()
+  }
+
+  /// "Move to Applications": copy there, Trash the original, open the copy and quit this one.
+  func moveToApplications() {
+    moveError = ""
+    let original = location.originalPath.map { URL(fileURLWithPath: $0) }
+    do {
+      let result = try AppAccess.moveToApplications(bundle: Paths.bundle.bundleURL, original: original)
+      appendLog(Paths.logs + "/player.log", "[move] copied to \(result.destination.path); original in the Trash: "
+                + "\(result.trashedOriginal); replaced an older copy: \(result.replacedExisting)")
+      relaunch(at: result.destination)
+    } catch {
+      appendLog(Paths.logs + "/player.log", "[move] failed: \(error)")
+      moveError = "\(error)"
+    }
+  }
+
+  /// Opens the moved copy (same arguments, minus one-shot flags) and quits this one.
+  func relaunch(at app: URL) {
+    if Paths.environment["FABLE2_TEST_MOVE_NO_RELAUNCH"] == "1" {
+      appendLog(Paths.logs + "/player.log", "[move] (test) would open \(app.path); this copy quits")
+      exit(0)
+    }
+    if PlayerApp.heldLock >= 0 { close(PlayerApp.heldLock); PlayerApp.heldLock = -1 }
+    if lock >= 0 { close(lock); lock = -1 }
+    let oneShot: Set<String> = ["--play", "--press-play", "--reuse", "--relaunched"]
+    var args: [String] = []
+    var i = 0
+    while i < commandLine.count {
+      if ["--iso", "--snapshot", "--window"].contains(commandLine[i]) { i += 2; continue }
+      if !oneShot.contains(commandLine[i]) { args.append(commandLine[i]) }
+      i += 1
+    }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.createsNewApplicationInstance = true
+    configuration.arguments = args + ["--relaunched"]
+    configuration.environment = Paths.environment
+    configuration.activates = Paths.environment["FABLE2_TEST_BACKGROUND"] != "1"
+    NSWorkspace.shared.openApplication(at: app, configuration: configuration) { [weak self] _, error in
+      DispatchQueue.main.async {
+        guard let error = error else {
+          appendLog(Paths.logs + "/player.log", "[move] opened \(app.path); this copy quits")
+          exit(0)
+        }
+        appendLog(Paths.logs + "/player.log", "[move] could not open \(app.path): \(error.localizedDescription)")
+        guard let self = self else { return }
+        self.lock = self.relock()
+        PlayerApp.heldLock = self.lock
+        self.moveError = "Fable II was copied to \(app.deletingLastPathComponent().path), but could not be opened from "
+          + "there (\(error.localizedDescription)). Quit this copy and open Fable II from the Applications folder."
+      }
+    }
+  }
+
   func refresh() {
     if screen == .play {
       latestSave = Saves.latest()
+      offerImportIfNeeded()
     } else {
       candidates = GameFiles.reuseCandidates()
     }
+  }
+
+  /// Release app, first time on the Play window with no saves of its own: offer the saves of another install on this
+  /// Mac (portable or dev, "Fable II Recomp") once. Settings > Advanced and File > Import Saves… stay available.
+  func offerImportIfNeeded() {
+    guard Paths.buildsGame, Paths.environment["FABLE2_TEST_BACKGROUND"] != "1",
+          store.object(forKey: "importSavesOffered") as? Bool != true,
+          SaveImport.heroes(in: Paths.state + "/saves").isEmpty, let source = SaveImport.otherInstalls().first else { return }
+    store.set(true, forKey: "importSavesOffered")
+    let count = SaveImport.heroes(in: source).count
+    DispatchQueue.main.async {
+      let alert = NSAlert()
+      alert.messageText = "Import your saves?"
+      alert.informativeText = "Found \(count) save\(count == 1 ? "" : "s") from another Fable II install on this Mac "
+        + "(\((source as NSString).deletingLastPathComponent)). Importing copies them; the originals stay where they are. "
+        + "You can also import later from File > Import Saves…."
+      alert.addButton(withTitle: "Import")
+      alert.addButton(withTitle: "Not Now")
+      if alert.runModal() == .alertFirstButtonReturn { self.importSaves(from: source) }
+    }
+  }
+
+  /// File > Import Saves… and Settings > Advanced: from another install found on this Mac, or a chosen folder.
+  func importSavesInteractive() {
+    if let found = SaveImport.otherInstalls().first {
+      let alert = NSAlert()
+      alert.messageText = "Import saves"
+      alert.informativeText = "Copy the \(SaveImport.heroes(in: found).count) save(s) of the other Fable II install on "
+        + "this Mac (\((found as NSString).deletingLastPathComponent)), or choose a folder?"
+      alert.addButton(withTitle: "Import")
+      alert.addButton(withTitle: "Choose Folder…")
+      alert.addButton(withTitle: "Cancel")
+      switch alert.runModal() {
+      case .alertFirstButtonReturn: importSaves(from: found); return
+      case .alertSecondButtonReturn: break
+      default: return
+      }
+    }
+    let panel = NSOpenPanel()
+    panel.title = "Choose a Fable II saves folder"
+    panel.message = "Choose a \"saves\" folder, or the data folder that contains one. Its saves are copied."
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    guard panel.runModal() == .OK, let url = panel.url else { return }
+    if SaveImport.heroes(in: SaveImport.savesFolder(url.path)).isEmpty {
+      let alert = NSAlert()
+      alert.messageText = "No Fable II saves in that folder"
+      alert.informativeText = url.path
+      alert.runModal()
+      return
+    }
+    importSaves(from: url.path)
+  }
+
+  /// Copies the saves; asks before replacing any save this app already has; shows what was imported.
+  func importSaves(from source: String) {
+    var replace = false
+    let conflicts = SaveImport.conflicts(from: source)
+    if !conflicts.isEmpty {
+      let alert = NSAlert()
+      alert.messageText = "Replace saves you already have here?"
+      alert.informativeText = "This app already has " + conflicts.map(SaveImport.name).joined(separator: ", ")
+        + ". Keep them and import only the others, or replace them (the current ones are backed up first)."
+      alert.addButton(withTitle: "Keep Mine")
+      alert.addButton(withTitle: "Replace")
+      alert.addButton(withTitle: "Cancel")
+      switch alert.runModal() {
+      case .alertFirstButtonReturn: replace = false
+      case .alertSecondButtonReturn: replace = true
+      default: return
+      }
+    }
+    let alert = NSAlert()
+    do {
+      let r = try SaveImport.run(from: source, replace: replace)
+      let done = r.imported + r.replaced
+      alert.messageText = done.isEmpty ? "No saves imported" : "Imported \(done.count) save\(done.count == 1 ? "" : "s")"
+      var lines: [String] = []
+      if !r.imported.isEmpty { lines.append("Imported: " + r.imported.map(SaveImport.name).joined(separator: ", ")) }
+      if !r.replaced.isEmpty { lines.append("Replaced: " + r.replaced.map(SaveImport.name).joined(separator: ", ")) }
+      if !r.skipped.isEmpty { lines.append("Kept yours: " + r.skipped.map(SaveImport.name).joined(separator: ", ")) }
+      if let backup = r.backup { lines.append("Backup of the replaced saves: " + backup) }
+      alert.informativeText = lines.joined(separator: "\n")
+    } catch {
+      alert.messageText = "Import failed"
+      alert.informativeText = error.localizedDescription
+    }
+    alert.runModal()
+    latestSave = Saves.latest()
   }
 
   /// The game files are ready: build the game on this Mac when this app does that and it is not built for this
@@ -896,7 +1360,10 @@ final class PlayerModel: SettingsModel {
     message = ""
     if GameFiles.ready && !GameBuild.ready {
       screen = .building
-      if builder.phase != .running && builder.phase != .waitingForTools { builder.start() }
+      if builder.phase != .running && builder.phase != .waitingForTools {
+        buildWasUpdate = GameBuild.isUpdate
+        builder.start()
+      }
       return
     }
     if ShaderPrepRunner.needed && GameFiles.ready {
@@ -964,8 +1431,10 @@ final class PlayerModel: SettingsModel {
   /// hides the launcher and leaves the Dock to the game (.accessory). When the game exits the Play window comes
   /// back (latest save refreshed); an abnormal exit shows a note with Show Logs. ⌘Q in the game therefore
   /// returns here, and ⌘Q in the launcher quits the app.
-  func playFromLauncher() {
+  func playFromLauncher(_ mode: StartMode) {
     guard !gameRunning else { return }
+    startMode = mode  // also what "Skip launcher" starts with next time
+    readyNote = ""
     latestSave = Saves.latest()
     var env = Paths.environment  // the app's own launch environment: nothing from an earlier Play leaks in
     for item in playEnvironment {
@@ -1077,22 +1546,21 @@ struct PlayView: View {
       Form {
         Section {
           if let save = model.latestSave {
-            Picker("Start", selection: $model.startMode) {
-              Text("Continue").tag(StartMode.continueSave)
-              Text("Title screen").tag(StartMode.title)
-            }
-            .pickerStyle(.segmented)
+            // Continue from last save (2026-10-15): the default button below loads this one.
             VStack(alignment: .leading, spacing: 2) {
-              Text("Latest save: \(save.title)")
+              Text("Continue: \(save.title)")
               Text(save.detail).font(.caption).foregroundStyle(.secondary)
-              if model.startMode == .continueSave && save.count > 1 {
-                Text("Continue loads this save. To pick another of your \(save.count) saves, start at the Title screen.")
+              if save.count > 1 {
+                Text("To pick another of your \(save.count) saves, use Title Screen.")
                   .font(.caption).foregroundStyle(.secondary)
               }
             }
           } else {
             LabeledContent("Start", value: "New game (no saves yet)")
           }
+          Toggle("Skip intro movies", isOn: model.binding(\.skipIntro))
+            .help("Off (default): the original logo movies and title intro play. On: straight to the title screen, "
+                  + "with a shorter title fade. Same setting as Settings > General.")
         }
         Section {
           Picker("Resolution", selection: $model.settings.resolution) {
@@ -1122,18 +1590,36 @@ struct PlayView: View {
           .controlSize(.large)
         if !model.message.isEmpty {
           Text(model.message).font(.caption).foregroundStyle(.red).lineLimit(2)
+        } else if !model.readyNote.isEmpty {
+          Label(model.readyNote, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         } else if !model.gameNote.isEmpty {
           Text(model.gameNote).font(.caption).foregroundStyle(.red).lineLimit(2)
           Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
         }
         Spacer()
-        Button { model.playFromLauncher() } label: {
-          Text("Play").font(.title3.weight(.semibold)).frame(minWidth: 120)
+        if model.latestSave != nil {
+          Button { model.playFromLauncher(.title) } label: { Text("Title Screen").frame(minWidth: 90) }
+            .controlSize(.large)
+            .disabled(model.gameRunning)
+            .help("Start at the title screen (pick any save or a new game there).")
+          Button { model.playFromLauncher(.continueSave) } label: {
+            Text("Continue").font(.title3.weight(.semibold)).frame(minWidth: 120)
+          }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.large)
+          .keyboardShortcut(.defaultAction)
+          .disabled(model.gameRunning)
+          .help("Boot straight into the latest save. ↩")
+        } else {
+          Button { model.playFromLauncher(.title) } label: {
+            Text("Play").font(.title3.weight(.semibold)).frame(minWidth: 120)
+          }
+          .buttonStyle(.borderedProminent)
+          .controlSize(.large)
+          .keyboardShortcut(.defaultAction)
+          .disabled(model.gameRunning)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.large)
-        .keyboardShortcut(.defaultAction)
-        .disabled(model.gameRunning)
       }
       .padding(.horizontal, 20)
       .padding(.top, 4)
@@ -1186,6 +1672,121 @@ struct WelcomeView: View {
       .padding(20)
     }
     .frame(width: 560)
+    .dropDestination(for: URL.self) { urls, _ in DiscDrop.accept(urls, model: model) }
+  }
+}
+
+/// A disc image dragged onto the window: like choosing it in the open panel, this grants this app access to that
+/// file even in a privacy-protected folder (Downloads, Desktop, …).
+enum DiscDrop {
+  static func accept(_ urls: [URL], model: PlayerModel) -> Bool {
+    guard let url = urls.first(where: { $0.isFileURL && $0.pathExtension.lowercased() == "iso" }) else { return false }
+    model.chooseImage(url.path)
+    return true
+  }
+}
+
+/// Plain-English texts for a refused access (docs/release-app.md "Protected folders and Move to Applications").
+enum AccessText {
+  /// "your Downloads folder", "iCloud Drive", "an external or network volume".
+  static func place(_ folder: String) -> String {
+    if folder.hasPrefix("an ") || folder == "iCloud Drive" { return folder }
+    if folder == "cloud storage" { return "a cloud storage folder" }
+    return "your \(folder) folder"
+  }
+  static func name(_ path: String) -> String { (path as NSString).lastPathComponent }
+  static let settingsPath = "System Settings › Privacy & Security › Files and Folders"
+
+  static func inApp(_ problem: AppAccess.Problem) -> Bool { AppAccess.inside(problem.path, Paths.bundle.bundlePath) }
+
+  static func build(_ problem: AppAccess.Problem) -> (title: String, text: String) {
+    switch problem {
+    case .privacy(let folder, let path):
+      if inApp(problem) {
+        return ("macOS is not letting Fable II read its own files",
+                "Fable II is in \(place(folder)), and macOS has been told not to let it read files there (“Don’t Allow”). "
+                + "Building the game reads the build kit inside the app. Move Fable II to the Applications folder "
+                + "(recommended: nothing else is needed there), or turn on Fable II for this folder in \(settingsPath), "
+                + "then click Try Again.")
+      }
+      return ("macOS is not letting Fable II read \(place(folder))",
+              "The build needs “\(name(path))” in \(place(folder)), and macOS has been told not to let Fable II read files "
+              + "there. Turn on Fable II for this folder in \(settingsPath), then click Try Again.")
+    case .permissions(let path):
+      return ("Fable II cannot read its build files",
+              "You do not have permission to read “\(name(path))” (\(path)). "
+              + (inApp(problem) ? "Download Fable II again and move it to the Applications folder, then open it from there."
+                 : "Check its permissions in Finder (File › Get Info › Sharing & Permissions), then click Try Again."))
+    case .missing(let path):
+      return ("A build file is missing", "“\(path)” is missing. Download Fable II again and move it to the Applications folder.")
+    case .other(let path, let code):
+      return ("A build file could not be read", "“\(path)” could not be read (\(String(cString: strerror(code)))). Click Try Again.")
+    }
+  }
+
+  static func image(_ problem: AppAccess.Problem) -> (title: String, text: String) {
+    switch problem {
+    case .privacy(let folder, let path):
+      return ("macOS is not letting Fable II read the disc image",
+              "“\(name(path))” is in \(place(folder)), and macOS has been told not to let Fable II read files there. "
+              + "Choose the disc image again: picking it in the file window, or dragging it onto this window, lets "
+              + "Fable II read that one file. Or turn on Fable II for this folder in \(settingsPath), then click Try Again.")
+    case .permissions(let path):
+      return ("The disc image cannot be read",
+              "You do not have permission to read “\(name(path))” (\(path)). Choose another copy, or fix its permissions "
+              + "in Finder (File › Get Info › Sharing & Permissions), then click Try Again.")
+    case .missing(let path):
+      return ("The disc image is not there any more",
+              "“\(name(path))” is no longer in \((path as NSString).deletingLastPathComponent). Choose it again where it is now.")
+    case .other(let path, let code):
+      return ("The disc image could not be opened",
+              "“\(name(path))” could not be opened (\(String(cString: strerror(code)))). Choose it again, or click Try Again.")
+    }
+  }
+}
+
+/// First launch from Downloads, Desktop, Documents, iCloud Drive, another volume, a disk image or a translocated copy:
+/// offer to move the app to Applications first (as other Mac apps do), before anything reads its build kit.
+struct MoveView: View {
+  @ObservedObject var model: PlayerModel
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Header()
+      VStack(alignment: .leading, spacing: 12) {
+        Text("Move Fable II to the Applications folder?").font(.title2.weight(.semibold))
+        Text(model.location.reason + " The first launch builds the game from files inside the app, and macOS asks for "
+             + "permission before an app there may read them. From the Applications folder no permission is needed.")
+          .fixedSize(horizontal: false, vertical: true)
+        Text("Fable II is copied to \(AppAccess.applicationsFolder().path) and opens from there; "
+             + (model.location.translocated && model.location.originalPath == nil
+                ? "the downloaded copy can then be deleted." : "the copy here moves to the Trash."))
+          .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if !model.moveError.isEmpty {
+          Text(model.moveError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+          Button("Show Fable II in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.location.originalPath
+                                                                ?? Paths.bundle.bundlePath)])
+          }
+          .help("Drag Fable II into the Applications folder in Finder, then open it from there.")
+        }
+        HStack {
+          Toggle("Don’t ask again", isOn: $model.moveDontAsk).font(.callout)
+          Spacer()
+          Button("Not Now") { model.declineMove() }.keyboardShortcut(.cancelAction)
+          Button("Move to Applications") { model.moveToApplications() }
+            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+        }
+        .controlSize(.large)
+        .padding(.top, 6)
+      }
+      .padding(20)
+    }
+    .frame(width: 560)
+    .onAppear {
+      if Paths.environment["FABLE2_TEST_AUTO_MOVE"] == "1" { DispatchQueue.main.async { model.moveToApplications() } }
+    }
   }
 }
 
@@ -1249,6 +1850,16 @@ struct PreparingView: View {
         case .failed(let error):
           Text("The game files could not be prepared").font(.title3.weight(.semibold))
           Text(error).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        case .denied(let problem):
+          let text = AccessText.image(problem)
+          Text(text.title).font(.title3.weight(.semibold))
+          Text(text.text).fixedSize(horizontal: false, vertical: true)
+          if !prepare.retryNote.isEmpty {
+            Text(prepare.retryNote).font(.callout).foregroundStyle(.orange)
+          }
+          if problem.folder != nil {
+            Button("Open Privacy Settings") { NSWorkspace.shared.open(AppAccess.privacySettingsURL) }
+          }
         default:
           Text("Preparing game files…").font(.title3.weight(.semibold))
           CopyBar(fraction: prepare.fraction)
@@ -1279,6 +1890,10 @@ struct PreparingView: View {
           case .failed:
             Button("Quit") { NSApp.terminate(nil) }
             Button("Choose Another Image…") { model.chooseImage() }.buttonStyle(.borderedProminent)
+          case .denied:
+            Button("Quit") { NSApp.terminate(nil) }
+            Button("Choose Disc Image…") { model.chooseImage() }
+            Button("Try Again") { prepare.tryAgain() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
           default:
             Button("Cancel") { prepare.cancel() }.keyboardShortcut(.cancelAction)
           }
@@ -1288,6 +1903,10 @@ struct PreparingView: View {
       .padding(20)
     }
     .frame(width: 560)
+    .dropDestination(for: URL.self) { urls, _ in
+      if case .running = prepare.phase { return false }
+      return DiscDrop.accept(urls, model: model)
+    }
     .onChange(of: prepare.phase) {
       if prepare.phase == .idle { model.screen = .welcome; model.refresh() }
     }
@@ -1326,6 +1945,7 @@ struct BuildView: View {
     switch builder.phase {
     case .needsTools, .waitingForTools: return "Apple's Command Line Tools are needed"
     case .failed: return "The game could not be built"
+    case .denied(let problem): return AccessText.build(problem).title
     case .cancelled: return "Building stopped"
     default: return GameBuild.isUpdate ? "Updating Fable II for this version…" : "Building Fable II for this Mac…"
     }
@@ -1352,6 +1972,21 @@ struct BuildView: View {
           }
         case .failed(let error):
           Text(error).foregroundStyle(.secondary).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        case .denied(let problem):
+          Text(AccessText.build(problem).text).fixedSize(horizontal: false, vertical: true)
+          if !builder.retryNote.isEmpty { Text(builder.retryNote).font(.callout).foregroundStyle(.orange) }
+          if !model.moveError.isEmpty {
+            Text(model.moveError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          HStack {
+            if AccessText.inApp(problem) && !model.location.inApplications {
+              Button("Move to Applications") { model.moveToApplications() }
+            }
+            if problem.folder != nil {
+              Button("Open Privacy Settings") { NSWorkspace.shared.open(AppAccess.privacySettingsURL) }
+            }
+          }
         case .cancelled:
           Text("What was built so far is kept. Try Again continues from there.").foregroundStyle(.secondary)
         default:
@@ -1401,7 +2036,7 @@ struct BuildView: View {
           Button("Show Log File") {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: GameBuild.logPath)])
           }
-          if case .failed = builder.phase {
+          if builder.showsCopyDetails {
             Button(copied ? "Copied" : "Copy Details") {
               NSPasteboard.general.clearContents()
               NSPasteboard.general.setString(builder.report, forType: .string)
@@ -1417,7 +2052,7 @@ struct BuildView: View {
           case .waitingForTools:
             Button("Check Again") { builder.checkToolsAgain() }
             Button("Cancel") { builder.cancel() }.keyboardShortcut(.cancelAction)
-          case .failed, .cancelled:
+          case .failed, .cancelled, .denied:
             Button("Quit") { NSApp.terminate(nil) }
             Button("Try Again") { builder.start() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
           default:
@@ -1440,6 +2075,7 @@ struct MainView: View {
   var body: some View {
     Group {
       switch model.screen {
+      case .move: MoveView(model: model)
       case .welcome: WelcomeView(model: model)
       case .preparing: PreparingView(model: model, prepare: model.prepare, shaders: model.shaderPrep)
       case .building: BuildView(model: model, builder: model.builder)
@@ -1477,7 +2113,8 @@ enum Startup {
     // A new build or shader seed with game files already in place: prepare its shaders before Play.
     if model.screen == .play && ShaderPrepRunner.needed { model.filesReady() }
     if commandLine.contains("--press-play"), model.screen == .play, model.shaderPrep.phase != .running {
-      DispatchQueue.main.async { model.playFromLauncher() }
+      // The default button: Continue with a save, else Play (title screen).
+      DispatchQueue.main.async { model.playFromLauncher(Saves.latest() != nil ? .continueSave : .title) }
       return
     }
     if commandLine.contains("--reuse"), model.screen == .welcome, let candidate = model.candidates.first {
@@ -1549,6 +2186,11 @@ struct PlayerSettingsView: View {
           Button("Open Logs Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
           Button("Open Data Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.state, isDirectory: true)) }
             .help("Saves, settings, shader cache and logs.")
+          if Paths.buildsGame {
+            Button("Import Saves…") { model.importSavesInteractive() }
+              .disabled(model.gameRunning)
+              .help("Copy saves from another Fable II install on this Mac or from a folder (never moved).")
+          }
           Spacer()
           Button("Reset All Settings…") { confirmReset = true }
             .disabled(model.isDefault)
@@ -1595,10 +2237,23 @@ enum Snapshot {
     if window == "devlauncher" {  // developer mode: the Dev Launcher's window in this app
       DevHost.shared.ensure()
       openWindow("devlauncher")
-      capture(after: 3.0, path: path) { NSApp.windows.first { $0.isVisible && $0.title == "Fable II Dev Launcher" } }
+      capture(after: 3.0, path: path) { NSApp.windows.first { $0.isVisible && $0.title == "Fable II Launcher" } }
       return
     }
     switch window {
+    case "move": break  // PlayerModel shows the offer for this snapshot
+    case "ready":  // the Play window right after the build
+      model.readyNote = "The game is built and ready. Check the settings if you like, then press Play."
+      model.screen = .play
+      model.refresh()
+    case "denied":
+      // A real refused access (tests: an image or kit in a chmod-ed folder); captured once the window shows it.
+      waitFor(path: path, deadline: Date().addingTimeInterval(60)) {
+        if case .denied = model.prepare.phase { return true }
+        if case .denied = model.builder.phase { return true }
+        return false
+      }
+      return
     case "welcome": model.screen = .welcome; model.refresh()
     case "progress":
       // Started by --iso; captured once the bar has moved (or after 20 s).
@@ -1607,6 +2262,14 @@ enum Snapshot {
     default: model.screen = .play; model.refresh()
     }
     capture(after: 1.5, path: path) { NSApp.windows.first { $0.isVisible && $0.title == "Fable II" } }
+  }
+
+  @MainActor static func waitFor(path: String, deadline: Date, _ ready: @escaping () -> Bool) {
+    if ready() || Date() > deadline {
+      capture(after: 0.3, path: path) { NSApp.windows.first { $0.isVisible && $0.title == "Fable II" } }
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitFor(path: path, deadline: deadline, ready) }
   }
 
   @MainActor static func waitForProgress(path: String, model: PlayerModel, deadline: Date) {
@@ -1650,10 +2313,12 @@ struct PlayerCommands: Commands {
   @ObservedObject var dev = DevHost.shared
   @Environment(\.openWindow) private var openWindow
   var body: some Commands {
+    // A game started from the launcher window ended and that window was closed: reopen it (LauncherReturn).
+    let _ = LauncherReturn.reopen = { [openWindow] in openWindow(id: "devlauncher") }
     CommandGroup(after: .windowArrangement) {
       if model.developerMode {
         Divider()
-        Button("Fable II Dev Launcher") { DevHost.shared.ensure(); openWindow(id: "devlauncher") }
+        Button("Fable II Launcher") { DevHost.shared.ensure(); openWindow(id: "devlauncher") }
           .keyboardShortcut("d", modifiers: [.command, .option])
         if let devModel = dev.model {
           Menu("Developer") { DevToolItems(model: devModel, openWindow: { openWindow(id: "devlauncher") }) }
@@ -1668,6 +2333,10 @@ struct PlayerCommands: Commands {
       Divider()
       Button("Open Logs Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
       Button("Open Data Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.state, isDirectory: true)) }
+      if Paths.buildsGame {
+        Button("Import Saves…") { model.importSavesInteractive() }
+          .disabled(model.gameRunning || model.screen != .play)
+      }
       Divider()
       Button("Start Fresh…") { model.showStartFreshMain = true }
         .disabled(model.gameRunning || model.screen == .preparing || model.screen == .building)
@@ -1692,7 +2361,7 @@ struct PlayerApp: App {
       .commands { PlayerCommands(model: model) }
     Settings { PlayerSettingsView(model: model) }
     // Developer mode: the Dev Launcher's main window (opened from the Window menu).
-    Window("Fable II Dev Launcher", id: "devlauncher") { DevLauncherWindowHost() }
+    Window("Fable II Launcher", id: "devlauncher") { DevLauncherWindowHost() }
       .windowResizability(.contentSize)
   }
 }
@@ -1970,6 +2639,75 @@ if commandLine.contains("--list-capabilities") {
   exit(0)
 }
 if AppRole.devLauncher { DevLauncherMain.run() }
+// Access tooling (docs/release-app.md "Protected folders and Move to Applications"; tests/release_access_tests.py).
+if let path = argument(after: "--access-check") {
+  let problem = AppAccess.check(path)
+  let object: [String: Any] = ["path": path, "ok": problem == nil, "problem": (problem?.json as Any?) ?? NSNull(),
+                               "protectedFolder": (AppAccess.protectedFolder(for: path) as Any?) ?? NSNull()]
+  print(String(decoding: (try? JSONSerialization.data(withJSONObject: object, options: .sortedKeys)) ?? Data(), as: UTF8.self))
+  exit(0)
+}
+if commandLine.contains("--access-classify") {
+  // Pure checks, no file access: stdin is a JSON list of {"path", "home", "errno"?, "output"?, "extra"?}; prints one
+  // verdict per case (protected folder, errno and helper-output classification, translocation by path, Move offer).
+  let input = FileHandle.standardInput.readDataToEndOfFile()
+  let cases = (try? JSONSerialization.jsonObject(with: input)) as? [[String: Any]] ?? []
+  let results: [[String: Any]] = cases.map { c in
+    let path = c["path"] as? String ?? "", home = c["home"] as? String ?? NSHomeDirectory()
+    let extra = c["extra"] as? [String] ?? []
+    var out: [String: Any] = ["path": path]
+    out["protectedFolder"] = AppAccess.protectedFolder(for: path, home: home, extra: extra) ?? NSNull()
+    if let code = c["errno"] as? Int {
+      out["problem"] = AppAccess.classify(code: Int32(code), path: path, home: home, extra: extra)?.json ?? NSNull()
+    }
+    if let text = c["output"] as? String {
+      out["outputProblem"] = AppAccess.classify(output: text, home: home, extra: extra)?.json ?? NSNull()
+    }
+    let translocated = path.contains("/AppTranslocation/")
+    let location = AppAccess.Location(bundlePath: path, originalPath: nil, translocated: translocated,
+                                      folder: AppAccess.protectedFolder(for: path, home: home, extra: extra),
+                                      readOnly: c["readOnly"] as? Bool ?? false)
+    out["translocated"] = translocated
+    out["shouldOfferMove"] = location.shouldOfferMove
+    out["reason"] = location.reason
+    return out
+  }
+  print(String(decoding: (try? JSONSerialization.data(withJSONObject: results, options: .sortedKeys)) ?? Data(), as: UTF8.self))
+  exit(0)
+}
+if commandLine.contains("--bundle-location") {
+  let given = argument(after: "--bundle-location").flatMap { $0.hasPrefix("/") ? $0 : nil }
+  let location = AppAccess.location(of: given.map { URL(fileURLWithPath: $0) } ?? Bundle.main.bundleURL)
+  print(String(decoding: (try? JSONSerialization.data(withJSONObject: location.json, options: .sortedKeys)) ?? Data(), as: UTF8.self))
+  exit(0)
+}
+if commandLine.contains("--move-to-applications") {  // the Move button without the relaunch (tests)
+  let location = AppAccess.location(of: Bundle.main.bundleURL)
+  var object: [String: Any] = ["location": location.json]
+  do {
+    let result = try AppAccess.moveToApplications(bundle: Bundle.main.bundleURL,
+                                                  original: location.originalPath.map { URL(fileURLWithPath: $0) })
+    object.merge(["ok": true, "destination": result.destination.path, "trashedOriginal": result.trashedOriginal,
+                  "replacedExisting": result.replacedExisting]) { $1 }
+  } catch {
+    object.merge(["ok": false, "error": "\(error)"]) { $1 }
+  }
+  print(String(decoding: (try? JSONSerialization.data(withJSONObject: object, options: .sortedKeys)) ?? Data(), as: UTF8.self))
+  exit(object["ok"] as? Bool == true ? 0 : 1)
+}
+// --import-saves FOLDER [--replace]: the Import Saves action without the window (tests, stand-in folders only).
+if let source = argument(after: "--import-saves") {
+  do {
+    let r = try SaveImport.run(from: source, replace: commandLine.contains("--replace"))
+    let out: [String: Any] = ["ok": true, "imported": r.imported, "replaced": r.replaced, "kept": r.skipped,
+                              "backup": r.backup ?? NSNull(), "other_installs": SaveImport.otherInstalls()]
+    print(String(decoding: try JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]), as: UTF8.self))
+    exit(0)
+  } catch {
+    print("{\"ok\": false, \"error\": \"\(error.localizedDescription)\"}")
+    exit(1)
+  }
+}
 if commandLine.contains("--print-env") {
   let model = PlayerModel()
   let data = (try? JSONSerialization.data(withJSONObject: model.playEnvironment)) ?? Data()

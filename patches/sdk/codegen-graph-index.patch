@@ -1,0 +1,100 @@
+SDK codegen: indexed lookups in two quadratic loops (release build-speed work, docs/release-app.md "Build time").
+FunctionGraph::notifyFunctionAdded tried every function against each new one; it now visits only the functions
+that recorded an unresolved jump to the new base. cleanupAbsorbedGapFills tested every function against every
+GAP_FILL entry; it now walks a base-sorted interval index. Both give exactly the same graph: rexglue codegen output
+is byte-identical (591 files), 24.6 s -> 5.4 s on an M5 Max. Applied by tools/build_sdk_from_source.py.
+
+--- a/include/rex/codegen/function_graph.h
++++ b/include/rex/codegen/function_graph.h
+@@ -198,6 +198,10 @@
+   std::unordered_map<uint32_t, bool> functionHasXrefs_;  // entry -> hasXrefs
+   std::vector<std::pair<uint32_t, uint32_t>> chunks_;    // base, size pairs
+   MemoryReader memoryReader_;
++  // Unresolved-jump target -> bases of the functions that recorded a jump to it (a superset:
++  // entries are never removed; notifyFunctionAdded re-checks each one). Lets notifyFunctionAdded
++  // visit only those functions instead of every function in the graph.
++  std::unordered_map<uint32_t, std::vector<uint32_t>> unresolvedTargetIndex_;
+ 
+   // Notify all PENDING functions that a new function was added
+   void notifyFunctionAdded(FunctionNode* newFunction);
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -963,6 +963,7 @@
+ 
+   // Not resolvable yet - add as unresolved
+   node->addUnresolvedJump(site, target, isCall, conditional);
++  unresolvedTargetIndex_[target].push_back(node->base());
+   REXCODEGEN_TRACE("FunctionGraph: added unresolved {} 0x{:08X}->0x{:08X} to function 0x{:08X}",
+                    isCall ? "call" : "jump", site, target, entry);
+ }
+@@ -1284,8 +1285,20 @@
+ }
+ 
+ void FunctionGraph::notifyFunctionAdded(FunctionNode* newFunction) {
+-  for (auto& [base, node] : functions_) {
+-    if (node.get() != newFunction && node->isPending()) {
++  // Only a function with an unresolved jump to newFunction's base can resolve anything here, and
++  // every unresolved jump is added through addUnresolvedJumpToFunction, which indexes it. Each
++  // function's resolution only touches that function, so the visiting order does not matter and
++  // the result is the same as trying every PENDING function. A base listed twice, or whose jump
++  // was resolved meanwhile, finds nothing to resolve.
++  auto indexed = unresolvedTargetIndex_.find(newFunction->base());
++  if (indexed == unresolvedTargetIndex_.end())
++    return;
++  for (uint32_t base : indexed->second) {
++    auto it = functions_.find(base);
++    if (it == functions_.end())
++      continue;
++    FunctionNode* node = it->second.get();
++    if (node != newFunction && node->isPending()) {
+       node->tryResolveAgainst(newFunction);
+     }
+   }
+--- a/src/codegen/phase_gapfill.cpp
++++ b/src/codegen/phase_gapfill.cpp
+@@ -11,7 +11,9 @@
+ 
+ #include "ppc/instruction.h"
+ 
++#include <algorithm>
+ #include <unordered_set>
++#include <vector>
+ 
+ #include <rex/codegen/phases.h>
+ #include "phase_helpers.h"
+@@ -180,11 +182,34 @@
+   auto& graph = ctx.graph;
+   std::vector<uint32_t> toRemove;
+ 
++  // Interval index over all functions: sorted by base, with the running maximum of base + size
++  // (the same 32-bit sum containsAddress tests). A function that contains addr has base <= addr
++  // and base + size > addr, so walking down from the last base <= addr can stop as soon as the
++  // running maximum is <= addr. Same answer as testing every function, without the quadratic scan.
++  std::vector<std::pair<uint32_t, const FunctionNode*>> byBase;
++  byBase.reserve(graph.functions().size());
++  for (const auto& [otherAddr, otherNode] : graph.functions()) {
++    byBase.emplace_back(otherAddr, otherNode.get());
++  }
++  std::sort(byBase.begin(), byBase.end(),
++            [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
++  std::vector<uint32_t> maxEnd(byBase.size());
++  uint32_t runningEnd = 0;
++  for (size_t i = 0; i < byBase.size(); ++i) {
++    runningEnd = std::max<uint32_t>(runningEnd, byBase[i].second->base() + byBase[i].second->size());
++    maxEnd[i] = runningEnd;
++  }
++
+   for (const auto& [addr, node] : graph.functions()) {
+     if (node->authority() != FunctionAuthority::GAP_FILL)
+       continue;
+ 
+-    for (const auto& [otherAddr, otherNode] : graph.functions()) {
++    auto upper = std::upper_bound(
++        byBase.begin(), byBase.end(), addr,
++        [](uint32_t value, const auto& entry) { return value < entry.first; });
++    for (size_t i = static_cast<size_t>(upper - byBase.begin()); i-- > 0 && maxEnd[i] > addr;) {
++      const uint32_t otherAddr = byBase[i].first;
++      const FunctionNode* otherNode = byBase[i].second;
+       if (otherAddr == addr)
+         continue;
+       if (!otherNode->containsAddress(addr))

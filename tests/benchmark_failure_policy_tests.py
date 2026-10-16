@@ -3,7 +3,8 @@
 - a crash AFTER the arm's data was written keeps the data (outcome "data kept: ...");
 - a crash BEFORE it is retried once (first attempt kept as raw/<run>/attempt1);
 - two failures record the run as failed, the kit continues with the other arms, and the report says so;
-- failed runs are left out of the flash averages.
+- failed runs are left out of the flash averages;
+- switch arms ("2u-ssm") pass their switch to the game, record it, and report.txt pairs them with their base arm.
 Needs Xcode's swiftc (skips without it). Runs under /usr/bin/python3 (3.9)."""
 import json
 import os
@@ -25,11 +26,11 @@ for it in "${items[@]}"; do [ "${it%%:*}" = "$run" ] && mode="${it#*:}"; done
 count_file="$FABLE2_APP_STATE_ROOT/attempts-$run"
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 )); echo $n > "$count_file"
 logs="$FABLE2_APP_STATE_ROOT/logs"; mkdir -p "$logs"
-echo "fake game $run attempt $n mode $mode" > "$logs/fable_2.log"
+echo "fake game $run attempt $n mode $mode ssm=${FABLE2_SSM_MERGE:-unset}" > "$logs/fable_2.log"
 crash() { kill -SEGV $$; }
 if [ "$mode" = always ] || { [ "$mode" = before-once ] && [ $n = 1 ]; }; then crash; fi
 { echo "event,frame,time_us,duration_us"; for f in $(seq 0 30); do echo "guest_swap,$f,$((f*16667)),0"; done; } > "$logs/frames-1.csv"
-echo '{"flash_frames": 3, "crack_frames": 5, "frames_scored": 30}' > "$FABLE2_FLASH_DETECT/flash.json"
+[ -n "$FABLE2_FLASH_DETECT" ] && echo '{"flash_frames": 3, "crack_frames": 5, "frames_scored": 30}' > "$FABLE2_FLASH_DETECT/flash.json"
 echo '{"sweep": {"frame_start": 2, "frame_end": 28}, "gameplay_s": 1.0}' > "$FABLE2_BENCHMARK"
 [ "$mode" = after ] && crash
 exit 0
@@ -88,6 +89,26 @@ def main():
         text = (folder / 'report.txt').read_text()
         assert 'Run problems' in text and 'adapt-r1: data kept' in text and 'noadapt-r1: FAILED' in text, text
         assert 'adapt-snap-r1: ok on the retry' in text, text
+
+        # Switch arms (normal benchmark mode): 2u-ssm = 2u with FABLE2_SSM_MERGE=1, paired in report.txt.
+        env = dict(os.environ, FAKE_PLAN='', FABLE2_CRASH_REPORT_WAIT_S='0')
+        env.pop('FABLE2_SSM_MERGE', None)
+        p = subprocess.run([str(binary), '--headless', '--arms', '2u,2u-ssm,census2x-ssm',
+                            '--app', str(tmp / 'Fake.app'), '--game-data', str(tmp / 'data'), '--save-dir', str(saves),
+                            '--state', str(tmp / 'state2'), '--out', str(tmp / 'out2')],
+                           env=env, capture_output=True, text=True, timeout=300)
+        assert p.returncode == 0, p.stderr[-3000:]
+        folder = Path(p.stdout.strip().splitlines()[-1])
+        runs = {r['arm']: r for r in json.loads((folder / 'report.json').read_text())['arms']}
+        assert set(runs) == {'2u', '2u-ssm', 'census2x-ssm'}, runs.keys()
+        assert 'env' not in runs['2u'] and runs['2u-ssm']['env'] == {'FABLE2_SSM_MERGE': '1'}, runs
+        assert runs['2u-ssm']['resolution_scale'] == 2 and runs['2u-ssm']['fps_cap'] == 'uncapped'
+        assert runs['2u-ssm']['title'] == '2x uncapped + SSM merge', runs['2u-ssm']['title']
+        assert 'ssm=unset' in (folder / 'raw/2u/fable_2.log').read_text()
+        assert 'ssm=1' in (folder / 'raw/2u-ssm/fable_2.log').read_text()
+        assert runs['census2x-ssm']['title'] == '2x uncapped, pass trace + SSM merge'
+        text = (folder / 'report.txt').read_text()
+        assert 'Switch arms' in text and 'SSM merge (FABLE2_SSM_MERGE=1) vs default, 2x uncapped: FPS' in text, text
         print('benchmark failure policy: PASS')
     return 0
 

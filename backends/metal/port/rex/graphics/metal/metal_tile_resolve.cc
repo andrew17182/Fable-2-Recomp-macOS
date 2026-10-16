@@ -689,13 +689,17 @@ bool MetalRenderTargetCache::TileResolvePrecheck(const ResolvePlan& plan) {
     }
   }
   if (!rt_shrink_pending_.empty() || RtShrinkVerify() ||
-      source_clear_pending) {
+      source_clear_pending || queued_stencil_alias_.render_target) {
     ++UploadTrace().tres_fb_precheck;
     TraceFallback("precheck",
-                  fmt::format("grow{} clears{} drawpass{}",
+                  fmt::format("grow{} clears{} drawpass{} src_clear{} w{}h{}",
                               rt_shrink_pending_.size(),
                               deferred_clears_.size(),
-                              pending_draw_pass_clear_mask_));
+                              pending_draw_pass_clear_mask_,
+                              source_clear_pending ? 1 : 0,
+                              uint32_t(plan.resolve_info.coordinate_info
+                                           .width_div_8) << 3,
+                              plan.resolve_info.height_div_8 << 3));
     return false;
   }
   return true;

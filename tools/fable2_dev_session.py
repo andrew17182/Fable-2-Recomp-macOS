@@ -84,6 +84,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fable2_test_control as control  # noqa: E402  (shared save-library helpers)
 import fable2_instances as instances  # noqa: E402  (running-instance registry)
 import fable2_playtest as playtest  # noqa: E402  (frozen playtest copy paths)
+import fable2_skip_intro as skip_intro_movies  # noqa: E402  (out/skipintro stand-ins)
 import fable2_common as common  # noqa: E402  (main checkout vs agent slot, disk/instance guards)
 import fable2_test_windows as test_windows  # noqa: E402  (remembered test-window placement)
 import fable2_agent_cache as agent_cache  # noqa: E402  (shared warm shader cache of agent test sessions)
@@ -711,6 +712,11 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
         if target_slot not in (None, 'none', 'None'):
             raise ValueError('--test-control sessions never write back to a live slot; use --target-slot none')
         target_slot = 'none'
+    # Playtest without a playtest copy (a fresh checkout has none) launches the latest build with a note instead of
+    # failing (2026-10-15).
+    build_note = None
+    if build == 'playtest' and not playtest.app_for('playtest').is_dir():
+        build, build_note = 'latest', 'No playtest copy, so the latest build was used (Update Playtest Build creates one).'
     app, data_root = playtest.app_for(build), playtest.data_root_for(build)
     # Test-harness parameters (telemetry phase 1): extra game args/cvars and a cache seed. Only for
     # automated test sessions; normal play keeps its exact launch and cache write-back.
@@ -724,8 +730,7 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
                               None) or os.environ.get('FABLE2_AGENT_CACHE')
     if cache_from and not cache_from.is_dir(): raise ValueError(f'--cache-from: no such folder {cache_from}')
     if not app.is_dir():
-        raise RuntimeError('No playtest copy yet: run python3 tools/fable2_playtest.py update' if build == 'playtest'
-                           else f'Game app not built: {app}')
+        raise RuntimeError(f'Game app not built: {app}')
     # Multiple instances are fine (agents test while the player plays). Only one normal-play game at a time:
     # two would write back into the same live state.
     # Disk guard: auto-clean below FABLE2_MIN_FREE_GB, then refuse test launches (play only warns).
@@ -740,7 +745,10 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
     if fps is not None:
         if fps not in ('30','60','uncapped'): raise ValueError('fps must be 30, 60 or uncapped')
         env.update(FABLE2_FPS_60='1' if fps=='60' else '0', REX_VSYNC='0' if fps=='uncapped' else '1')
-    if skip_intro: env['FABLE2_SKIP_INTRO_MOVIES'] = '1'
+    env['FABLE2_SKIP_INTRO_MOVIES'] = '1' if skip_intro else '0'  # explicit both ways, as the player app
+    if skip_intro:
+        # The stand-in movies the game redirects to; without them the full movies play (fresh clone, 2026-10-15).
+        skip_intro_movies.ensure(data_root)
     session = info = test_window = agent_cache_record = None
     if mode != 'title':
         session, state, info = prepare_session(mode, save, target_slot)
@@ -781,13 +789,19 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
         key, _, value = item.partition('=')
         if not key: raise ValueError('--env expects NAME=VALUE')
         env[key] = value
+    if test_control:  # tests always skip the intros + fast title (FABLE2_TEST_INTRO=1: intro-path tests only)
+        common.force_test_intro_skip(env, data_root)
     if test_control:  # window-title tag (src/core/fable2_window_title.h); --env / the caller's wins; play: none
         env.setdefault('FABLE2_WINDOW_TAG', os.environ.get('FABLE2_WINDOW_TAG') or common.window_tag())
     role = 'playtest' if build == 'playtest' else ('agent' if test_control else 'play')
     env['FABLE2_INSTANCE_ROLE'] = role  # window title (src/core/fable_2_app.h WindowTitle)
+    if not test_control:  # Character Editor mod backups outlive the pruned session folder (docs/character-editor.md)
+        env.setdefault('FABLE2_CHARACTER_EDITOR_BACKUP_DIR', str(BACKUPS / 'character-editor'))
     if session: env['FABLE2_INSTANCE_ID'] = session.name
     if mode == 'title' and build == 'playtest':
         env['FABLE2_GAME_DATA_ROOT'] = str(data_root)  # the playtest copy's own game data (not persisted)
+    if mode == 'title' and os.environ.get('FABLE2_LIVE_STATE_ROOT'):
+        env.setdefault('FABLE2_APP_STATE_ROOT', str(LIVE_STATE))  # an overridden live state (tests): title play uses it
     # LaunchServices launch, like double-clicking the app; only these variables are added.
     command = ['open', '-n']
     if env.get('FABLE2_TEST_BACKGROUND') == '1': command.append('-g')  # do not bring the app forward
@@ -858,6 +872,15 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
         log = open(session / 'watcher.log', 'ab')
         subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'watch', str(session)],
                          stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    elif not test_control:
+        # Title-screen play runs on the live state: saves made there also go to the save library (2026-10-15: a fresh
+        # clone has no saves to pick, so every game was title play and the library stayed empty).
+        SESSIONS.mkdir(parents=True, exist_ok=True)
+        log = open(SESSIONS / 'title-watch.log', 'ab')
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'watch-live', '--pid', str(pid),
+                          '--state', str(LIVE_STATE)],
+                         stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    if build_note: record['note'] = build_note
     SESSIONS.mkdir(parents=True, exist_ok=True)
     if not test_control:  # the Dev Launcher's own game; test sessions are addressed by session folder
         CURRENT.write_text(json.dumps(record, indent=2) + '\n')
@@ -1104,6 +1127,65 @@ def watch(session):
         time.sleep(POLL_SECONDS)
 
 
+def capture_live_save(state, hero, log):
+    """Copy one live hero save (title-screen play) into the save library. Nothing is written back: it is live."""
+    state = Path(state)
+    hero_dir = state / control.HERO_SLOTS / hero
+    header = state / control.HERO_HEADERS / (hero + '.header')
+    if not (hero_dir / 'mainsave.bin').is_file() or not header.is_file():
+        log(dict(event='skip', hero=hero, reason='incomplete save (no mainsave.bin or header)'))
+        return None
+    stamp = now_stamp()
+    base = 'live-' + hero.lower()
+    name, n = base + '_' + stamp, 2
+    while (LIBRARY / name).exists(): name, n = base + '_' + stamp + '-' + str(n), n + 1
+    entry = LIBRARY / name
+    entry.mkdir(parents=True)
+    shutil.copytree(hero_dir, entry / hero)
+    shutil.copy2(header, entry / header.name)
+    meta = dict(name=name, source=str(hero_dir), created=time.strftime('%Y-%m-%d %H:%M:%S'),
+                origin=dict(kind='title', slot=hero, state=str(state)), session=None, written_back_to=None,
+                **control.describe_save(entry / hero, entry / header.name))
+    (entry / 'save.json').write_text(json.dumps(meta, indent=2) + '\n')
+    log(dict(event='saved', hero=hero, library=name, QuestName=meta.get('QuestName'), LevelName=meta.get('LevelName')))
+    return name
+
+
+def watch_live(pid, state):
+    """Title-screen play (no session): each save the game makes in the live state goes to the library once it has
+    been stable for STABLE_SECONDS and the game has closed the file. Stops when the game exits (a save still pending
+    then is captured only after a clean exit)."""
+    state = Path(state)
+
+    def log(event):
+        print(json.dumps(dict(time=time.strftime('%Y-%m-%d %H:%M:%S'), pid=pid, **event)), flush=True)
+
+    committed = save_files(state)
+    log(dict(event='watching-live', state=str(state), files=len(committed)))
+    pending_since = last_sig = None
+    while True:
+        alive = pid_alive(pid)
+        current = save_files(state)
+        if current != committed:
+            if current != last_sig: last_sig, pending_since = current, time.monotonic()
+            stable = time.monotonic() - pending_since >= STABLE_SECONDS
+            if not alive:
+                time.sleep(1.0)
+                stable = clean_exit(state)
+                if not stable: log(dict(event='discarded-on-exit', heroes=changed_heroes(committed, current)))
+            if stable and (not alive or not files_open(pid, state / 'saves')):
+                for hero in changed_heroes(committed, current):
+                    try:
+                        capture_live_save(state, hero, log)
+                    except Exception as error:
+                        log(dict(event='error', hero=hero, error=repr(error)))
+                committed, pending_since, last_sig = current, None, None
+        if not alive:
+            log(dict(event='game-exited'))
+            return
+        time.sleep(POLL_SECONDS)
+
+
 # ---------------------------------------------------------------- status / close
 
 def current_record():
@@ -1127,7 +1209,20 @@ def status():
     # running: the launcher's own game (only that one enables its Close button).
     return dict(running=bool(current), pids=[e['pid'] for e in running], session=current, last_save=last,
                 instances=running, others=[instances.describe(e) for e in running
-                                           if not current or e['pid'] != current['pid']])
+                                           if not current or e['pid'] != current['pid']],
+                last_exit=None if current else last_exit())
+
+
+def last_exit():
+    """How the launcher's last game ended, once it has: dict(pid, kind, detail, logs) or None. The launcher shows a
+    note with Show Logs for kind 'unclean' (crash or kill) when it comes back after the game."""
+    try:
+        record = json.loads(CURRENT.read_text())
+    except (OSError, ValueError):
+        return None
+    if not record.get('pid') or pid_alive(record['pid']): return None
+    state = Path(record.get('state') or LIVE_STATE)
+    return dict(pid=record['pid'], logs=str(state / 'logs'), **exit_kind(state))
 
 
 def close(session=None, current=False, timeout=20):
@@ -1185,11 +1280,18 @@ def main():
     q.add_argument('session', nargs='?', help='session folder whose game to close')
     q.add_argument('--current', action='store_true', help="the Dev Launcher's current normal-play game")
     q = sub.add_parser('watch'); q.add_argument('session', type=Path)
+    q = sub.add_parser('watch-live'); q.add_argument('--pid', type=int, required=True); q.add_argument('--state', type=Path, required=True)
     q = sub.add_parser('prune', help='delete old session folders now (also runs on every launch)')
     q.add_argument('--dry-run', action='store_true', help='list what would be deleted')
     args = p.parse_args()
     try:
         if args.cmd == 'list':
+            # A fresh clone has no library yet: create it (and the main library holding .picker.json) on first need.
+            for folder in (LIBRARY, save_picker.picker_meta_path().parent):
+                try:
+                    folder.mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass
             result = dict(live=[save_picker.annotate(e, {}) for e in live_slots()], library=library_entries(), running=bool(current_record()),
                           picker_meta=str(save_picker.picker_meta_path()),
                           live_state=str(LIVE_STATE), playtest=playtest.info(),
@@ -1201,6 +1303,9 @@ def main():
         elif args.cmd == 'status': result = status()
         elif args.cmd == 'close': result = close(args.session, args.current)
         elif args.cmd == 'prune': result = dict(removed=prune_sessions(dry_run=args.dry_run), dry_run=args.dry_run)
+        elif args.cmd == 'watch-live':
+            watch_live(args.pid, args.state)
+            return
         else:
             watch(args.session)
             return

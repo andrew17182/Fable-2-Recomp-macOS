@@ -7,7 +7,8 @@
                                                    FABLE2_VERSION_STRING (rewritten only on change)
 
 The commit gets a "-dirty" suffix when tracked files have uncommitted changes (submodules
-ignored). A copy without git history (e.g. a GitHub ZIP) reports "0.1.0 (source)".
+ignored). A GitHub ZIP (no git history) takes the commit from tools/fable2_archive_commit.txt, which git archive
+fills in (.gitattributes export-subst); a copy with neither reports "0.1.0 (source)".
 Runs under Python 3.9.
 """
 import argparse
@@ -35,6 +36,10 @@ def info(root=ROOT):
                 sha += '-dirty'
     except (OSError, subprocess.SubprocessError):
         sha = ''
+    archive = root / 'tools/fable2_archive_commit.txt'  # export-subst: a GitHub ZIP download has the commit here
+    if not sha and archive.is_file():
+        text = archive.read_text().strip()
+        if text and not text.startswith('$Format'): sha = text[:7]
     stamp = root / '.fable2-version.json'  # written by tools/fable2_release.py into the release kit (no git there)
     if not sha and stamp.is_file():
         try:

@@ -57,6 +57,13 @@ use (Auto's pick) and 1×.
 This metadata is derived from the game (hashes, offsets, render state and the patched instruction words), so it is
 not shipped (`docs/offline-shader-seed.md` §6).
 
+**Since 2026-10-15 the first install compiles the disc's own shader bank instead** (no recipe, nothing shipped;
+`docs/shader-precompile-20261015.md`): the prep step reads `data/Shaders/ShadersRelease.sbk` from the player's
+extracted files and translates + compiles every pixel shader variant and the vertex shaders D3D does not patch
+(`FABLE2_SHADER_PREP_BANK`, Settings "Prepare all of the disc's shaders at install", default on), at the first prep
+scale. M5 Max: ~45 s added at 2×; draw-path translation hitches (`xlate`) in the first minute go from 1.2–1.8 s to
+~0, hitch time from 2.1–3.4 s to 0.5–0.9 s. What is left is pipeline builds (`pso_emu`).
+
 Measured (M5 Max, packaged app, fresh test state, the app's macOS Metal cache moved aside first so both arms are cold,
 Old Tomb save, headings8 + a 30 s camera turn, hitches counted for the first 60 s after the game was ready;
 `out/validation/release-shaders/`, KEEP):
@@ -87,13 +94,20 @@ built and signed locally, so it carries no quarantine attribute and Gatekeeper d
 
 ## First launch
 
-1. **Welcome**: choose the disc image (or reuse a finished extraction of another Fable II app on this Mac).
-2. **Extract** with `FableIIPrepare` (progress, Cancel, Show details). `default.xex` is hashed first; a different
+0. **Move to Applications** (only when the app runs from Downloads, Desktop, Documents, iCloud Drive, other cloud
+   storage, an external or network volume, a disk image or a translocated copy): offered before anything reads the
+   build kit. See "Protected folders and Move to Applications".
+1. **Welcome**: choose the disc image (open panel or drag and drop onto the window), or reuse a finished extraction
+   of another Fable II app on this Mac.
+2. **Extract** with `FableIIPrepare` (progress, Cancel, Show details). The app opens the image itself and hands the
+   open file to the extractor (`--iso-fd 3`), so the extractor never opens a path in a protected folder. `default.xex` is hashed first; a different
    version **blocks** in the release app (the code translation is specific to that exact file).
 3. **Command Line Tools**: `xcode-select -p` must name a developer folder with `clang`. If not, the window explains
    why and **Install Command Line Tools…** runs `xcode-select --install` (Apple's own dialog). The window then checks
    every 2 s for that readiness signal and continues by itself.
-4. **Build** (`/usr/bin/python3 -I -B -u …/kit/game-src/tools/fable2_game_build.py build --kit … --state … --game-data …`),
+4. **Build**: the app first copies its kit out of the bundle with its own process (`Build/kit`, an APFS clone when it
+   can, removed after a successful build), then runs
+   (`/usr/bin/python3 -I -B -u <state>/Build/kit/game-src/tools/fable2_game_build.py build --kit <state>/Build/kit --state … --game-data …`),
    shown as a checklist with one progress bar, an estimate, Cancel and "Show details" (every real command echoed as
    `$ …` with its output, also in `logs/build.log`):
    - **CMake**: our own copy, then PATH, Homebrew and `/Applications/CMake.app` (3.25+); otherwise Kitware's
@@ -101,19 +115,82 @@ built and signed locally, so it carries no quarantine attribute and Gatekeeper d
    - **Copy the build kit** into `Build/` (only changed files; see Updates).
    - **Translate the game code**: `rexglue init` (first time), configure, `rexglue codegen`, configure again, recomp
      patches.
-   - **Compile**: `fable_2_register.cpp` alone first, then everything with `jobs = clamp(min(cores,
-     floor((RAM − 3.5 GB) / 0.75 GB)), 1, cores)`. A memory watch polls `kern.memorystatus_vm_pressure_level` and
+   - **Compile**: everything with `jobs = clamp(min(cores, floor((RAM − 3.5 GB) / 0.75 GB)), 1, cores)`
+     (`fable_2_register.cpp`, the one -O0 unit, needs no PCH and starts in the first wave). Generated code is
+     compiled without debug info (`REXGLUE_RECOMP_DEBUG_INFO=none`; see "Build time"). A memory watch polls `kern.memorystatus_vm_pressure_level` and
      swap once a second; critical pressure or more than 1 GB of swap growth stops make and resumes with half the jobs.
    - **Link**, then **Sign on this Mac**: `Game/Fable II.bundle` is assembled beside the old one (fable_2 + runtime
      libraries + the app's Info.plist with fable_2 as executable, same bundle id), `codesign --sign -` each binary and
      the bundle, `codesign --verify --strict`, then swapped in.
    - Errors show a plain sentence, **Copy Details** (error, Mac, app version, last 200 log lines), **Show Log
      File** and **Try Again** (continues where it stopped: the build tree is kept).
-5. **Preparing shaders** (as in the portable app: one headless run per scale, Skip allowed).
-6. **Play window**.
+5. **Preparing shaders** (as in the portable app: one headless run per scale, Skip allowed). On a first install
+   (no lists remembered yet) it now runs too: the first scale compiles the disc's shader bank
+   (`docs/shader-precompile-20261015.md`).
+6. **Play window**, with "The game is built and ready" (or "updated and ready" after an update). A build never
+   starts the game by itself, so the player can review Settings, Controls and resolution first. Only the test flag
+   `--play` (used by the end-to-end harness) plays as soon as the game is ready.
+
+## Protected folders and Move to Applications
+
+macOS asks the player before an app reads Downloads, Desktop, Documents, iCloud Drive, other cloud storage
+(`~/Library/CloudStorage`) or removable and network volumes (System Settings → Privacy & Security → Files and
+Folders). A process reading its own app bundle is not asked; helper processes from elsewhere are, and the request is
+made in the app's name.
+
+**The reported failure (2026-10-15, release zip on an M3 Pro, app left in `~/Downloads`).** Extraction worked
+(`FableIIPrepare` lives in the bundle), then the build step ran `/usr/bin/python3 …/Fable II.app/Contents/Resources/kit/game-src/tools/fable2_game_build.py`.
+`/usr/bin/python3` is not part of the bundle, so opening that script was a read of `~/Downloads` in Fable II's name
+(the app was confirmed to still be in Downloads; a translocated copy is a read-only view of that same folder): "Fable II would like
+to access files in your Downloads folder". After **Don't Allow**, python exited 2 with `can't open file …: [Errno 1]
+Operation not permitted`, the window said only "The build stopped (exit 2)", and Try Again repeated the same command,
+which macOS refused again at once (it remembers the answer), so it looked as if nothing happened.
+
+What the app does now (`tools/macos/Shared/AppAccess.swift`, `tools/macos/Player/main.swift`):
+
+- **Move to Applications** first launch screen, offered when the app runs from a protected folder, a read-only
+  volume (disk image) or translocated (`SecTranslocateIsTranslocatedURL`, `SecTranslocateCreateOriginalPathForURL`).
+  It copies the running bundle to `/Applications` (`~/Applications` when that is not writable), removes the download
+  quarantine from the copy (so macOS does not translocate it again), checks the signature, puts an older copy there
+  and then the original in the Trash (best effort: if macOS refuses, the copy in Downloads stays), opens the new copy
+  and quits. **Not Now** continues in place; **Don't ask again** is remembered (`moveOfferDeclined` in
+  `player-settings.plist`). Nothing reads the build kit before this screen.
+- **Nothing outside the bundle reads the bundle**: the kit is copied out by the app's own process before python runs.
+- **The disc image comes from the open panel or drag and drop** (a user pick grants access to that file even in a
+  protected folder or after Don't Allow) and is handed to the extractor as an open file. A path that was never picked
+  in this session (relaunch while an extraction was incomplete) brings back the welcome window.
+- **A refused access is explained** (EPERM/EACCES, classified by folder): "macOS is not letting Fable II read its own
+  files" (build kit; **Move to Applications**, **Open Privacy Settings**, **Try Again**) or "… read the disc image"
+  (**Choose Disc Image…**, **Open Privacy Settings**, **Try Again**). The build driver reports a refused read as
+  `[denied] <errno> <path>`; python's own "can't open file" is recognized too. **Try Again** really retries: it
+  opens the image or copies the kit again and, if macOS still refuses, says "Checked again at <time>: still no
+  access." Copy Details includes the refused path and the app's location.
+- With ad-hoc signing every new version is a new app to macOS privacy, so an answer given to an old version does
+  not carry over.
+
+Tests: `tests/release_access_tests.py` (classification, translocation by path, the move with a quarantined file,
+the extractor reading a handed-over image from a folder it cannot open, the driver's `[denied]` line, and the real
+windows in background mode with a chmod-ed stand-in Downloads folder: refused, still refused after Try Again, then
+going on after access returns; the Move screen comes before any kit read; a finished build waits on the Play window).
+Snapshots: `out/validation/release-access/` (KEEP): `move-offer-downloads.png`, `denied-disc-image.png`,
+`denied-build-kit.png`, `play-ready-after-build.png`.
+
+**Manual check (a real privacy prompt cannot be automated):**
+
+1. Download the release zip in Safari (so it is quarantined), let it unzip in `~/Downloads`, approve it with Open
+   Anyway, open it from Downloads. Expect the Move to Applications screen before any other window.
+2. Click **Move to Applications**: Fable II reopens from `/Applications` (the Downloads copy is in the Trash),
+   with no Gatekeeper question and no Downloads prompt during the build.
+3. Start Fresh, move the app back to Downloads by hand, open it, choose **Not Now** and a disc image in Downloads.
+   If macOS asks about Downloads, click **Don't Allow**: the build or the image window explains it; **Try Again**
+   says "still no access"; **Move to Applications** or turning Fable II on in Files and Folders (then Try Again)
+   continues. For the image, **Choose Disc Image…** with the same file continues even with access off.
+4. Reset the answer afterwards: `tccutil reset SystemPolicyDownloadsFolder org.fable2recomp.metal.release`.
 
 The build environment is cleaned: no `FABLE2_*`, `REXGLUE_*` or `CMAKE_*` variables from the caller, PATH is
-CMake + `/usr/bin:/bin:/usr/sbin:/sbin`. The CMake option `FABLE2_GPU_PLUGIN_XENOS=OFF` keeps the Xenos plugin
+CMake + `/usr/bin:/bin:/usr/sbin:/sbin`, and CMake's Python steps (recomp patches, version header) are pinned to
+`/usr/bin/python3` (`-DPython3_EXECUTABLE`), the Command Line Tools' 3.9 the driver itself runs under: with a
+Homebrew CMake its `bin/` is on PATH and CMake otherwise picks Homebrew's Python. The CMake option `FABLE2_GPU_PLUGIN_XENOS=OFF` keeps the Xenos plugin
 (not in the kit) from being staged. CLI: `fable2_game_build.py plan` (job count and why), `status`,
 `measure-report STATE` (for `--measure` builds).
 
@@ -161,7 +238,63 @@ test never touches system folders). CLI (same code): `FableIIPlayer --start-fres
 | `FABLE2_PORTABLE_REUSE_FROM=` | no reuse of other apps' extractions |
 | `FABLE2_SIMULATE_NO_CLT=<file>` | the Command Line Tools count as missing until `<file>` exists; Install only logs |
 | `FABLE2_TEST_AUTO_INSTALL_TOOLS=1` | press Install at once |
-| `FABLE2_GAME_BUILD_ARGS="…"` | extra driver arguments: `--measure`, `--jobs N`, `--ignore-system-cmake`, `--cmake-url URL`, `--clean` |
+| `FABLE2_TEST_PROTECTED_DIRS=<dir>[:…]` | these folders count as Downloads (a chmod-ed one then shows the privacy texts) |
+| `FABLE2_TEST_RETRY_WHEN=<file>` | while access is refused, press Try Again when the file appears (it is removed) |
+| `FABLE2_TEST_APPLICATIONS_DIR`, `FABLE2_TEST_TRASH_DIR` | where Move copies to and what counts as the Trash |
+| `FABLE2_TEST_OFFER_MOVE=1`, `FABLE2_TEST_AUTO_MOVE=1`, `FABLE2_TEST_MOVE_NO_RELAUNCH=1` | offer Move in any app, press it, quit instead of opening the copy |
+| `FABLE2_GAME_BUILD_ARGS="…"` | extra driver arguments: `--measure`, `--jobs N`, `--ignore-system-cmake`, `--cmake-url URL`, `--clean`, `--debug-info line-tables-only` and `--register-first` (the build before 2026-10-15) |
+
+## Build time (2026-10-15)
+
+Clean first-launch builds of the packaged kit (`fable2_game_build.py build --clean --measure`, real disc, perf lock
+held exclusively for the 11-job runs, an idle Mac for the 18-job runs; M5 Max: 6 super + 12 performance cores). Evidence:
+`out/validation/build-speed/` (KEEP): logs, CPU samples, per-unit `/usr/bin/time` data, `timeline.py`.
+
+| Build | Jobs | Codegen step | Compile + link | Total |
+|---|---|---|---|---|
+| Before (kit 03558af) | 18 | 24.4 s | 57.2 s | **82.4 s** |
+| After | 18 | 7.4 s | 52.3 s | **60.3 s** (−27%) |
+| Before | 11 | 31.4 s | 73.0 s | **105.2 s** |
+| After | 11 | 8.8 s | 64.7 s | **74.1 s** (−30%) |
+| M3 Pro 11 cores, before (maintainer's `build.log`, 2026-10-14) | 11 | 40.3 s | 146.3 s | **188.4 s** |
+| M3 Pro, after (estimate: the M5 11-job ratios) | 11 | ~11 s | ~130 s | **~2.4 min** (−25%) |
+| M1 8 GB, after (estimate) | 6 | ~13 s | ~210 s | **~3.8 min** (was ~5.6) |
+
+What changed (all exact: same generated code, same machine code):
+
+- **Codegen 4.5× faster** (`patches/sdk/codegen-graph-index.patch`): `rexglue codegen` is single-threaded and
+  spent ~13 of its 20 s in two quadratic loops. `FunctionGraph::notifyFunctionAdded` tried every one of ~61,000
+  functions against each new one, and `cleanupAbsorbedGapFills` called `containsAddress` for every pair. Both are now
+  indexed (unresolved-jump target → functions; base-sorted interval walk). All 591 generated files are
+  byte-identical to the old rexglue's output (only `codegen.d` names the folder); 24.6 s → 5.4 s alone.
+- **Recomp patches in worker processes** (`tools/apply_recomp_patches.py`): the per-file passes run in a spawn pool
+  (`FABLE2_RECOMP_PATCH_JOBS`, 1 = one process); same files and counts; 3.6 s → 0.7 s.
+- **No debug info for generated code** (`--debug-info none`, default): −6.6% compile CPU (698 → 652 s for the
+  generated units), objects ~45% smaller. The machine code is identical (`otool -t` of units with and without
+  `-gline-tables-only`; the linked `__text` has the same size, its only differences are string addresses from the
+  build folder's name in SDK `__FILE__` strings). Function names stay in the symbol table, so crash reports and
+  `f2diag` stacks are unchanged; only file:line for generated frames is gone (the objects were on the player's Mac
+  only anyway).
+- **`fable_2_register.cpp` no longer alone first**: it is in the first wave of the parallel build (5–7 s of one core
+  instead of the whole Mac). `--register-first` restores the old step.
+
+Measured and not taken:
+
+- **-O2 for generated code**: per-unit compile time is the same as -O3 (unit 141: 9.5 vs 9.4 s; typical units
+  1.47–1.50 vs 1.51–1.53 s), so there is no build win to weigh against a performance risk. -O1 is slower on the
+  largest unit (13.3 s). Time per typical unit: frontend 0.4 s, optimiser 0.7 s, code generation 0.5 s.
+- **Largest units first / one job pool for both targets** (a driver pre-pass that compiled the recomp units by size
+  and `fable_2`'s own objects in one make): 74.5 vs 74.1 s at 11 jobs, 57.7 vs 60.3 s at 18. Not worth a second
+  build path. At 18 jobs the unit with the 2.5 MB guest function (`sub_82242ED0`, 72,500 lines; ~9 s on a super
+  core, 22 s on a performance core) is the critical path; at 11 jobs and below it is not.
+- **Splitting large units**: the slow unit is one guest function, which codegen cannot split
+  (`max_file_size_bytes` only groups functions), so no gain.
+- **Ninja**: not in the Command Line Tools; with no ordering gain measured above, not worth bundling.
+- **Job count**: the rule already uses every core (P + E) on 16 GB and up (M3 Pro: 11 jobs); the memory watch did
+  not trip in any run (peak pressure normal, no swap growth).
+
+Updates: the kit-update rebuild of 2026-10-14 recompiled everything (150 s on the M3) because SDK headers in the PCH
+changed. This release changes the generated code's flags too, so the first update to it rebuilds once.
 
 ## Measurements (M5 Max, 18 cores, 64 GB, macOS 27.0.1, Apple clang 21)
 
@@ -209,3 +342,19 @@ performance cores + 0.4 × efficiency cores):
 
 Not tested here: a Mac without the Command Line Tools (simulated only: `xcode-select --install` and Apple's dialog
 were not run), Gatekeeper on a downloaded zip, and a real 8 GB Mac.
+
+## Import saves (2026-10-15)
+
+The release app keeps its own state folder, so on a Mac that already ran the portable or dev build it started with
+no saves (maintainer, M3). **Import Saves…** (File menu, and Settings > Advanced) copies hero saves from another
+install on this Mac (`~/Library/Application Support/Fable II Recomp/saves`) or from a chosen folder (a `saves`
+folder or the data folder holding one) into this app's `saves/`:
+
+- it copies, never moves; profile data (options, achievements) is copied only when this app has none yet;
+- a hero save this app already has is kept unless the player chooses **Replace**; replaced saves are moved to
+  `saves-backup-<stamp>` next to `saves/` first;
+- the result lists what was imported, replaced and kept (also in `logs/player.log`).
+
+At the first Play window with no saves of its own, the app offers the import once, and only when another install's
+saves are found. `--import-saves FOLDER [--replace]` runs the same code without the window
+(`tests/import_saves_tests.py`, stand-in folders; `FABLE2_IMPORT_SAVES_FROM` stands in for the other install).

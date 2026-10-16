@@ -27,26 +27,28 @@ DEV_SESSION = (ROOT / 'tools/fable2_dev_session.py').read_text()
 # Launcher CLI flags that set the same values.
 CASES = [
     ({}, []),
-    ({'resolutionScale': '2', 'frameRate': '30', 'fpsCounter': True},
-     ['--resolution', '2', '--fps', '30', '--fps-counter']),
+    ({'resolutionScale': '2', 'frameRate': '30', 'fpsCounter': True, 'skipIntro': True},
+     ['--resolution', '2', '--fps', '30', '--fps-counter', '--skip-intro']),
     ({'resolutionScale': 'auto', 'frameRate': 'uncapped', 'displayMode': 'fullscreen', 'upscaling': 'metalfx-spatial',
-      'effectsSize': 'full', 'turboNotice': 'game', 'skipIntro': False},
+      'effectsSize': 'full', 'turboNotice': 'game', 'turboSpeed': 3.5, 'turboAudio': 'high-pitch', 'skipIntro': False},
      ['--resolution', 'auto', '--fps', 'uncapped', '--display', 'fullscreen', '--upscaling', 'metalfx-spatial',
-      '--effects', 'full', '--turbo-notice', 'game', '--no-skip-intro']),
+      '--effects', 'full', '--turbo-notice', 'game', '--turbo-speed', '3.5', '--turbo-audio', 'high-pitch',
+      '--no-skip-intro']),
     ({'frameRate': '60', 'furFix': False, 'nativeShaders': False, 'rttVerify': True, 'tracePreset': 'gpu',
       'portableShaderCache': False, 'hitchTrace': False, 'extraEnv': 'FABLE2_SYNC_TEST=1 REX_SYNC_TEST=x'},
      ['--fps', '60', '--no-fur-fix', '--no-native-shaders', '--rtt-verify', '--trace-preset', 'gpu',
       '--no-portable-shader-cache', '--no-hitch-trace', '--extra-env', 'FABLE2_SYNC_TEST=1 REX_SYNC_TEST=x']),
     ({'frameRate': 'settings', 'unlockExtras': False, 'ringReinitFix': False, 'tileEdram': False, 'resolutionScale': '3'},
      ['--fps', 'settings', '--no-unlock-extras', '--no-ring-reinit-fix', '--no-tile-edram', '--resolution', '3']),
+    # "Skip cosmetic waits" (docs/load-fixes-20261016.md section F).
+    ({'fastPacing': True}, ['--fast-pacing']),
     # Controls tab (tools/macos/Shared/ControlsView.swift).
     ({'keyboardMap': 'Return:Pause,E:A,LMB:X', 'mouseLook': True, 'mouseLookScale': 700,
       'hotkeyBinds': {'bind_settings': 'F4', 'bind_console': 'None'}, 'viewButtonToGame': True},
      ['--keyboard-map', 'Return:Pause,E:A,LMB:X', '--mouse-look', '--mouse-look-scale', '700',
       '--bind', 'bind_settings=F4', '--bind', 'bind_console=None', '--view-button-to-game']),
 ]
-# Set only by the player: Play's own marker for FableIILauncher, and an explicit "no skip" (the portable
-# launcher otherwise skips the logo movies by default; the dev session leaves the variable unset).
+# Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.
 PLAYER_ONLY = {'FABLE2_PLAYER_LAUNCH': '1'}
 
 
@@ -56,7 +58,7 @@ def dev_session_env(args):
     if '--fps' in args:
         fps = args[args.index('--fps') + 1]
         env.update(FABLE2_FPS_60='1' if fps == '60' else '0', REX_VSYNC='0' if fps == 'uncapped' else '1')
-    if '--no-skip-intro' not in args: env['FABLE2_SKIP_INTRO_MOVIES'] = '1'
+    env['FABLE2_SKIP_INTRO_MOVIES'] = '0' if '--no-skip-intro' in args else '1'
     for i, arg in enumerate(args):
         if arg == '--env':
             key, _, value = args[i + 1].partition('=')
@@ -127,10 +129,19 @@ class LauncherEnvSyncTests(unittest.TestCase):
                 expected = self.dev_env(flags)
                 player, args = self.player_run(settings, ['--play', '--audio_mute=true'], 'case%d' % i)
                 for key, value in PLAYER_ONLY.items(): self.assertEqual(player.pop(key), value)
-                if settings.get('skipIntro') is False:
-                    self.assertEqual(player.pop('FABLE2_SKIP_INTRO_MOVIES'), '0')
                 self.assertEqual(player, expected)
                 self.assertEqual(args, ['--audio_mute=true'])  # player flags consumed, the rest reach the game
+
+    def test_fast_pacing_umbrella(self):
+        # Default off and always explicit; the sub-switches are left to the game (an explicit value of one wins there).
+        self.assertEqual(self.dev_env([])['FABLE2_FAST_PACING'], '0')
+        for name, settings in (('fp-on', {'fastPacing': True}), ('fp-legacy', {'shortLoadFades': True}),
+                               ('fp-off', {'fastPacing': False, 'shortLoadFades': True})):
+            with self.subTest(settings=settings):
+                player, _ = self.player_run(settings, ['--play'], name)
+                self.assertEqual(player['FABLE2_FAST_PACING'], '0' if name == 'fp-off' else '1')
+                self.assertNotIn('FABLE2_LOAD_FADE_FRAMES', player)
+                self.assertNotIn('FABLE2_SAVE_NOTICE_MS', player)
 
     def test_skip_launcher_plays_directly(self):
         player, _ = self.player_run({'skipLauncher': True, 'resolutionScale': '2'}, [], 'skip')
@@ -140,7 +151,7 @@ class LauncherEnvSyncTests(unittest.TestCase):
         # dev_session_env() above mirrors these lines of launch(); update both together.
         self.assertIn("env.update(FABLE2_FPS_60='1' if fps=='60' else '0', REX_VSYNC='0' if fps=='uncapped' else '1')",
                       DEV_SESSION)
-        self.assertIn("if skip_intro: env['FABLE2_SKIP_INTRO_MOVIES'] = '1'", DEV_SESSION)
+        self.assertIn("env['FABLE2_SKIP_INTRO_MOVIES'] = '1' if skip_intro else '0'", DEV_SESSION)
 
 
 if __name__ == '__main__':

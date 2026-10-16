@@ -906,3 +906,21 @@ if __name__ == '__main__':
     if sys.argv[1:2] == ['hold']: sys.exit(_hold_main(sys.argv[2:]))
     if sys.argv[1:2] == ['build-hold']: sys.exit(_build_hold_main(sys.argv[2:]))
     sys.exit('usage: fable2_common.py hold --fd N --info JSON (internal; started by test launches)')
+
+
+def force_test_intro_skip(env, game_root=None):
+    """Every test/agent game skips the intro movies and runs the fast title (maintainer rule, 2026-10-15): the player
+    default is off (faithful), but tests never pay for the logos. Only a test about the intro path opts out with
+    FABLE2_TEST_INTRO=1 (in `env` or this process's environment). Also makes the stand-in movies the redirect needs
+    (tools/fable2_skip_intro.py) under `game_root`. Returns `env`."""
+    if (env.get('FABLE2_TEST_INTRO') or os.environ.get('FABLE2_TEST_INTRO')) == '1':
+        return env
+    env['FABLE2_SKIP_INTRO_MOVIES'] = '1'
+    env['FABLE2_TITLE_FAST'] = '1'
+    if game_root is not None:
+        try:
+            import fable2_skip_intro
+            fable2_skip_intro.ensure(game_root)
+        except Exception:
+            pass
+    return env

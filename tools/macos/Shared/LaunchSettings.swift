@@ -232,6 +232,37 @@ enum TurboNotice: String, CaseIterable, Identifiable {
   }
 }
 
+/// Audio while turbo is on (FABLE2_TURBO_AUDIO, [patches] turbo_audio; docs/turbo.md "Turbo audio").
+enum TurboAudio: String, CaseIterable, Identifiable {
+  case natural, highPitch = "high-pitch", normal
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .natural: return "Sped up, natural pitch"
+    case .highPitch: return "Sped up, high pitch"
+    case .normal: return "Normal speed"
+    }
+  }
+  static func saved(in defaults: SettingsStore) -> TurboAudio {
+    TurboAudio(rawValue: defaults.string(forKey: "turboAudio") ?? "") ?? .natural
+  }
+}
+
+/// Turbo speed (FABLE2_TURBO_SPEED, [patches] turbo_scale): 1.1x to 4.0x in 0.1 steps.
+enum TurboSpeed {
+  static let range: ClosedRange<Double> = 1.1...4.0
+  static let defaultValue = 2.0
+  /// Clamped to the range and rounded to tenths (the game quantizes the same way).
+  static func clean(_ value: Double) -> Double {
+    (min(max(value, range.lowerBound), range.upperBound) * 10).rounded() / 10
+  }
+  static func saved(in defaults: SettingsStore) -> Double {
+    guard let value = defaults.object(forKey: "turboSpeed") as? Double else { return defaultValue }
+    return clean(value)
+  }
+  static func label(_ value: Double) -> String { String(format: "%.1f×", value) }
+}
+
 /// Internal resolution (FABLE2_RES_SCALE; game config [graphics] resolution_scale,
 /// docs/resolution-scale.md). Always passed explicitly so the launcher, not the TOML, decides.
 enum InternalResolution: String, CaseIterable, Identifiable {
@@ -360,12 +391,27 @@ enum TracePreset: String, CaseIterable, Identifiable {
 }
 
 /// Which app to play (local agent docs): the frozen playtest copy in out/playtest (agents never
-/// rebuild it) or the latest build in out/build (replaced by every agent build).
+/// rebuild it) or the latest build in out/build (replaced by every agent build). Latest is the default: a
+/// fresh checkout has no playtest copy (2026-10-15: the old Playtest default failed every launch there).
 enum BuildChoice: String, CaseIterable, Identifiable {
   case playtest, latest
   var id: String { rawValue }
+  /// Settings key of the one-time build-choice migration: below 1, a saved "playtest" (the old default,
+  /// possibly never picked on purpose) becomes "latest" once; a later deliberate Playtest pick is kept.
+  static let migrationKey = "buildChoiceMigration"
   static func saved(in defaults: SettingsStore) -> BuildChoice {
-    BuildChoice(rawValue: defaults.string(forKey: "build") ?? "") ?? .playtest
+    let version = (defaults.object(forKey: migrationKey) as? Int) ?? 0
+    if version < 1 {
+      if defaults.string(forKey: "build") == BuildChoice.playtest.rawValue {
+        defaults.set(BuildChoice.latest.rawValue, forKey: "build")
+      }
+      defaults.set(1, forKey: migrationKey)
+    }
+    return BuildChoice(rawValue: defaults.string(forKey: "build") ?? "") ?? .latest
+  }
+  /// The build a launch actually uses: Playtest without a playtest copy falls back to Latest (never fails).
+  func effective(playtestExists: Bool) -> BuildChoice {
+    self == .playtest && !playtestExists ? .latest : self
   }
 }
 
@@ -414,10 +460,16 @@ struct Flag: Identifiable {
 /// launcher's defaults for a new install.
 struct LaunchSettings: Equatable {
   // General
-  var skipIntro = true
+  /// Off by default (2026-10-15): the original logo movies play, the faithful choice. Settings are saved only when
+  /// changed, so an install that never touched it follows this default; a saved choice is kept.
+  var skipIntro = false
   var boot = true
   var unlockExtras = true
+  /// Mods (opt-in, off by default): the Character Editor in the F6 menu (docs/character-editor.md).
+  var characterEditor = false
   var turboNotice = TurboNotice.overlay
+  var turboSpeed = TurboSpeed.defaultValue
+  var turboAudio = TurboAudio.natural
   // Display
   var frameRate = FrameRate.auto
   var resolution = InternalResolution.auto
@@ -438,6 +490,7 @@ struct LaunchSettings: Equatable {
   var nativePoints = true
   var nativeRects = true
   var terrainAdaptive = false
+  var terrainLayerMatch = true  // docs/adaptive-terrain-flashes-20261014.md
   var occlusionReal = true  // docs/occlusion-queries-20261014.md
   var nativeTessBlended = true
   var nativeFirst = true
@@ -447,6 +500,7 @@ struct LaunchSettings: Equatable {
   var ns2Archive = true
   var xferPrewarm = true
   var nativeGeomPersist = true  // docs/bug-patterns.md row 102
+  var shaderPrepBank = true  // docs/shader-precompile-20261015.md
   var rttPrewarm = true
   var startupParallel = true
   var preparedDrawSlim = true
@@ -454,6 +508,7 @@ struct LaunchSettings: Equatable {
   var drawPrepLite = true
   var drawPrepLite2 = true
   var loadCheckExact = true
+  var nativeSaveCompress = true  // docs/load-fixes-20261016.md
   // Fixes
   var furFix = true
   var memexportReadback = true
@@ -484,8 +539,11 @@ struct LaunchSettings: Equatable {
   var effectsFootprint = true
   var effectsFootprintVariant = true
   var clearLoadAction = true
+  var ssmMerge = false
+  var ssmStencilFold = true
   var ringReinitFix = true
   var fixLodSizeCache = false
+  var fastPacing = false  // docs/load-fixes-20261016.md section F (pacing change, opt-in; replaces "Shorter load fades")
   // Diagnostics
   var tracePreset = TracePreset.standard
   var hitchTrace = true
@@ -498,7 +556,7 @@ struct LaunchSettings: Equatable {
   var texturePrecommitVerify = false
   var extraEnv = ""
   // Main window
-  var build = BuildChoice.playtest
+  var build = BuildChoice.latest
   /// Whether the game build these settings launch has the shader converter; set by the app from the build it
   /// launches (hasConverter(macOSFolder:)), never saved. False: the requiredWithoutConverter switches are not
   /// passed as =0.
@@ -506,12 +564,16 @@ struct LaunchSettings: Equatable {
 
   static let flags: [Flag] = [
     Flag(key: "skipIntro", path: \.skipIntro, cli: "skip-intro", tab: .general, section: "Startup",
-         title: "Skip intro movies", detail: "Go straight to the title screen without the logo videos."),
+         title: "Skip intro movies",
+         detail: "Go straight to the title screen without the logo videos; also shortens the title screen's own fade-in and fade-out (fast title). Off: the original intro plays."),
     Flag(key: "boot", path: \.boot, cli: "boot", tab: nil, section: "",
          title: "Boot straight into save", detail: "Load the save from the main menu automatically."),
     Flag(key: "unlockExtras", path: \.unlockExtras, cli: "unlock-extras", tab: .general, section: "Game",
          title: "Unlock Collector's Edition and website gear",
          detail: "Adds the bonus items of the Collector's Edition and the old website (docs/patches.md)."),
+    Flag(key: "characterEditor", path: \.characterEditor, cli: "character-editor", tab: .general, section: "Mods",
+         title: "Character Editor (F6 menu)",
+         detail: "Adds \"Character Editor\" to the F6 menu: set good/evil, pure/corrupt, fat/thin, muscle, height, Will lines, gold and renown through the game's own stat calls. Backs up the save before any change; edits are kept only when the game saves (docs/character-editor.md). Off: the F6 menu is unchanged."),
     Flag(key: "fpsCounter", path: \.fpsCounter, cli: "fps-counter", tab: .display, section: "Frame rate",
          title: "Show FPS counter", detail: "Its state at launch; F9 toggles it in game."),
     Flag(key: "auto2x", path: \.auto2x, cli: "auto-2x", tab: .display, section: "Frame rate",
@@ -550,6 +612,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "terrainAdaptive", path: \.terrainAdaptive, cli: "terrain-adaptive", tab: .performance,
          section: "Shader cache", title: "Adaptive terrain tessellation (fixes cracks natively)",
          detail: "The game's own terrain detail levels on the native tessellator, with correct edges (no cracks). Off: every terrain patch at full detail."),
+    Flag(key: "terrainLayerMatch", path: \.terrainLayerMatch, cli: "terrain-layer-match", tab: .performance,
+         section: "Shader cache", title: "Adaptive terrain: layers follow the ground's detail (no white flashes)",
+         detail: "With adaptive terrain on, the blended ground layers use the same detail level and path as the ground under them, so they never fall behind it. Off: layers at full detail as on the Xbox 360 (white flashes at the view's edge)."),
     Flag(key: "nativeRects", path: \.nativeRects, cli: "native-rects", tab: .performance,
          section: "Shader cache", title: "Native rectangles",
          detail: "Rectangle lists (full-screen passes) expanded by the native vertex shaders. Off: geometry-shader emulation."),
@@ -571,6 +636,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "nativeGeomPersist", path: \.nativeGeomPersist, cli: "native-geom-persist", tab: .performance,
          section: "Startup and CPU", title: "Remember particle and tessellation pipelines",
          detail: "Records native point, rectangle and tessellation pipelines so the next launch prebuilds them in the background."),
+    Flag(key: "shaderPrepBank", path: \.shaderPrepBank, cli: "shader-prep-bank", tab: .performance,
+         section: "Startup and CPU", title: "Prepare all of the disc's shaders at install",
+         detail: "The install's shader step also translates and compiles every shader in the game's own shader bank, so new effects do not stutter the first time they appear. Off: only shaders this Mac has already seen."),
     Flag(key: "rttPrewarm", path: \.rttPrewarm, cli: "rtt-prewarm", tab: .performance,
          section: "Startup and CPU", title: "Prebuild fused resolve pipelines at startup",
          detail: "Builds the resolve-to-texture pipelines in the background: no first-launch load hitches."),
@@ -592,6 +660,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "loadCheckExact", path: \.loadCheckExact, cli: "load-check-exact", tab: .performance,
          section: "Startup and CPU", title: "Texture loads follow the draw's check",
          detail: "A texture the game rewrites while a draw is being prepared loads at its next use, inside the upload batch."),
+    Flag(key: "nativeSaveCompress", path: \.nativeSaveCompress, cli: "native-save-compress", tab: .performance,
+         section: "Startup and CPU", title: "Native save compressor",
+         detail: "Saves (autosaves at area changes, quick saves) compress with a native version of the game's own search: the same bytes, written sooner. Off: the recompiled search."),
     Flag(key: "furFix", path: \.furFix, cli: "fur-fix", tab: .fixes, section: "Dog",
          title: "Dog-fur flash fix",
          detail: "Keeps GPU-written vertex data when a page is re-uploaded (memexport preserve)."),
@@ -640,6 +711,12 @@ struct LaunchSettings: Equatable {
     Flag(key: "clearLoadAction", path: \.clearLoadAction, cli: "clear-load-action", tab: .fixes,
          section: "Render targets", title: "Whole-target clears as pass clears",
          detail: "A deferred clear that covers a pass's whole target becomes that pass's clear instead of a load plus a clear quad. Same pixels, less memory traffic."),
+    Flag(key: "ssmMerge", path: \.ssmMerge, cli: "ssm-merge", tab: .fixes,
+         section: "Render targets", title: "Shadow-mask depth copy in the mask pass",
+         detail: "The main-depth copy and stencil clear before the screen-space shadow mask are drawn inside the mask pass instead of a pass of their own, and the mask pass skips loading a depth buffer it overwrites. Same pixels, less memory traffic. Off by default: about 0.1 ms slower on an M5 Max at 2x; meant for Macs short on memory bandwidth."),
+    Flag(key: "ssmStencilFold", path: \.ssmStencilFold, cli: "ssm-stencil-fold", tab: .fixes,
+         section: "Render targets", title: "Shadow-mask stencil reset without its own pass",
+         detail: "The stencil reset after the screen-space shadow mask is not drawn as a pass: the copies that move the mask's depth buffer into the main pass read the reset value directly, and nothing reads that buffer's stencil afterwards. Same pixels, less memory traffic."),
     Flag(key: "tileResolve", path: \.tileResolve, cli: "tile-resolve", tab: .fixes,
          section: "Render targets", title: "Resolves inside the draw pass",
          detail: "Colour copy-outs run as tile shaders before the pass ends: no separate compute pass. Same bytes. Off turns the four items below off."),
@@ -686,6 +763,9 @@ struct LaunchSettings: Equatable {
          section: "Game bug fixes (changes original behaviour)",
          title: "Fix game texture-detail cache bug (pale textures)",
          detail: "The game sometimes keeps a far-away, low-detail texture on nearby objects until the camera moves (the pale root at Bower Lake, about 1 load in 4). On: the game's size check uses the right distance. Off: original game."),
+    Flag(key: "fastPacing", path: \.fastPacing, cli: "fast-pacing", tab: .general, section: "Game",
+         title: "Skip cosmetic waits (changes original pacing)",
+         detail: "Shortens fixed waits that only pace the screen, never a wait for loading or streaming: the 15-frame holds after \"Saving content\", before the arrival and at boot (1 frame instead, about 0.5 s each), and the notice's minimum time on screen (0 instead of 0.5 s; the game's own is 3.1 s). Off: original game."),
     Flag(key: "hitchTrace", path: \.hitchTrace, cli: "hitch-trace", tab: .diagnostics, section: "Logging",
          title: "Hitch trace",
          detail: "Logs a [hitch] line in fable_2.log for each stutter: a frame 1.5× the recent median and 40 ms+, or any 100 ms+."),
@@ -746,8 +826,12 @@ struct LaunchSettings: Equatable {
     // docs/ssmask-20261014.md
     (\.effectsFootprintVariant, "FABLE2_EFFECTS_FOOTPRINT_VARIANT"),
     (\.clearLoadAction, "FABLE2_CLEAR_LOAD_ACTION"),
+    // docs/ssm-merge-20261015.md
+    (\.ssmStencilFold, "FABLE2_SSM_STENCIL_FOLD"),
     // docs/occlusion-queries-20261014.md
     (\.occlusionReal, "FABLE2_OCCLUSION_REAL"),
+    // docs/adaptive-terrain-flashes-20261014.md (only matters with terrainAdaptive on)
+    (\.terrainLayerMatch, "FABLE2_TERRAIN_LAYER_MATCH"),
   ]
   /// Native-path switches a build without the shader converter needs (docs/no-converter.md, "Forced switches"):
   /// there is no converter path to fall back to, so the game ignores NAME=0 there and the settings show them on
@@ -778,6 +862,8 @@ struct LaunchSettings: Equatable {
     (\.tileResolveKeepOpen, "FABLE2_TILE_RESOLVE_KEEP_OPEN"),
     (\.texRenameVerify, "FABLE2_TEX_RENAME_VERIFY"),
     (\.texUnchangedVerify, "FABLE2_TEX_UNCHANGED_VERIFY"),
+    // docs/ssm-merge-20261015.md (default off: +0.1 ms GPU at 2x on the M5 Max; for bandwidth-bound Macs).
+    (\.ssmMerge, "FABLE2_SSM_MERGE"),
   ]
 
   static func flags(in tab: SettingsTab) -> [Flag] { flags.filter { $0.tab == tab } }
@@ -787,7 +873,13 @@ struct LaunchSettings: Equatable {
     for flag in flags {
       if let value = defaults.object(forKey: flag.key) as? Bool { s[keyPath: flag.path] = value }
     }
+    // "Shorter load fades" (2026-10-16) became part of "Skip cosmetic waits": a saved "on" carries over.
+    if defaults.object(forKey: "fastPacing") == nil, defaults.object(forKey: "shortLoadFades") as? Bool == true {
+      s.fastPacing = true
+    }
     s.turboNotice = TurboNotice.saved(in: defaults)
+    s.turboSpeed = TurboSpeed.saved(in: defaults)
+    s.turboAudio = TurboAudio.saved(in: defaults)
     s.frameRate = FrameRate.saved(in: defaults)
     s.resolution = InternalResolution.saved(in: defaults)
     s.upscaling = Upscaling.saved(in: defaults)
@@ -809,6 +901,8 @@ struct LaunchSettings: Equatable {
       if new != previous { defaults.set(value, forKey: key) }
     }
     put(turboNotice, old.turboNotice, "turboNotice", turboNotice.rawValue)
+    put(turboSpeed, old.turboSpeed, "turboSpeed", turboSpeed)
+    put(turboAudio, old.turboAudio, "turboAudio", turboAudio.rawValue)
     put(frameRate, old.frameRate, "frameRate", frameRate.rawValue)
     put(resolution, old.resolution, "resolutionScale", resolution.rawValue)
     put(upscaling, old.upscaling, "upscaling", upscaling.rawValue)
@@ -861,6 +955,10 @@ extension LaunchSettings {
     env.append("FABLE2_FULLSCREEN=\(display == .fullscreen ? 1 : 0)")
     // Turbo on/off notice style (docs/turbo.md); the game default is overlay.
     env.append("FABLE2_TURBO_NOTICE=\(turboNotice.rawValue)")
+    // Turbo speed (F7) and audio during turbo (docs/turbo.md). Always explicit so the launcher, not
+    // [patches] turbo_scale / turbo_audio in the TOML, decides; FABLE2_TURBO_SPEED does not start turbo on.
+    env.append("FABLE2_TURBO_SPEED=\(String(format: "%.1f", TurboSpeed.clean(turboSpeed)))")
+    env.append("FABLE2_TURBO_AUDIO=\(turboAudio.rawValue)")
     // Collector's Edition + website items (docs/patches.md). Always explicit so the toggle,
     // not [patches] unlock_ce / unlock_website in the TOML, decides.
     env.append("FABLE2_UNLOCK_EXTRAS=\(unlockExtras ? 1 : 0)")
@@ -880,6 +978,8 @@ extension LaunchSettings {
     env.append("FABLE2_XFER_PREWARM=\(xferPrewarm ? 1 : 0)")
     // Native point/rectangle/tessellation pipelines recorded and archived for the next launch (docs/bug-patterns.md).
     env.append("FABLE2_NATIVE_GEOM_PERSIST=\(nativeGeomPersist ? 1 : 0)")
+    // The headless shader prep also compiles the disc's shader bank (docs/shader-precompile-20261015.md).
+    env.append("FABLE2_SHADER_PREP_BANK=\(shaderPrepBank ? 1 : 0)")
     // Fused resolve pipelines built in the background at startup (docs/native-shaders.md, "First launch").
     env.append("FABLE2_RTT_PREWARM=\(rttPrewarm ? 1 : 0)")
     // Startup pipelines and cached shader installs spread over the cores (docs/native-shaders.md, "First launch").
@@ -894,12 +994,20 @@ extension LaunchSettings {
     env.append("FABLE2_DRAW_PREP_LITE2=\(drawPrepLite2 ? 1 : 0)")
     // A "no load" texture check stays exact: CPU writes after it load at the next use (docs/gpucmd-cpu4-20261014.md).
     env.append("FABLE2_LOAD_CHECK_EXACT=\(loadCheckExact ? 1 : 0)")
+    // Native longest-match search of the game's save compressor: byte-identical saves, less save time (docs/load-fixes-20261016.md).
+    env.append("FABLE2_NATIVE_SAVE_COMPRESS=\(nativeSaveCompress ? 1 : 0)")
     // Character texture-space passes (dog lighting, morph) at 1x when scaled: no seam down the dog's
     // chest at 2x/3x (docs/resolution-scale.md section 23).
     env.append("FABLE2_TEXSPACE_NATIVE=\(texspaceNative ? 1 : 0)")
     // Opt-in game-logic fix: the texture streamer's per-model size cache tests the minimum distance it
     // computes from (docs/pale-root-20261014.md section 5). Default off (original game); always explicit.
     env.append("FABLE2_FIX_LOD_SIZE_CACHE=\(fixLodSizeCache ? 1 : 0)")
+    // Opt-in pacing change, "Skip cosmetic waits" (docs/load-fixes-20261016.md section F): sets the defaults of
+    // FABLE2_LOAD_FADE_FRAMES and FABLE2_SAVE_NOTICE_MS in the game. Always explicit. The sub-switches are not
+    // passed, so an explicit value in Extra environment still wins over the umbrella.
+    env.append("FABLE2_FAST_PACING=\(fastPacing ? 1 : 0)")
+    // Opt-in mod: the Character Editor entry in the F6 menu (docs/character-editor.md). Default off; always explicit.
+    env.append("FABLE2_CHARACTER_EDITOR=\(characterEditor ? 1 : 0)")
     // Shader cache keyed by a fixed converter target (apple7:15.0) instead of this Mac's GPU and exact macOS
     // version, so it survives macOS updates (docs/native-shaders.md, "Converter target"). Off = native.
     env.append("FABLE2_MSC_MIN_TARGET=\(portableShaderCache ? "portable" : "native")")

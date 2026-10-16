@@ -58,6 +58,12 @@ struct Values {
   bool fps_60 = false;
   bool fps_60_auto = true;
   double turbo_scale = 2.0; // F7 turbo speed (1.0 disables); see fable2_turbo.h.
+  // Audio while turbo is on (docs/turbo.md, "Turbo audio"): "natural" = sped up
+  // with natural pitch (Apple AUNewTimePitch), "high-pitch" = sped up and
+  // higher (AUVarispeed), "normal" = 1x (guest audio paced at real time).
+  // FABLE2_TURBO_AUDIO (Dev Launcher "Turbo audio") overrides it.
+  enum class TurboAudio : int32_t { kNormal = 0, kNatural = 1, kHighPitch = 2 };
+  TurboAudio turbo_audio = TurboAudio::kNatural;
   bool unlock_website = true;
   // Unlock the Collectors Edition chest content. Forces both the
   // registration gates and the grant-method result in
@@ -122,6 +128,22 @@ inline std::optional<Values::Upscaling> ParseUpscaling(std::string_view name) {
 }
 inline const char* UpscalingName(Values::Upscaling mode) {
   return mode == Values::Upscaling::kMetalFxSpatial ? "metalfx-spatial" : "off";
+}
+
+// [patches] turbo_audio names ("pitch" is accepted as a short alias). Shared by
+// the TOML loader and FABLE2_TURBO_AUDIO.
+inline std::optional<Values::TurboAudio> ParseTurboAudio(std::string_view name) {
+  if (name == "natural") return Values::TurboAudio::kNatural;
+  if (name == "high-pitch" || name == "pitch") return Values::TurboAudio::kHighPitch;
+  if (name == "normal") return Values::TurboAudio::kNormal;
+  return std::nullopt;
+}
+inline const char* TurboAudioName(Values::TurboAudio mode) {
+  switch (mode) {
+    case Values::TurboAudio::kNatural: return "natural";
+    case Values::TurboAudio::kHighPitch: return "high-pitch";
+    default: return "normal";
+  }
 }
 
 // Load the config from `path`.

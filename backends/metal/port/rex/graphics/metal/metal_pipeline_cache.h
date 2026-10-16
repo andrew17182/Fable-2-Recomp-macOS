@@ -240,6 +240,12 @@ class MetalPipelineCache {
   readiness::Background ReadinessBackground();
   // [shader-prep] counters for the FABLE2_SHADER_PREP status file (JSON members, no braces).
   std::string ShaderPrepCountsJson();
+  // [bank-prep] FABLE2_SHADER_PREP_BANK (docs/shader-precompile-20261015.md): headless prep only. Loads every
+  // shader of the player's disc shader bank, creates the translations the draw path most likely asks for
+  // (modifications predicted from each shader alone) and translates + MSL-compiles them on background threads,
+  // so the native translations and macOS's Metal cache are warm before the first play. Command-processor
+  // thread; returns the number of translations queued.
+  size_t StartBankPrecompile(const std::filesystem::path& bank_path);
 
   MetalStageCompileCacheStats GetAndResetStageCompileStats();
   MetalPipelineRuntimeStats GetAndResetRuntimeStats();
@@ -735,6 +741,15 @@ class MetalPipelineCache {
   };
   void PrewarmNativeGeometry(std::vector<NativeGeomPrewarmJob> jobs);
   std::thread native_geom_prewarm_thread_;
+  // [bank-prep] StartBankPrecompile's worker and progress (counted in ReadinessBackground).
+  std::thread bank_prep_thread_;
+  std::atomic<uint32_t> bank_prep_pending_{0};
+  std::atomic<uint32_t> bank_prep_total_{0};
+  std::atomic<uint32_t> bank_prep_ok_{0};
+  std::atomic<uint32_t> bank_prep_failed_{0};
+  std::atomic<uint32_t> bank_prep_skipped_{0};
+  std::atomic<uint32_t> bank_prep_shaders_{0};
+  std::atomic<uint64_t> bank_prep_ms_{0};
   std::atomic<uint32_t> native_geom_prewarm_pending_{0};
   std::atomic<bool> native_geom_prewarm_stop_{false};
   std::atomic<uint32_t> native_geom_archive_hits_{0};

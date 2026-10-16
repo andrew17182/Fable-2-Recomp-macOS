@@ -2,7 +2,7 @@
 """Built-in benchmark on this Mac (docs/benchmark-kit.md); the Dev Launcher's "Run Benchmark…" calls it.
 
   python3 tools/fable2_benchmark.py run [--build latest|playtest] [--save NAME|live:HeroNNN]
-                                        [--arms cold,1u,1c,2u,2c,3u,3c,census1x,census2x] [--out DIR] [--warm-cache DIR|none]
+                                        [--arms cold,1u,1c,2u,2u-ssm,2c,3u,census1x,census2x-ssm,census2x] [--out DIR] [--warm-cache DIR|none]
                                         [--progress FILE] [--no-perf-lock]
   python3 tools/fable2_benchmark.py run --kit "<kit>/Fable II Benchmark.app" --iso IMAGE --state DIR [--no-xcode]
                                         (test a packaged kit as on a fresh Mac; game files extracted into DIR)
@@ -61,10 +61,10 @@ LIVE_STATE = Path.home() / 'Library/Application Support/Fable II Recomp'
 PROFILE = Path('saves/4D5307F1/profile/User')
 PROGRESS = WORK / 'progress.txt'
 # Background test-session environment, as tools/fable2_dev_session.py launch(test_control=True) sets it (keep in
-# sync; that file needs the maintainer's approval to change): no activation or focus stealing, no physical input, the
+# sync): no activation or focus stealing, no physical input, the
 # logo movies skipped, the window titled as an agent test. FableIIBenchmark adds FABLE2_TEST_CONTROL_DIR (App Nap
 # exemption) and passes --audio_mute=true.
-TEST_SESSION_ENV = dict(FABLE2_TEST_BACKGROUND='1', FABLE2_PHYSICAL_INPUT='0', FABLE2_SKIP_INTRO_MOVIES='1',
+TEST_SESSION_ENV = dict(FABLE2_TEST_BACKGROUND='1', FABLE2_PHYSICAL_INPUT='0', FABLE2_SKIP_INTRO_MOVIES='1', FABLE2_TITLE_FAST='1',
                         FABLE2_INSTANCE_ROLE='agent', FABLE2_INSTANCE_ID='benchmark')
 
 
@@ -252,7 +252,8 @@ def main():
     r = sub.add_parser('run', help='run the benchmark on this Mac')
     r.add_argument('--build', default='latest', choices=['latest', 'playtest'])
     r.add_argument('--save', default=SAVE, help='save-library entry or live:HeroNNN (default %s, Bower Lake)' % SAVE)
-    r.add_argument('--arms', help='comma list of cold,1u,1c,2u,2c,3u,3c,census1x,census2x (default all)')
+    r.add_argument('--arms', help='comma list of cold,1u,1c,2u,2u-ssm,2c,3u,census1x,census2x-ssm,census2x (the default); also 3c and '
+                   '<arm>-ssm for any warm arm (FABLE2_SSM_MERGE=1)')
     r.add_argument('--out', help='report parent folder (default out/benchmark/reports)')
     r.add_argument('--warm-cache', default=None,
                    help='cache the warm arms start from: live (default in the main checkout), agent (default in an '
@@ -265,7 +266,7 @@ def main():
     r.add_argument('--state', help='state folder (default out/benchmark/state)')
     r.add_argument('--no-xcode', action='store_true', help='FABLE2_NS_ASSUME_NO_XCODE=1 (cache-only optimized shaders)')
     r.add_argument('--flash', action='store_true',
-                   help='flash kit mode (docs/flash-kit.md): arms adapt,adapt-snap,adapt-tess3,noadapt,noadapt-snap'
+                   help='flash kit mode (docs/flash-kit.md): arms adapt,adapt-nomatch,adapt-tess3,noadapt'
                         '(,induce), 2x, flash plan + flash detector')
     r.add_argument('--reps', type=int, help='--flash: runs per arm (default 2)')
     sub.add_parser('progress', help='last progress line of the running benchmark')

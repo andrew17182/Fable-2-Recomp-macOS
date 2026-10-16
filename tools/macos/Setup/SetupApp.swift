@@ -128,7 +128,7 @@ struct StepBar: View {
       item("Disc image", disc)
       item("Extract", model.extractStatus)
       item("Build", model.buildStatus)
-      item("Dev Launcher", model.launcherStatus)
+      item("Launcher", model.launcherStatus)
       item("Shaders", model.warmStatus)
       item("Play", model.phase == .finished ? .ok : .pending)
     }
@@ -330,8 +330,8 @@ struct FinishedView: View {
       HStack { StatusIcon(status: .ok); Text("Fable II is ready.").font(.headline) }
       if let version = model.gameVersion { Text("Fable II Recomp \(version)").foregroundStyle(.secondary).textSelection(.enabled) }
       if let total = model.totalTime { Text("Finished in \(formatDuration(total)).").foregroundStyle(.secondary) }
-      appRow("Game", model.paths.rootGameApp)
-      appRow("Dev Launcher (pick a save and boot straight into it)", model.paths.rootLauncherApp)
+      appRow("Game (direct start, advanced)", model.paths.rootGameApp)
+      appRow("Fable II Launcher (the way to play: pick a save and boot straight into it)", model.paths.rootLauncherApp)
       Text("Both apps are in the project folder, next to Install.command; you can drag them to the Dock. Saves and settings go to ~/Library/Application Support/Fable II Recomp.")
         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       Spacer()
@@ -339,8 +339,11 @@ struct FinishedView: View {
         Button("Rebuild") { model.rebuild() }
         Button("Reveal log") { model.revealLog() }.disabled(model.logURL == nil)
         Spacer()
-        Button("Open Dev Launcher") { NSWorkspace.shared.open(model.paths.rootLauncherApp) }
-        Button("Play") { NSWorkspace.shared.open(model.paths.rootGameApp) }.keyboardShortcut(.defaultAction)
+        // The launcher is the way to play (settings, saves, Continue, the save library); the game app directly is
+        // the advanced path (2026-10-15).
+        Button("Play Directly") { NSWorkspace.shared.open(model.paths.rootGameApp) }
+          .help("Opens Fable II.app without the launcher (the launcher's skip-intro choice still applies).")
+        Button("Open Launcher") { NSWorkspace.shared.open(model.paths.rootLauncherApp) }.keyboardShortcut(.defaultAction)
       }
     }
   }

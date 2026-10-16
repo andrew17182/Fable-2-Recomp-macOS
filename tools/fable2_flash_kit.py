@@ -10,7 +10,7 @@
 Packaged exactly like the benchmark kit (tools/fable2_benchmark_kit.py: the no-converter release build, portable,
 bundled shader seed, one save, ad-hoc signed, zip in ignored out/), with its own names and bundle id and
 Info.plist Fable2FlashKit = true, which puts the same orchestrator (FableIIBenchmark, tools/macos/Benchmark/main.swift)
-in flash mode: one 2x / 60 FPS run per arm and rep (adapt, adapt-snap, adapt-tess3, noadapt, noadapt-snap; 2 reps)
+in flash mode: one 2x / 60 FPS run per arm and rep (adapt, adapt-nomatch, adapt-tess3, noadapt; 2 reps)
 with the flash plan (src/core/fable2_benchmark.h), the tessellation trace and the in-game flash detector
 (FABLE2_FLASH_DETECT, backends/metal/port/rex/ui/metal/metal_flash_detect.h). The report goes to
 ~/Desktop/Fable II Flash Kit/<chip>-<model>-<date>-flash/ (report.txt, report.json, examples/, raw/); the game state
@@ -33,6 +33,9 @@ APP = 'Fable II Flash Kit.app'
 BUNDLE_ID = 'org.fable2recomp.metal.flashkit'
 E2E_INPUTS = kit.E2E_INPUTS + ['tools/fable2_flash_kit.py', 'backends/metal/port/rex/ui/metal/metal_flash_detect.h']
 E2E_STATE = kit.bench.common.MAIN_ROOT / 'out/flash-kit/e2e-state.json'
+# The Bower Lake tomb overlook, on the lake shore (docs/adaptive-terrain-flashes-20261014.md), where the M3 Pro
+# showed the flashes; the benchmark kit's camp save did not show them on either Mac.
+SAVE = 'hero1-dog-live_2026-10-07_14-10-08'
 
 README = """Fable II Flash Kit {version}
 
@@ -44,20 +47,20 @@ already has the portable Fable II or the benchmark kit with its game files.
 1. Unzip "Fable II Flash Kit.zip" and open the folder.
 2. Double-click "Fable II Flash Kit". macOS blocks it the first time (the app is not notarized):
    click Done, then System Settings > Privacy & Security > "Open Anyway", and confirm.
-3. Click Start. Don't use the Mac until it finishes. The game opens and closes by itself 10 times
-   (5 settings x 2 runs, 2x resolution, 60 FPS), each time walking and turning at Bower Lake for ~12 s,
-   about 5-10 minutes in all.
+3. Click Start. Don't use the Mac until it finishes. The game opens and closes by itself 8 times
+   (4 settings x 2 runs, 2x resolution, 60 FPS), each time walking and turning on the Bower Lake shore
+   below the tomb for ~12 s, about 4-8 minutes in all.
 4. At the end, "Show Report" opens Desktop/Fable II Flash Kit/<chip>-<model>-<date>-flash/.
    report.txt is the summary (flash frames per setting), examples/ the worst moments
    (previous frame | flash frame | next frame | detected pixels in red). Send the whole folder.
 
-The settings: adaptive terrain tessellation on (FABLE2_TERRAIN_ADAPTIVE=1) alone, with the uv snap
-(FABLE2_NATIVE_TESS_SNAP_UV=1), with the reference tessellator (FABLE2_NATIVE_TESS=3); adaptive off alone and
-with the uv snap.
+The settings: adaptive terrain tessellation on (FABLE2_TERRAIN_ADAPTIVE=1) with the layer fix, without it
+(FABLE2_TERRAIN_LAYER_MATCH=0, the build that flashed), with the reference tessellator (FABLE2_NATIVE_TESS=3);
+adaptive off.
 
 Game state: ~/Library/Application Support/Fable II Recomp Flash Kit (delete it when done, about 7 GB).
 It never touches the saves or settings of a normal Fable II Recomp install. The app includes one saved
-game (Bower Lake) and shaders compiled from the game's own shaders; keep it private.
+game (Bower Lake shore) and shaders compiled from the game's own shaders; keep it private.
 """
 
 VARIANT = dict(kit=KIT, app=APP, bundle_id=BUNDLE_ID, name='Fable II Flash Kit',
@@ -70,7 +73,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build', help='package the no-converter release build as the flash kit (+ zip)')
     b.add_argument('--out', type=Path, default=DEFAULT_OUT, help='output folder (default out/flash-kit)')
-    b.add_argument('--save', default=kit.SAVE, help='save-library entry (default %s, Bower Lake)' % kit.SAVE)
+    b.add_argument('--save', default=SAVE, help='save-library entry (default %s, Bower Lake shore)' % SAVE)
     b.add_argument('--no-zip', action='store_true')
     b.add_argument('--shader-scales', default='2', metavar='LIST',
                    help='resolution scales to warm the shader seed for (default 2: the kit runs at 2x only)')

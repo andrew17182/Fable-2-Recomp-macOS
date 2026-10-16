@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -791,6 +792,66 @@ class MetalRenderTargetCache final : public graphics::RenderTargetCache {
   std::array<Transfer::Rectangle, 1 + xenos::kMaxColorRenderTargets>
       pending_draw_pass_clear_rects_ = {};
   uint32_t pending_draw_pass_clear_mask_ = 0;
+  // [ssm-merge] FABLE2_SSM_MERGE (default off, =1 on; docs/ssm-merge-20261015.md).
+  // A stencil-only alias clear (main-depth P8a) changes ownership at once but
+  // waits with its GPU work: the transfers into the variant (with the
+  // variant's carried depth-word clear, still in deferred_clears_) and then
+  // the stencil clear. The next Update that binds the variant as depth with
+  // no transfers of its own draws all of it inside that draw pass: carried
+  // clear, transfer quads, then the stencil clear (the post-transfer slot).
+  // Every other cache call first does today's standalone work
+  // (FlushQueuedStencilAlias).
+  struct QueuedStencilAlias {
+    MetalRenderTarget* render_target = nullptr;
+    std::vector<Transfer> transfers;
+    uint64_t stencil_value = 0;
+    Transfer::Rectangle rectangle = {};
+    // The carried clear's rectangle (valid when has_carried).
+    bool has_carried = false;
+    Transfer::Rectangle carried_rectangle = {};
+  };
+  QueuedStencilAlias queued_stencil_alias_;
+  // Slot 0 of the pending draw pass: a stencil-only clear drawn after the
+  // transfer quads (the opposite order of pending_draw_pass_clear_*).
+  bool pending_draw_pass_post_clear_ = false;
+  DeferredClear pending_draw_pass_post_clear_value_;
+  static bool SsmMergeEnabled();
+  // [ssm-merge] FABLE2_SSM_STENCIL_FOLD (default on): a pending whole-target
+  // stencil-only clear of a 1x depth source whose tiles all move to other
+  // targets in this update is never drawn. Those transfers read the stencil
+  // from a constant texture holding the cleared byte, and the clear is
+  // dropped: the target owns none of its tiles any more, so nothing can read
+  // its stencil there (host depth reads only depth, which the clear keeps).
+  static bool SsmStencilFoldEnabled();
+  void FoldDeadStencilClears(RenderTarget* const* accumulated_targets,
+                             const std::vector<Transfer>* update_transfers);
+  MTL::Texture* GetConstantStencilTexture(uint32_t width, uint32_t height,
+                                          uint8_t value);
+  std::unordered_map<const RenderTarget*, uint8_t> stencil_const_sources_;
+  std::map<uint64_t, MTL::Texture*> stencil_const_textures_;
+  // [clear-const] FABLE2_CLEAR_CONST_SOURCE (default on;
+  // docs/ssm-merge-20261015.md): a transfer whose source colour target has a
+  // pending whole-target clear (the composite's resolve clear, flushed as a
+  // pass of its own at the next frame's first transfer before) reads a
+  // texture holding exactly that clear (made once with the same clear load
+  // action the in-pass clear uses) instead. The clear stays deferred, so the
+  // composite pass that binds the target again starts with it as its load
+  // action.
+  static bool ClearConstSourceEnabled();
+  bool TryClearConstSource(RenderTarget* source,
+                           RenderTarget* const* accumulated_targets);
+  MTL::Texture* GetConstantClearColorTexture(MetalRenderTarget* rt,
+                                             uint64_t clear_value);
+  std::unordered_map<const RenderTarget*, MTL::Texture*> clear_const_sources_;
+  struct ClearConstTexture {
+    MTL::PixelFormat format;
+    uint32_t width, height;
+    uint64_t value;
+    MTL::Texture* texture;
+  };
+  std::vector<ClearConstTexture> clear_const_textures_;
+  bool FlushQueuedStencilAlias();
+  bool StencilAliasCoversTarget(const QueuedStencilAlias& q) const;
   enum class DeferredClearFlushReason {
     kResolve,     // a copy resolve reads the EDRAM
     kTransfer,    // an ownership transfer reads or writes the target

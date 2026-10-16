@@ -225,7 +225,7 @@ enum Hotkeys {
   static let fixed: [Hotkey] = [
     Hotkey(title: "Quick save", keys: "F5 or 5", detail: "Same as Save and Continue in the pause menu."),
     Hotkey(title: "Lua script menu", keys: "F6 or 6", detail: "Opens the script selector (or runs f6_lua_path)."),
-    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (General > Turbo notice)."),
+    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (General > Turbo speed, Turbo audio, Turbo notice)."),
     Hotkey(title: "FPS counter", keys: "F9", detail: "Shows or hides the frame-rate counter."),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
     Hotkey(title: "Quit", keys: "⌘Q", detail: "Closes the game (it does not save)."),

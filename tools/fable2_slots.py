@@ -2,10 +2,10 @@
 """Agent worktree slots: persistent git worktrees for agents working in parallel
 (described in the local agent docs, which are not in the public repo).
 
-  python3 tools/fable2_slots.py acquire --task "fix X" [--base macos] [--branch NAME] [--owner WHO] [--json]
+  python3 tools/fable2_slots.py acquire --task "fix X" [--base main] [--branch NAME] [--owner WHO] [--json]
   python3 tools/fable2_slots.py release agent-N [--delete-branch] [--discard]
   python3 tools/fable2_slots.py status [--json]
-  python3 tools/fable2_slots.py reset agent-N [--base macos] [--force]
+  python3 tools/fable2_slots.py reset agent-N [--base main] [--force]
   python3 tools/fable2_slots.py prune [--days 7] [--dry-run]
   python3 tools/fable2_slots.py resources [--json]
   python3 tools/fable2_slots.py config [--slots N]
@@ -13,7 +13,7 @@
 Slots live outside the main checkout in <workspace>/agent-slots/agent-1..N (FABLE2_AGENT_SLOTS_DIR overrides).
 The number of slots is a setting: FABLE2_AGENT_SLOTS, else `config --slots N` (agent-slots/config.json), else 3.
 A slot folder and its build folders persist between tasks, so builds stay incremental; the branch does not:
-`acquire` puts the slot on a new branch from --base (default macos), `release` detaches it and deletes the branch
+`acquire` puts the slot on a new branch from --base (default main), `release` detaches it and deletes the branch
 when it is merged into the base (or with --delete-branch).
 
 Game content and other big ignored inputs are APFS clones of the main checkout's (copy-on-write: ~0 disk until a
@@ -45,7 +45,7 @@ MAIN = common.MAIN_ROOT
 SLOTS_DIR = common.SLOTS_DIR
 CONFIG = SLOTS_DIR / 'config.json'
 DEFAULT_SLOTS = 3
-DEFAULT_BASE = 'macos'
+DEFAULT_BASE = 'main'
 SLOT_RE = re.compile(r'^agent-(\d+)$')
 # Ignored inputs cloned from the main checkout into every slot (relative paths).
 SEED = ('data', 'default.xex', 'nxeart', '$SystemUpdate', 'generated', 'out/skipintro', 'out/downloads', 'out/sdk',

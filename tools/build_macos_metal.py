@@ -304,6 +304,9 @@ def build(args):
          '--runtime', runtime, '--output', runtime / 'Fable II.app',
          '--game-data-root', ROOT, '--backend', 'metal', '--replace']
         + (['--strip-debug'] if args.release else []) + slot_id)
+    # Skip-intro stand-in movies (out/skipintro): a fresh clone had none, so "Skip intro movies" played them anyway.
+    import fable2_skip_intro
+    fable2_skip_intro.ensure(ROOT, log=print)
 
 if __name__ == '__main__':
     main()

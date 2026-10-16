@@ -8,7 +8,7 @@ Measures the Metal port on any Apple Silicon Mac, including Macs with no Xcode, 
 | In-game benchmark mode | `src/core/fable2_benchmark.h`, `fable2_benchmark_pad.h`, hook in `fable2_session_telemetry.h` | `FABLE2_BENCHMARK=<result.json>`: boot save → gameplay → headings8 → result → quit |
 | Orchestrator | `tools/macos/Benchmark/main.swift` (`FableIIBenchmark`) | Runs the arms, computes the statistics, writes the report |
 | Kit packager | `tools/fable2_benchmark_kit.py` | Portable app + orchestrator + save → `Fable II Benchmark Kit.zip` |
-| This Mac | `tools/fable2_benchmark.py`, Dev Launcher "Run Benchmark…" | Same benchmark on the Playtest or Latest build |
+| This Mac | `tools/fable2_benchmark.py`, Launcher "Run Benchmark…" | Same benchmark on the Playtest or Latest build |
 
 ## In-game mode (`FABLE2_BENCHMARK`)
 
@@ -41,7 +41,15 @@ Arms, one game launch each (scale and cap cannot change live):
 | Arm | Cache | Scale | Cap |
 |---|---|---|---|
 | `cold` | emptied first: only the app's bundled shader seed (kit) or nothing (this Mac) | 1× | 60 |
-| `1u` `1c` `2u` `2c` `3u` `3c` | warm (the cold arm's cache, or `--warm-cache`) | 1×/2×/3× | uncapped / 60 |
+| `1u` `1c` `2u` `2c` `3u` (`3c` on request) | warm (the cold arm's cache, or `--warm-cache`) | 1×/2×/3× | uncapped / 60 |
+| `<arm>-ssm`: `2u-ssm`, `census2x-ssm` by default | warm | as `<arm>` | as `<arm>`, plus `FABLE2_SSM_MERGE=1` |
+
+Default order (2026-10-16): `cold 1u 1c 2u 2u-ssm 2c 3u census1x census2x-ssm census2x`. `3c` left the default: on a
+GPU-bound Mac it measures the same as `3u` (M3 Pro 26.6 vs 26.5 FPS). **Switch arms** (`<arm>-<switch>`,
+`SwitchArms` in `main.swift`) run a warm arm with one renderer switch set, so a kit run decides that default on the
+tester's Mac; the switch's env is recorded in the arm's `env`, and `report.txt` ends with a "Switch arms" line per
+pair (FPS, GPU ms, p99 against the base arm). The SSM-merge pair (`docs/ssm-merge-20261015.md`) runs A-B
+(`2u`, `2u-ssm`) and B-A (`census2x-ssm`, `census2x`, per-pass GPU trace) so slow drift hits both sides.
 
 **Truly cold (2026-10-13).** Emptying our own cache is not enough: macOS keeps the GPU code it compiled for an app in
 `$(getconf DARWIN_USER_CACHE_DIR)/<bundle id>/com.apple.metal` (+ `com.apple.gpuarchiver`, `com.apple.metalfe`),
@@ -152,7 +160,7 @@ python3 tools/fable2_benchmark.py run [--build latest|playtest] [--save NAME|liv
                                       [--warm-cache live|none|DIR] [--out DIR] [--verbose]
 ```
 
-Or the Dev Launcher's **Run Benchmark…** (chosen build; chosen save, Bower Lake for the title pick; disabled while a
+Or the launcher's **Run Benchmark…** (chosen build; chosen save, Bower Lake for the title pick; disabled while a
 game runs; progress in the status line; opens the report at the end). It runs `FableIIBenchmark --app <build's
 Fable II.app> --game-data <checkout or playtest data> --save-dir <staged save>` with its own state folder
 `out/benchmark/state`; reports go to `out/benchmark/reports/`. The warm arms start from an APFS clone of the live

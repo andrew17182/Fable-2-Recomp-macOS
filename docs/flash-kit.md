@@ -14,18 +14,21 @@ Finds the white terrain flashes seen on the M3 Pro while the camera moves ([nati
 
 ## Arms
 
-Each arm boots the kit's Bower Lake save (its terrain draws the blended layers C30A97D946FA2BE4 / FB68A7F2301210E1
-and the adaptive terrain 5003700B7C9B1C16), waits until ready, runs the flash plan at 2×, 60 FPS cap, with
-`FABLE2_NATIVE_TESS_TRACE=1`, then quits. Every switch is passed explicitly. Default 2 runs per arm, interleaved
-(A B C D E A B C D E), about 4 minutes on an M5 Max.
+Each arm boots the kit's save, waits until ready, runs the flash plan at 2× with a 60 FPS cap and
+`FABLE2_NATIVE_TESS_TRACE=1`, then quits. Every switch is passed explicitly. By default each arm runs twice,
+interleaved (A B C D A B C D).
+- **Save (since 2026-10-15):** the Bower Lake tomb overlook on the lake shore (`hero1-dog-live_2026-10-07_14-10-08`),
+  where the M3 Pro flashed. Its terrain draws the blended layers C30A97D946FA2BE4 / FB68A7F2301210E1 over the
+  adaptive terrain 5003700B7C9B1C16.
+- **Before:** the camp save, where neither Mac showed anything.
 
 | Arm | Switches |
 |---|---|
-| `adapt` | `FABLE2_TERRAIN_ADAPTIVE=1` (baseline of the report) |
-| `adapt-snap` | + `FABLE2_NATIVE_TESS_SNAP_UV=1` |
-| `adapt-tess3` | + `FABLE2_NATIVE_TESS=3` (reference tessellator for every non-blended draw) |
+| `adapt` | `FABLE2_TERRAIN_ADAPTIVE=1` with the layer fix (`FABLE2_TERRAIN_LAYER_MATCH=1`, [adaptive-terrain-flashes-20261014.md](adaptive-terrain-flashes-20261014.md)) |
+| `adapt-nomatch` | `FABLE2_TERRAIN_ADAPTIVE=1`, `FABLE2_TERRAIN_LAYER_MATCH=0` (the behaviour that flashed) |
+| `adapt-tess3` | adaptive + `FABLE2_NATIVE_TESS=3` (reference tessellator for every non-blended draw) |
 | `noadapt` | `FABLE2_TERRAIN_ADAPTIVE=0` (the floor the others are read against) |
-| `noadapt-snap` | `FABLE2_TERRAIN_ADAPTIVE=0`, `FABLE2_NATIVE_TESS_SNAP_UV=1` |
+| `adapt-snap`, `noadapt-snap` (not default) | + `FABLE2_NATIVE_TESS_SNAP_UV=1` (made no difference on the M3 Pro) |
 | `induce` (not default) | `FABLE2_FLASH_INDUCE=1`: a white shape every 40th frame (detector check) |
 
 ## Detector
@@ -114,8 +117,9 @@ noadapt 5.5+31.5, noadapt-snap 9+36.5. So run-to-run noise is about ±3 flash an
 in every arm (frames ~360–460 and ~700 of the window). The build runs before packaging agree (1 run per arm,
 `out/validation/flash-kit/`, KEEP): adapt 4+32, adapt-snap 7+35, adapt-tess3 6+38, noadapt 8+35, noadapt-snap 5+37.
 
-How to read the M3 Pro report:
-- flashes in `adapt` and not in `adapt-tess3`: the mismatch between Metal's tessellator and the reference
-  tessellator;
-- `adapt-snap` clean: the uv rounding;
-- `adapt` no worse than `noadapt`: not adaptive tessellation at all.
+How to read the M3 Pro report (kit since 2026-10-15):
+- `adapt` and `adapt-tess3` at the `noadapt` floor while `adapt-nomatch` flashes: the layer fix works;
+- `adapt` still above the floor: another mechanism; look at `examples/`.
+
+The results above are from the earlier camp-save kit with the old arm set. For the lake overlook on the M5 Max
+see [adaptive-terrain-flashes-20261014.md](adaptive-terrain-flashes-20261014.md).

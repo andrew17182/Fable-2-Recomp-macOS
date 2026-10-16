@@ -1,7 +1,7 @@
 # Higher internal resolution (2× / 3×) — 2026-10-09
 
 **Status (step 2 done, §8):** 2× and 3× render correctly, including the dog's fur (morph readback). Scaled
-texture loads no longer break the main pass. It is a setting in `fable2_config.toml` and in the Dev Launcher,
+texture loads no longer break the main pass. It is a setting in `fable2_config.toml` and in the launcher,
 default Native. MetalFX Spatial is an optional, look-changing upscaling mode (§22). "Auto" picks 1×/2×/3× from the
 GPU at startup (§24). Fur fixes A/B are on by default in the game.
 §1–§7 are the step 1 investigation.
@@ -29,7 +29,7 @@ The Metal command processor built `MetalTextureCache` and `MetalRenderTargetCach
 (honours the SDK cvars). It is clamped to 3 per axis (`metal_command_processor.cc`, `SetupContext`), and the log
 gets one `[res-scale] FABLE2_RES_SCALE=… -> draw resolution scale NxN` line. Unset means native, exactly as before.
 Since step 2 it is a setting: `[graphics] resolution_scale` in `fable2_config.toml` (the environment
-variable wins) and the Dev Launcher's "Internal resolution" picker (§8).
+variable wins) and the launcher's "Internal resolution" picker (§8).
 
 **What already exists in the Metal backend.** These are XeniOS ports and they work once the scale is passed:
 
@@ -422,7 +422,7 @@ Further details:
 
 - `[graphics] resolution_scale = 1` (1–3, clamped). `src/core/fable2_graphics_config.h` exports it as
   `FABLE2_RES_SCALE` unless the environment sets it.
-- Dev Launcher "Internal resolution": Native (1280×720) / 2× (2560×1440) / 3× (3840×2160, for Max-class GPUs).
+- Launcher "Internal resolution": Native (1280×720) / 2× (2560×1440) / 3× (3840×2160, for Max-class GPUs).
   - Default Native, stored as UserDefaults `resolutionScale`.
   - The launcher always passes `FABLE2_RES_SCALE` explicitly. CLI: `--resolution native|2|3`.
 - The build-time config test covers both new keys.
@@ -434,7 +434,7 @@ Further details:
 
 - `[graphics] metalfx = false`, with `FABLE2_METALFX=1|0` overriding it. It seeds `metal_presenter_use_metalfx`
   after the plugin loads; an explicit cvar still wins.
-- Dev Launcher "Upscaler: Bilinear / MetalFX", default Bilinear. CLI: `--upscaler`.
+- Launcher "Upscaler: Bilinear / MetalFX", default Bilinear. CLI: `--upscaler`.
 - The presenter now logs `[metalfx] spatial scaler A -> B`, or `not applied: output … is not larger than the
   internal …`.
 - 1× in the 2560×1440 test window: `spatial scaler 1280x720 -> 2560x1440 (created)`. The image is visibly sharper
@@ -514,7 +514,7 @@ These are single runs. The 1× differences are within run-to-run spread.
 - **The lever is a bigger window.** At fullscreen on that display (4608×2532 pixels), Native is upscaled 3.6× and 2×
   is upscaled 1.8×. The window is resizable (drag, or the green button for macOS fullscreen). The SDK cvar
   `fullscreen` (in `fable_2.toml`, currently `false`) and `window_width`/`window_height`/`resolution` exist. The
-  Dev Launcher exposes none of them, and only the window position is saved, not its size (now addressed, §10).
+  Launcher exposes none of them, and only the window position is saved, not its size (now addressed, §10).
 
 **Change (correctness only, no change to the pixel path):** `metal_presenter.mm`
 `ConnectOrReconnectPaintingToSurfaceFromUIThread` sets `contentsScale` to the window's `backingScaleFactor` (from the
@@ -538,7 +538,7 @@ The connect is re-run on every pixel-size change, so it follows display moves. T
 | after, 2× (first launch after the build), F7 | 20261009-170043-17d993a4 | `contentsScale=2`, drawable 2560×1440. The turbo notice is the same size and position, and as sharp as step 1 (`out/validation/retina-20261009/cmp/turbo-{before,after}.png`). Window 1280×752 at 815,104 (same) |
 | `FABLE2_RETINA=0`, 2× | 20261009-170200-21e55fad | `contentsScale=1`, `[retina] off`; same drawable and window |
 
-No Dev Launcher control was added for `FABLE2_RETINA`: it changes nothing visible and is a diagnostic kill switch only.
+No Launcher control was added for `FABLE2_RETINA`: it changes nothing visible and is a diagnostic kill switch only.
 
 ## 10. Display options: windowed / fullscreen, window size memory (2026-10-09)
 
@@ -546,12 +546,12 @@ A 2× image only looks sharper when the window is large (§9). There are now two
 fullscreen, and remember the window size.
 
 **Display mode.** `[graphics] fullscreen = false` in `fable2_config.toml`. `FABLE2_FULLSCREEN=1|0` overrides it, and
-the Dev Launcher's **Display: Windowed / Fullscreen** picker always passes it (CLI `--display windowed|fullscreen`).
+the launcher's **Display: Windowed / Fullscreen** picker always passes it (CLI `--display windowed|fullscreen`).
 Both seed the SDK `fullscreen` cvar before the window is created (`SeedFullscreen` in
 `src/core/fable2_graphics_config.h`). Precedence, highest first:
 
 1. `--fullscreen=...` on the command line.
-2. `FABLE2_FULLSCREEN` (Dev Launcher). This also beats a `fullscreen =` line in `fable_2.toml` and `REX_FULLSCREEN`,
+2. `FABLE2_FULLSCREEN` (Launcher). This also beats a `fullscreen =` line in `fable_2.toml` and `REX_FULLSCREEN`,
    because the SDK writes that line by itself whenever its settings screen (key 4) saves. A stale `fullscreen = false`
    there must not silently override the launcher.
 3. `fullscreen =` in `fable_2.toml`, or `REX_FULLSCREEN`. This keeps a toggle saved from the settings screen across
@@ -592,7 +592,7 @@ height = 950
   (settings screen or green button) returns to the saved size and position. `SDL_EVENT_WINDOW_LEAVE_FULLSCREEN` also
   re-applies it.
 - **Old files.** Files with only `x`/`y` still restore the position and keep the default size.
-- **Dev Launcher write-back.** `tools/fable2_dev_session.py` accepts exactly the keys `{x, y}` or
+- **Launcher write-back.** `tools/fable2_dev_session.py` accepts exactly the keys `{x, y}` or
   `{x, y, width, height}` (ints, int32 position, size 1..16384), still without `tomllib`, because the launcher runs
   the system Python 3.9.
 
@@ -754,7 +754,7 @@ size. Setting the cvar to false keeps offsets in guest texels: the original kern
 - `src/core/fable2_graphics_config.h` `SeedEffectsNative` sets `draw_resolution_scaled_texture_offsets` to the
   inverse once the plugin has loaded. `FABLE2_EFFECTS_NATIVE=1|0` overrides the config; an explicit cvar wins over
   both. Log: `[fable2-config] effects_native_scale=… (source: …)`.
-- Dev Launcher: "Bloom/effects: Native 1× (original look) / Full resolution", stored as UserDefaults `effectsSize`.
+- Launcher: "Bloom/effects: Native 1× (original look) / Full resolution", stored as UserDefaults `effectsSize`.
   It is disabled at Native resolution. The launcher always passes `FABLE2_EFFECTS_NATIVE`. CLI: `--effects
   original|full`.
 - No effect at scale 1. A changed value re-translates the affected shaders once (the first launch after
@@ -1771,7 +1771,7 @@ guard clean (no `playing original`).
 
 | Switch | Default | Meaning |
 |---|---|---|
-| `FABLE2_RTT_1X=0` | on | No resolve-to-texture at 1× (staging reload of every resolved texture, as before). Dev Launcher toggle |
+| `FABLE2_RTT_1X=0` | on | No resolve-to-texture at 1× (staging reload of every resolved texture, as before). Launcher toggle |
 | `FABLE2_RTT_1X_KEEP=0` | on | A resolve invalidates every tracked texture on its pages (fused targets still kept) |
 | `FABLE2_RTT_1X_FUSED=0` | on | No fused writes at 1× (keep only) |
 | `FABLE2_RTT_DIAG=skip` | off | At 1× also skips class 3 and whole mip levels (**unsafe** upper bound) |
@@ -1913,7 +1913,7 @@ Skip-intro guard clean (no `playing original`). Every perf and memory run above:
 
 | Switch | Default | Meaning |
 |---|---|---|
-| `FABLE2_RT_SHRINK=0` | on | EDRAM-height render targets (before this change). Dev Launcher toggle |
+| `FABLE2_RT_SHRINK=0` | on | EDRAM-height render targets (before this change). Launcher toggle |
 | `FABLE2_RT_SHRINK=census` | off | Full textures; rows tracked for the memory report only |
 | `FABLE2_RT_SHRINK_HEAPS=1` | off | Keep the RT heap pool with the shrink |
 | `FABLE2_RT_SHRINK_VERIFY=1` | off | Diagnostic: check every addressed row, count unclipped draws and unowned claims |
@@ -1953,7 +1953,7 @@ linear-light scores, `sharp.py` edge energy). Every run: verdict `ok`, 0 AV, no 
   key is still read when `upscaling` is missing. `FABLE2_UPSCALING=off|metalfx-spatial` overrides it (the old
   `FABLE2_METALFX=1|0` still works when `FABLE2_UPSCALING` is unset). An explicit `metal_presenter_use_metalfx`
   cvar still wins. Off leaves the cvar at its default, so the off path is today's path.
-- **Dev Launcher:** "Upscaling: Off (bilinear, original look) / MetalFX Spatial (look-changing; window larger than
+- **Launcher:** "Upscaling: Off (bilinear, original look) / MetalFX Spatial (look-changing; window larger than
   internal res)", always passed as `FABLE2_UPSCALING`. The old saved choice (`upscaler = metalfx`) carries over.
   CLI `--upscaling off|metalfx-spatial` (`--upscaler bilinear|metalfx` still accepted).
 - **Presenter:** MetalFX now requires the output to be at least the input on both axes (it only upscales).
@@ -2113,7 +2113,7 @@ Launcher: "Fix dog chest seam at 2×/3× (character textures at native 1×)". Co
 
 ## 24. Auto resolution scale (2026-10-13)
 
-`[graphics] resolution_scale = "auto"`, `FABLE2_RES_SCALE=auto`, or Dev Launcher "Internal resolution: Auto (N× on
+`[graphics] resolution_scale = "auto"`, `FABLE2_RES_SCALE=auto`, or Launcher "Internal resolution: Auto (N× on
 this Mac)". It picks 1×, 2× or 3× once at startup from the GPU, so players on slower Macs don't choose a scale their
 GPU can't hold. It is not a dynamic-resolution controller. **Default since 2026-10-14: Auto** (game config
 `resolution_scale = "auto"`, also when the key is missing; the launchers' Auto for fresh installs; a saved choice
@@ -2123,7 +2123,7 @@ is kept). It was 1 / Native until then; 1 is still the console's own resolution 
 `tests/res_auto_tests.cpp` at build time). `src/core/fable2_res_auto.cpp` reads the GPU (IORegistry `model` +
 `gpu-core-count`, shared with fps-auto `fable2::fps::QueryGpu`), RAM (`hw.memsize`) and the frame target
 (`fable2::fps::Use60()`). `fable2_graphics_config.h ApplyResolutionScale` resolves `auto` and exports the number as
-`FABLE2_RES_SCALE`, so the Metal plugin, the FPS counter and the logs only ever see 1/2/3. The Dev Launcher
+`FABLE2_RES_SCALE`, so the Metal plugin, the FPS counter and the logs only ever see 1/2/3. The launcher
 (`AutoResolution` in `tools/macos/DevLauncher/main.swift`) mirrors the tables for its label;
 `tests/res_auto_sync_tests.py` fails if the two copies drift.
 
@@ -2208,14 +2208,14 @@ Notes:
 
 ### Recommendation for release default
 
-Make `"auto"` the player-facing default (portable build and `config/fable2_config.toml`), keeping the Dev Launcher's
+Make `"auto"` the player-facing default (portable build and `config/fable2_config.toml`), keeping the launcher's
 explicit choice for development. On every Mac measured or estimated it picks at most what the GPU holds with headroom,
 and it never goes below today's default (1×). It is the maintainer's decision; not changed here. Before switching, wait for
 the M1 report to confirm 1× (and, if wanted, a run on any Max-class Mac other than the M5 Max to check the 2× row).
 
 ## 25. Auto frame rate uses the same GPU model (2026-10-13)
 
-`fps_60 = "auto"` (the default), `FABLE2_FPS_60=auto`, or Dev Launcher "Frame rate: Auto (N FPS on this Mac)". It
+`fps_60 = "auto"` (the default), `FABLE2_FPS_60=auto`, or Launcher "Frame rate: Auto (N FPS on this Mac)". It
 used to pick 60 FPS from 24 raw GPU cores, which sent a 14-core M3 Pro to 30 FPS even though that Mac runs 1× at
 63 FPS uncapped and 58.5 FPS at the 60 cap (1% low ~48, `benchmark-results/M3-Pro-…`). It now uses §24's effective
 cores and an estimated frame time.
@@ -2255,7 +2255,7 @@ A negative `fixed` at 3× is not physical. The M3 Pro loses more at 3× than its
 bandwidth limits it there (the M3 Pro vs M5 Max gap grows with scale: 1.8× at 1×, 2.9× at 2×, 3.4× at 3×). The fit puts that into
 `work`. It only matters well above 44 effective cores, where the estimate stays small anyway.
 
-**The 2x rule** (`FABLE2_AUTO_2X`, default on; Dev Launcher Display → Frame rate → "Auto: 2× uncapped when 2× can't
+**The 2x rule** (`FABLE2_AUTO_2X`, default on; Launcher Display → Frame rate → "Auto: 2× uncapped when 2× can't
 hold 60"):
 
 ```
@@ -2449,7 +2449,7 @@ scale decides, so weaker Max/Ultra parts can get 30 there (e.g. M1 Max 24 at 2×
 - **Log**, one line after `[fps] fps_60=auto (source: …)`, e.g. on this M5 Max:
   `[fps-auto] 'Apple M5 Max' Max: 40 cores x 1.10 (M5) = 44.0 effective; est. 8.2 ms mean at 1x (60 needs <= 18.5) -> 60 FPS (scale from …)`.
 - **Code:** `ChooseFrameTarget` and `kFrameModel` / `kFpsAutoMaxMeanMs` live in `src/core/fable2_res_auto.h`
-  (pure). `src/core/fable2_fps_auto.cpp` reads the GPU and the planned scale. The Dev Launcher's `AutoFrameRate`
+  (pure). `src/core/fable2_fps_auto.cpp` reads the GPU and the planned scale. The launcher's `AutoFrameRate`
   mirrors the tables, and its label follows the Internal resolution picker. `tests/res_auto_sync_tests.py`
   checks both copies.
 
@@ -2457,7 +2457,7 @@ scale decides, so weaker Max/Ultra parts can get 30 there (e.g. M1 Max 24 at 2×
 
 - `res_auto_tests` (the table above: every M1–M5 base/Pro/Max/Ultra bin at 1×, explicit 2×/3× cases, unknown core
   count, the two model anchors, both-auto cases and the 4–96-core consistency sweep) runs in every build and passes.
-  `tests/res_auto_sync_tests.py` (`/usr/bin/python3` 3.9) passes. The Dev Launcher type-checks.
+  `tests/res_auto_sync_tests.py` (`/usr/bin/python3` 3.9) passes. The launcher type-checks.
 - One background test game, `f2diag run boot fpsauto-m5max --env FABLE2_FPS_60=auto --env FABLE2_RES_SCALE=auto`,
   ended with verdict ok and was the first launch after the rebuild. The log shows the order:
   `[fps] fps_60=auto` → `[fps-auto] 'Apple M5 Max' Max: 40 cores x 1.10 (M5) = 44.0 effective; est. 8.2 ms mean at

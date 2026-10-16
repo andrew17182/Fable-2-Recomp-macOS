@@ -2,10 +2,17 @@
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[3]
-flags = (root / 'out/metal-build/backend/CMakeFiles/rexgpu-metal.dir/flags.make').read_text()
+# The dev build configures out/metal-build/backend; a checkout built only with --release has backend-release.
+flags_path = next((p for p in (root / 'out/metal-build' / d / 'CMakeFiles/rexgpu-metal.dir/flags.make'
+                               for d in ('backend', 'backend-release')) if p.is_file()), None)
+if flags_path is None:
+    print('shader_storage_test: skipped (no configured Metal backend build in out/metal-build)')
+    sys.exit(0)
+flags = flags_path.read_text()
 includes = next(line.split(' = ', 1)[1] for line in flags.splitlines()
                 if line.startswith('CXX_INCLUDES ='))
 # The SDK the backend was configured against (its -isystem .../mac-arm64/include): the source-built

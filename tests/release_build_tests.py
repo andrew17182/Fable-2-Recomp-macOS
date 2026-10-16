@@ -2,7 +2,8 @@
 
 - tools/fable2_game_build.py: the kit sync keeps unchanged files (and their mtimes, so make stays incremental),
   re-copies changed ones with a new mtime, removes files a newer kit dropped and never touches anything else in the
-  build tree; the RAM-based job rule; status() against a kit;
+  build tree; the RAM-based job rule; status() against a kit;;
+- tools/apply_recomp_patches.py: the per-file passes give the same files and counts in worker processes as in one;
 - tools/fable2_release.py: check_release refuses game-derived files and build output in a package.
 Runs under /usr/bin/python3 (3.9)."""
 import json
@@ -85,6 +86,35 @@ class StatusTests(unittest.TestCase):
             self.assertFalse(gb.status(root / 'kit', state)['ready'])  # built from an older kit: rebuild
             write(state / 'Build/build-state.json', json.dumps(dict(ok=True, kit_id='k2')))
             self.assertTrue(gb.status(root / 'kit', state)['ready'])
+
+
+class RecompPatchPoolTests(unittest.TestCase):
+    def test_pool_matches_one_process(self):
+        import apply_recomp_patches as patches
+        unit = ('DEFINE_REX_FUNC(sub_82000000) {\n\t// lwsync\n\tREX_ENTER_GLOBAL_LOCK();\nloc_82000004:\n'
+                '\t// lwarx r11,0,r3\n\t// stwcx. r10,0,r3\n\tREX_LEAVE_GLOBAL_LOCK();\n\t// sync\n}\n')
+        results = []
+        for jobs in ('1', '4'):
+            os.environ['FABLE2_RECOMP_PATCH_JOBS'] = jobs
+            with tempfile.TemporaryDirectory() as temporary:
+                paths = []
+                for i in range(6):
+                    paths.append(Path(temporary) / ('fable_2_recomp.%d.cpp' % i))
+                    write(paths[-1], unit * (i + 1))
+                pool = patches._pool()
+                self.assertEqual(pool is None, jobs == '1')
+                try:
+                    pool_map = pool.map if pool else map
+                    counts = (patches.apply_guest_barriers(paths, pool_map), patches.apply_fast_msr(paths, pool_map))
+                finally:
+                    if pool:
+                        pool.close()
+                        pool.join()
+                results.append((counts, [p.read_text() for p in paths]))
+        os.environ.pop('FABLE2_RECOMP_PATCH_JOBS', None)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(results[0][0], (42, 21))  # 2 fences and 1 atomic section per unit, 21 units
+        self.assertIn('FABLE2_GUEST_LWSYNC', results[0][1][0])
 
 
 class ReleaseCheckTests(unittest.TestCase):

@@ -1,0 +1,2 @@
+# A GitHub ZIP / git archive fills in the commit (tools/fable2_version.py; a checkout without .git has no other way).
+tools/fable2_archive_commit.txt export-subst

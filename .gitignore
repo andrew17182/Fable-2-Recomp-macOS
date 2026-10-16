@@ -70,6 +70,9 @@ docs/chat-handoff.md
 # in the main checkout; tools/fable2_slots.py links it into every agent slot. No trailing slash in the pattern:
 # the slot copy is a symlink, which a directory-only pattern would not match.
 /docs-private
+# Paused save-state work (continuation codegen) and other local-only code, kept on disk in the main checkout with
+# its repo-relative paths (private/save-states/<path>). tests/private_docs_tests.py keeps tracked files from naming it.
+/private
 
 # Controller View-button screenshots (src/input/controller_hotkeys.h)
 Screenshots/
@@ -77,5 +80,7 @@ Screenshots/
 # App copies placed in the project folder by the first-run setup (Install.command).
 /Fable II.app/
 /Fable II Dev Launcher.app/
+/Fable II Launcher.app/
 /.Fable II.app.*/
 /.Fable II Dev Launcher.app.*/
+/.Fable II Launcher.app.*/

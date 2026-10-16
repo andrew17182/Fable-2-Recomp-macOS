@@ -37,6 +37,7 @@
 #include <string>
 
 #include "rex/cvar.h"
+#include "fable2_character_editor.h"  // opt-in mod: F6 entry + save backup ack
 #include "rex/ppc/context.h"  // PPCContext
 
 // Guest-memory helpers (defined in src/diagnostics/fable2_text_append.h, which
@@ -323,7 +324,8 @@ inline void poll_mainloop(PPCContext& ctx, uint8_t* base) {
   }
   if (!quick_save && !custom) return;
   const std::string path =
-      quick_save ? std::string(REXCVAR_GET(f5_lua_path)) : std::string(REXCVAR_GET(f6_lua_path));
+      quick_save ? std::string(REXCVAR_GET(f5_lua_path))
+                 : fable2::character_editor::F6Path(std::string(REXCVAR_GET(f6_lua_path)));
   // run_external calls guest functions (ConstructRefCounted, the RunScript
   // method, DestructRefCounted) which clobber the PPC registers. Save the whole
   // context and restore it so the real MainRenderLoop sees the state it had
@@ -394,6 +396,10 @@ extern "C" void LuaBind_RunScript_82806168(PPCContext& ctx, uint8_t* base) {
         // so a crash shows the last call reached.
         logline("[notify] ack '%s' (shown=%u declined=%u)\n", pathbuf, g_notify_shown.load(),
                 g_notify_declined.load());
+      }
+      // Character Editor mod (opt-in): the editor asks for a save backup before any change.
+      if (is_lua && fable2::character_editor::IsBackupAck(pathbuf)) {
+        fable2::character_editor::OnBackupRequest();
       }
       // Capture the RunScript callable from .lua-arg dispatches. IMPORTANT:
       // the shared dispatcher serves MANY bound methods whose string argument

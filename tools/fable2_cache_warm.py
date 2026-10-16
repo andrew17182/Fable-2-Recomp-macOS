@@ -19,6 +19,11 @@ at 2x or 3x is as fast as at 1x. Each is published like the first. --scales "" s
 The cache is compiled on this Mac from the player's own game files and only ever lands in the state
 root's cache folder. Nothing goes into the repo.
 
+Before that (default on; --no-bank, FABLE2_SHADER_PREP_BANK=0 or the launcher setting "Prepare all of the disc's
+shaders at install" off skip it), a headless shader prep at the player's scale translates and compiles every shader
+of the game's own disc shader bank (docs/shader-precompile-20261015.md) into macOS's Metal cache for this build; its
+scratch cache is discarded (nothing is published from it).
+
 --state-root defaults to ~/Library/Application Support/Fable II Recomp (the player's own state; the
 setup app's install step). Tests must pass a scratch folder. Refuses while a normal (non-test) game
 is running (live state only). Runs under /usr/bin/python3 (3.9).
@@ -28,6 +33,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import time
 
@@ -226,7 +232,44 @@ def warm_scale(state_root, scale, dwell=0, timeout=600, log_fn=print):
     return result
 
 
-def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=600, log_fn=print, scales=(1, 2, 3)):
+def bank_enabled():
+    """FABLE2_SHADER_PREP_BANK=0, or the launcher's setting (defaults domain of Fable II Launcher) off, disable it."""
+    if os.environ.get('FABLE2_SHADER_PREP_BANK') == '0': return False
+    try:
+        out = subprocess.run(['/usr/bin/defaults', 'read', 'local.fable2recomp.devlauncher', 'shaderPrepBank'],
+                             capture_output=True, text=True, timeout=10)
+        return not (out.returncode == 0 and out.stdout.strip() in ('0', 'false', 'NO'))
+    except Exception:
+        return True
+
+
+def prep_bank(scale, timeout=600, log_fn=print):
+    """Headless prep of the disc's shader bank at `scale` from an empty scratch cache (fable2_shader_prep); only
+    macOS's Metal cache for the build keeps the result."""
+    import shutil
+    import tempfile
+    import fable2_shader_prep as prep
+    work = Path(tempfile.mkdtemp(prefix='bank-prep-', dir=str(prep.ROOT / 'out')))
+    try:
+        empty = work / 'empty-cache'
+        empty.mkdir()
+        saved = os.environ.get('FABLE2_SHADER_PREP_BANK')
+        os.environ['FABLE2_SHADER_PREP_BANK'] = '1'
+        try:
+            _, status = prep.prep_scale(empty, scale, work, timeout, log_fn)
+        finally:
+            if saved is None: os.environ.pop('FABLE2_SHADER_PREP_BANK', None)
+            else: os.environ['FABLE2_SHADER_PREP_BANK'] = saved
+        bank = status.get('bank') or {}
+        log_fn('disc shader bank at %dx: %s translations in %.1f s' % (scale, bank.get('translations'),
+                                                                          status.get('wall_seconds', 0)))
+        return dict(scale=scale, seconds=status.get('wall_seconds'), bank=bank)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=600, log_fn=print, scales=(1, 2, 3),
+         bank=True):
     state_root = Path(state_root).expanduser()
     # A normal game writes the same live cache when it exits; a scratch state root (tests) is ours alone.
     normal = [e for e in instances.instances() if not e.get('test_control')]
@@ -234,6 +277,12 @@ def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=
         raise RuntimeError('A Fable II game is open (%s); close it first' % instances.describe(normal[0]))
     expected = dev.cache_signature(state_root)
     started = time.monotonic()
+    bank_result = None
+    if bank and bank_enabled():
+        try:
+            bank_result = prep_bank(player_scale(state_root), timeout, log_fn)
+        except Exception as error:  # optional: the game compiles them while playing instead
+            log_fn('disc shader bank prep skipped: %s' % error)
     # The session reads the player's settings (resolution scale), so it warms the scale they play at.
     os.environ.setdefault('FABLE2_SKIP_INTRO_MOVIES', '1')
     os.environ.setdefault('FABLE2_WINDOW_TAG', 'warm-up')  # window title (src/core/fable2_window_title.h)
@@ -245,7 +294,7 @@ def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=
     meta = json.loads((session / 'session.json').read_text())
     pid, log = meta['pid'], session / 'test-state/logs/fable_2.log'
     log_fn('warm-up session %s (pid %d)' % (session.name, pid))
-    result = dict(session=str(session), state_root=str(state_root), new_game=new_game)
+    result = dict(session=str(session), state_root=str(state_root), new_game=new_game, bank=bank_result)
     try:
         expect = expects_warmup(session / 'test-state/cache')
         wait_drained(log, pid, timeout, expect, session=session)
@@ -294,11 +343,13 @@ def main():
     p.add_argument('--scales', default='1,2,3',
                    help='resolution scales to warm (the player\'s own first, then short title sessions); "" = only the player\'s')
     p.add_argument('--timeout', type=float, default=600)
+    p.add_argument('--no-bank', action='store_true', help='skip the disc shader bank prep')
     p.add_argument('--json', action='store_true')
     a = p.parse_args()
     scales = tuple(sorted({max(1, min(3, int(x))) for x in a.scales.split(',') if x.strip()}))
     result = warm(a.state_root, a.new_game, a.dwell, a.game_dwell, a.timeout,
-                  log_fn=(lambda s: print(s, file=sys.stderr)) if a.json else print, scales=scales)
+                  log_fn=(lambda s: print(s, file=sys.stderr)) if a.json else print, scales=scales,
+                  bank=not a.no_bank)
     print(json.dumps(result, indent=2) if a.json else
           'shader warm-up done in %.0f s: %s' % (result['seconds_total'], {k: v for k, v in result.items()
                                                                      if k not in ('session', 'publish', 'scales')})

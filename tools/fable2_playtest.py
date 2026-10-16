@@ -110,6 +110,8 @@ def update():
         for item in GAME_DATA_ITEMS:
             if (ROOT / item).exists():
                 _run('cp', '-cR', ROOT / item, data / item)  # clonefile: instant, shares blocks
+        import fable2_skip_intro  # a fresh clone has no out/skipintro until something makes it (2026-10-15)
+        fable2_skip_intro.ensure(ROOT)
         for item in GAME_ROOT_EXTRAS:
             if not (ROOT / item).is_dir(): raise RuntimeError(f'Missing {item} (needed for skip intro)')
             (data / item).parent.mkdir(parents=True, exist_ok=True)

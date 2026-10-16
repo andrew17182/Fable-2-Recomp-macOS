@@ -482,18 +482,18 @@ final class SetupModel: ObservableObject {
       if !build() { return fail("The build failed.") }
     }
 
-    // Dev Launcher (built into out/dev-launcher; copied to the project folder below)
+    // Launcher (built into out/dev-launcher; copied to the project folder below)
     if state.launcherBuilt == true && FileManager.default.fileExists(atPath: paths.launcherApp.path) {
       onMain { self.launcherStatus = .skipped }
     } else {
-      onMain { self.launcherStatus = .running; self.activity = "Building the Dev Launcher…"; self.progress = nil }
-      say("Building the Dev Launcher")
+      onMain { self.launcherStatus = .running; self.activity = "Building the launcher…"; self.progress = nil }
+      say("Building the launcher")
       var launcherEnv = tools.variables
       launcherEnv["FABLE2_BUILD_ROLE"] = "play"  // never waits for agent perf runs
       let status = stream("/bin/zsh", [paths.launcherScript.path], env: launcherEnv)
       guard status == 0 else {
         onMain { self.launcherStatus = .failed }
-        return fail("Building the Dev Launcher failed.")
+        return fail("Building the launcher failed.")
       }
       state.launcherBuilt = true
       state.save(paths)
@@ -505,6 +505,7 @@ final class SetupModel: ObservableObject {
     for (source, target) in [(paths.gameApp, paths.rootGameApp), (paths.launcherApp, paths.rootLauncherApp)] {
       if !placeCopy(source, at: target) { return fail("Could not copy \(target.lastPathComponent) to the project folder.") }
     }
+    try? FileManager.default.removeItem(at: paths.oldRootLauncherApp)  // renamed "Fable II Launcher.app" 2026-10-15
 
     // Shader warm-up (optional, never fatal): one background session of the new build.
     if !warm {
@@ -524,7 +525,7 @@ final class SetupModel: ObservableObject {
   /// About 2 minutes. A failure only means the first play compiles them instead.
   private func warmShaderCache() {
     guard let python = tools.find("python3") else { say("python3 not found; skipping the shader warm-up"); return }
-    onMain { self.warmStatus = .running; self.activity = "Preparing shaders: the game runs muted in a background window for about 2 minutes and closes itself…"; self.progress = nil }
+    onMain { self.warmStatus = .running; self.activity = "Preparing shaders: the game compiles the shaders from your disc, then runs muted in a background window for about 2 minutes and closes itself…"; self.progress = nil }
     say("Preparing shaders: \(python) tools/fable2_cache_warm.py --new-game")
     var args = [paths.warmScript.path, "--new-game"]
     if let root = options.warmStateRoot { args += ["--state-root", root] }
@@ -598,7 +599,7 @@ final class SetupModel: ObservableObject {
     say("Done in \(formatDuration(total)).")
     if let version = gameVersion { say("Version: \(version)") }
     say("Game: \(paths.rootGameApp.path)")
-    say("Dev Launcher: \(paths.rootLauncherApp.path)")
+    say("Launcher: \(paths.rootLauncherApp.path)")
     onMain { self.totalTime = total; self.phase = .finished; self.activity = ""; self.progress = nil }
     return true
   }

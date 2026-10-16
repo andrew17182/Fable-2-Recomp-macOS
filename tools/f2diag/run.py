@@ -15,7 +15,7 @@ perf numbers from such runs are not comparable. --build playtest|latest picks th
 Output: out/validation/f2diag/<label>/ (launch.json, events.jsonl, caps.jsonl, cpu.jsonl, result.json).
 
 CLI:  python3 tools/f2diag.py run sweep  <label> [--fps uncapped|60|30] [--plan default|fast] [--seconds N]
-      python3 tools/f2diag.py run area   <label> [--hold 4000] [--max 70] [--press-at N (legacy fixed time)]
+      python3 tools/f2diag.py run area   <label> [--hold 4000] [--max 70] [--press-at N (legacy fixed time)] [--cpu --cpu-period 0.25]
       python3 tools/f2diag.py run move   <label>
       python3 tools/f2diag.py run still  <label> [--at-frame load+240|clear+N|N|off] [--frames 3] [--frame-step 30]
                     (parity capture, docs/readiness.md "Frame-matched parity": after readiness, bursts of
@@ -113,8 +113,10 @@ class Run:
         self._stop = threading.Event()
         self.closing = False        # set once the harness itself asks the game to close
         self.exited_early_t = None  # session time at which the process was first seen gone
+        # wall_minus_mono: puts the game log's wall-clock lines on the session clock (t = wall - this - origin).
         (self.out / 'launch.json').write_text(json.dumps(dict(launch=self.record, origin=self.origin,
-                                                              queue_s=self.queue_s), indent=2))
+                                                              queue_s=self.queue_s,
+                                                              wall_minus_mono=time.time() - mono()), indent=2))
         deadline = mono() + 40
         while not (self.folder / 'pid.txt').exists() and mono() < deadline:
             time.sleep(.02)
@@ -842,7 +844,8 @@ def main(argv):
     p.add_argument('--hold', type=int, default=4000)
     p.add_argument('--max', type=float, default=70.0)
     p.add_argument('--no-capture', action='store_true')
-    p.add_argument('--cpu', action='store_true', help='per-thread CPU snapshots every 1 s (libproc)')
+    p.add_argument('--cpu', action='store_true', help='per-thread CPU snapshots every --cpu-period s (libproc)')
+    p.add_argument('--cpu-period', type=float, default=1.0, help='--cpu snapshot period in s (area loads: 0.25)')
     p.add_argument('--no-close', action='store_true')
     p.add_argument('--build', default='latest', choices=['latest', 'playtest'])
     p.add_argument('--perf-lock', action='store_true', help='take the global perf lock (auto for perf plans)')
@@ -873,7 +876,7 @@ def _main(a, perf_lock_wait):
     run = Run(a.label, a.save, a.env, a.game_args, a.cache_from, a.fps, a.build, a.cache_snapshot)
     print(run.session, flush=True)
     if a.cpu:
-        run.cpu_sampler()
+        run.cpu_sampler(a.cpu_period)
     result = {}
     try:
         if a.plan == 'sweep':

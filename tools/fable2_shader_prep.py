@@ -2,6 +2,7 @@
 """Headless shader preparation: build a shader cache from remembered lists, no game loop (docs/offline-shader-seed.md).
 
   python3 tools/fable2_shader_prep.py run --from CACHE_DIR --out CACHE_DIR [--scales 1,2,3] [--json]
+  python3 tools/fable2_shader_prep.py run --empty --out CACHE_DIR [--scales 2,1]   disc shader bank only (first install)
   python3 tools/fable2_shader_prep.py lists              newest remembered pipeline lists (agent cache / seed store)
 
 `run` starts the built game (out/build/...) once per resolution scale with FABLE2_SHADER_PREP set, as a background
@@ -164,6 +165,8 @@ def main(argv=None):
     r.add_argument('--from', dest='source', help='cache folder (or native-shaders seed) with the lists; default: '
                    'the newest remembered lists')
     r.add_argument('--lists-only', action='store_true', help='start from the lists alone (no translations)')
+    r.add_argument('--empty', action='store_true', help='start from an empty cache: only the disc shader bank '
+                   '(FABLE2_SHADER_PREP_BANK, docs/shader-precompile-20261015.md), as on a first install')
     r.add_argument('--out', required=True)
     r.add_argument('--scales', default='1,2,3')
     r.add_argument('--timeout', type=float, default=1800)
@@ -176,10 +179,15 @@ def main(argv=None):
             cache, source = newest_lists()
             result = dict(cache=str(cache) if cache else None, source=source)
         else:
-            source = Path(a.source) if a.source else newest_lists()[0]
-            if source is None: raise RuntimeError('no remembered shader lists (agent cache or seed store)')
             tmp = None
-            if a.lists_only or lists_in(source) is None:
+            if a.empty:
+                tmp = Path(tempfile.mkdtemp(prefix='lists-', dir=str(ROOT / 'out')))
+                source = tmp / 'cache'
+                source.mkdir()
+            else:
+                source = Path(a.source) if a.source else newest_lists()[0]
+                if source is None: raise RuntimeError('no remembered shader lists (agent cache or seed store)')
+            if not a.empty and (a.lists_only or lists_in(source) is None):
                 tmp = Path(tempfile.mkdtemp(prefix='lists-', dir=str(ROOT / 'out')))
                 source = lists_only_cache(source, tmp / 'cache')
             try:

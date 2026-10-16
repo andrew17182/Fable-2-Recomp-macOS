@@ -68,10 +68,17 @@ fps_60 = "auto"
 
 # Turbo: F7 toggles running the whole game this many times faster (starts
 # off; 1.1 to 4.0 in 0.1 steps, 1.0 disables F7). Keeps ~30 FPS while on and
-# overrides fps_60. Audio stays normal speed. FABLE2_TURBO_SCALE=<x> overrides
-# the speed and starts turbo on.
+# overrides fps_60. FABLE2_TURBO_SPEED=<x> (Dev Launcher "Turbo speed")
+# overrides the speed; FABLE2_TURBO_SCALE=<x> overrides it and starts turbo on.
 # Default: 2.0
 turbo_scale = 2.0
+
+# Audio while turbo is on: "natural" = sped up with the same pitch (Apple
+# time-stretch), "high-pitch" = sped up and higher (like a fast-forwarded tape),
+# "normal" = audio stays at 1x and drifts behind the game. Not used at 1x.
+# FABLE2_TURBO_AUDIO overrides it (Dev Launcher "Turbo audio").
+# Default: "natural"
+turbo_audio = "natural"
 
 # Toggles for the recomp-level (mid-asm hook) patches, consulted at runtime
 # by the hook bodies (src/core/fable2_hooks.cpp) - no rebuild needed. Guest-image

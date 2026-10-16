@@ -816,6 +816,18 @@ class MetalCommandProcessor final : public CommandProcessor {
   void GetTessellationFactorRange(const RegisterFile& regs, float& min_out,
                                   float& max_out);
   std::vector<float> tess_cp_scratch_;
+  // FABLE2_TERRAIN_ADAPTIVE=1 (docs/adaptive-terrain-flashes-20261014.md):
+  // the adaptive terrain's per-patch factors of the current frame by ground
+  // position (depth target, heightmap, world origin, patch size), so the
+  // blended terrain layers over a patch tessellate exactly as the opaque
+  // passes did. Returns true when the draw is a terrain pass (opaque or layer)
+  // that must take the shared terrain path.
+  bool MatchTerrainPatchFactors(
+      const RegisterFile& regs, uint64_t vs_hash,
+      const PrimitiveProcessor::ProcessingResult& primitive_processing_result,
+      std::vector<float>& factors);
+  std::unordered_map<uint64_t, std::array<float, 4>> terrain_patch_factors_;
+  uint64_t terrain_patch_factors_frame_ = UINT64_MAX;
   // FABLE2_NATIVE_TESS_TRACE=1: per-combination path log and counts.
   static bool NativeTessTraceEnabled();
   void NativeTessTrace(uint64_t vs, uint64_t ps, const char* path,

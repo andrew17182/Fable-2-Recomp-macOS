@@ -81,8 +81,8 @@ struct DeveloperSection: View {
       Toggle(isOn: locked ? .constant(true) : $developerMode) {
         VStack(alignment: .leading, spacing: 2) {
           Text("Developer mode")
-          Text(locked ? "This is the Dev Launcher build: developer mode is always on."
-               : "Shows everything the Dev Launcher has: Window > Fable II Dev Launcher (save picker, dev sessions, "
+          Text(locked ? "This is the Fable II Launcher build: developer mode is always on."
+               : "Shows everything the Fable II Launcher has: Window > Fable II Launcher (save picker, dev sessions, "
                  + "playtest and latest builds) and Window > Developer (benchmark, flash kit, exports, folders).")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
@@ -116,7 +116,7 @@ struct NeedsCheckoutView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Needs a source checkout").font(.title3.weight(.semibold))
-      Text("The Dev Launcher's dev sessions, save library, playtest and latest builds, benchmark, flash kit and exports "
+      Text("The launcher's dev sessions, save library, playtest and latest builds, benchmark, flash kit and exports "
            + "run the tools in a Fable II Recomp source checkout. Choose yours (the folder with CMakeLists.txt).")
         .fixedSize(horizontal: false, vertical: true)
       HStack {

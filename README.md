@@ -42,8 +42,14 @@ your Mac.
 4. If asked, install Apple's free **Command Line Tools** (macOS shows its own installer; Xcode is not
    needed). The app downloads CMake by itself if it is missing.
 5. The app translates and compiles the game code once. "Show details" shows every command it runs. After
-   that it opens to the Play window. The first time you play, shaders are compiled as they are needed, so
+   that it opens to the Play window (it does not start the game by itself), so you can check the settings
+   first. The first time you play, shaders are compiled as they are needed, so
    expect a few short hitches once; they are remembered after that.
+
+If Fable II is still in Downloads (or Desktop, Documents, iCloud Drive, a disk image) when you open it, it
+offers to move itself to Applications first; accept it. If macOS asked to let Fable II access a folder and you
+clicked **Don't Allow**, the window says what to do: move the app to Applications, choose the disc image again,
+or turn Fable II on under **System Settings → Privacy & Security → Files and Folders**, then click **Try Again**.
 
 First-launch build time (after the disc copy, which takes a few seconds to a few minutes):
 
@@ -70,8 +76,10 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
 1. Double-click **`Install.command`**. It asks for your Fable II disc image and builds
    everything (a few minutes; about 4 on an 18-core Mac). If macOS blocks it, right-click it
    and choose Open.
-2. Play: click **Play** in the setup window, or open **`Fable II.app`**, which setup places in
-   this folder. **`Fable II Dev Launcher.app`** (same folder) picks a save and boots straight into it.
+2. Play: open **`Fable II Launcher.app`**, which setup places in this folder (or click **Open Launcher** in
+   the setup window). **Continue from Last Save** boots straight into your newest save; **Launch** starts
+   at the title screen or a save you choose. Saves also go to a save library you can pick from later.
+   Advanced: **`Fable II.app`** (same folder) starts the game directly, without the launcher.
 
 Manual alternative: extract `default.xex`, `data/`, `$SystemUpdate/` and `nxeart` from your
 disc image into the repo root, then run `python3 tools/build_macos_metal.py`.

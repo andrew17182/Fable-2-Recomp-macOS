@@ -9,18 +9,94 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   menus and gameplay, 7 is ignored while an overlay captures typing). The SDK
   achievements overlay moved from 7 to 8. Turbo is **off** at every start. A toggle shows "Turbo 2x on" /
   "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
-- Speed: `[patches] turbo_scale` in `fable2_config.toml` (state directory,
+- Speed: Dev Launcher / Player **Settings → General → Turbo speed** (slider and stepper, 1.1× to 4.0×
+  in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Without a launcher:
+  `[patches] turbo_scale` in `fable2_config.toml` (state directory,
   `~/Library/Application Support/Fable II Recomp/` for the app). Default 2.0;
   1.1 to 4.0 in 0.1 steps (the SDK quantizes the clock scalar to tenths);
-  1.0 disables F7.
+  1.0 disables F7. `FABLE2_TURBO_SPEED` overrides the TOML and does not start turbo on.
+- Audio: **Settings → General → Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`):
+  "Sped up, natural pitch" (`natural`, default), "Sped up, high pitch" (`high-pitch`) or
+  "Normal speed" (`normal`, the old behaviour). See "Turbo audio" below.
 - Tests: `FABLE2_TURBO_SCALE=<x>` overrides the speed **and starts turbo on**.
   The background test channel accepts key `f7`
   (`python3 tools/fable2_test_control.py press <session> f7`).
 - `FABLE2_CLOCK_REPORT=<seconds>` logs `[clock-report] guest/real ...` lines
   (guest clock rate against real time) for validation.
 
-Known behaviour: audio runs at real-time speed (host callbacks), so music and
-speech can drift or gap while turbo is on. Turbo overrides `fps_60`.
+Turbo overrides `fps_60`.
+
+## Turbo audio
+
+**Why audio lagged.** The guest's audio engine is pulled by the host: the SDK's `AudioSystem` worker runs the
+game's audio callback (one 256-sample, 5.1 frame each time) only when the SDL device callback has played a
+frame and released a credit on the client semaphore (8 credits, `audio_maxqframes`). The device plays 48,000
+samples per real second, so the guest's audio clock ran at 1x whatever the guest clock did. There was no
+growing backlog (the credit bounds it), but at 2x speech and music played at half the game's speed: lines
+overlapped or were cut off, and music lagged scene changes.
+
+**Fix** (`patches/sdk/audio-playback-rate.patch`, the SDK output stage; the game calls
+`rex::audio::SetPlaybackRate(rate, mode)` from `fable2::turbo::SetActive`):
+
+- At rate r the device callback consumes guest frames r times faster than real time and squeezes them into
+  real time with an Apple audio unit rendered offline inside the callback (no extra device, no AUGraph):
+  - `natural`: **AUNewTimePitch** (`kNewTimePitchParam_Rate` = r): faster, same pitch;
+  - `high-pitch`: **AUVarispeed** (`kVarispeedParam_PlaybackRate` = r): resampled, faster and higher.
+  The unit pulls its input through a render callback straight from the guest frame queue.
+- The guest's credit grows to `audio_maxqframes` x r x `audio_rate_headroom` (default 2; 8 → 32 at 2x, 64 at
+  4x, capped at 64, the semaphore maximum). The buffered real time is constant for a given rate, so latency does not
+  grow while turbo runs; it is about twice the 1x buffer (~85 ms at 2x and 4x, plus the AUNewTimePitch latency of
+  85 ms). The headroom absorbs short stalls of the guest's audio worker, which competes with a game running r times
+  faster: with headroom 1 a 4x run starved about 1% of its input.
+- Rate trims (`drift` and `unit rate` in the stats line):
+  - drift: AUNewTimePitch adapts to the content and does not pull exactly r x its output. Offline, with a
+    recorded game capture as input, it pulled 3.85–3.99x per 5 s window at rate 4 and 1.96–2.01x at rate 2; with a
+    sine wave it was exact. AUVarispeed is exact. The stage compares the input pulled since switch-on with r x output
+    and pulls up to 8% faster, so the guest's audio clock stays with its game clock. The error is held within ±100 ms,
+    so it cannot wind up.
+  - starvation: when the guest's audio worker can't keep up (seen at 4x while another game ran on the same Mac:
+    up to 20% of the input missing), a queue below a quarter of the credit slows the pull by up to 20% instead
+    of feeding the unit silence. With natural pitch that is slightly slower speech; with high pitch also a lower pitch.
+- Toggle on: the 1x path fades out over one 5.3 ms chunk, the unit starts clean (`AudioUnitReset`) and fades
+  in. Toggle off: the unit's last chunk fades out, the extra credit becomes debt (consumed frames repay it
+  instead of releasing), the frames queued beyond the base credit are dropped (they were produced at the turbo
+  rate and would otherwise play late), and the direct path fades in. Back at 1x the queue holds the usual 8 frames.
+- Rate 1, `normal`, or a unit that fails to load (logged, `[audio-rate] ... unavailable`): the callback runs the
+  original direct path. Its output is the same as before the patch (same conversion, same frame order); the
+  stage adds two atomic loads per callback.
+- Drift (preservation note): turbo is opt-in and off at every start, so none of this touches 1x play. With
+  `natural` the time-stretch changes the sound (phase-vocoder artefacts, especially at 3–4x); `normal` keeps
+  the exact old output during turbo.
+
+Diagnostics (SDK cvars, pass with `--game-arg=` in test sessions):
+
+- `--audio_rate_headroom=<x>` (default 2) scales the turbo credit (1 = the 1x buffered time).
+- `--audio_rate_stats=<s>` logs `[audio-rate] stats` every s seconds: path, rate, guest frames produced and
+  consumed per real second (as a multiple of real time), output rate, queue depth now/min/avg/max, credit, debt,
+  unit input starvation, silent (underrun) chunks, drift and the trimmed unit rate.
+- `--audio_capture=<file.wav>` writes the device output (32-bit float WAV, before `audio_mute`, so muted test
+  sessions still record it). Diagnostics only; the file grows ~23 MB/min.
+- Log lines at each toggle: `[audio-rate] on: AUNewTimePitch rate 2.00, guest credit 8 -> 32 frames` and
+  `[audio-rate] off: direct path, guest credit 32 -> 8 frames, dropped N queued frames ...`.
+
+### Validation 2026-10-15 (muted background test sessions, dog save, 6-channel endpoint)
+
+`--audio_rate_stats=5`, F7 through the test channel. Output folder `out/validation/turbo-audio-20261015/`
+(per-run `audio-rate.log`, `capture.wav`; listening clips `clip-2x-natural-on-off.wav`, `clip-4x-highpitch-on.wav`).
+
+| Run | Turbo window | Guest audio produced / consumed (x real) | Queue (frames) | Starved | After F7 off |
+| --- | --- | --- | --- | --- | --- |
+| 2x natural | 30 s | 2.000 / 2.000, output 1.000 | 24–32 of 32, avg 29 | 0 | 1.000x, 5–8 of 8, within one 5 s window |
+| 4x natural | 60 s | 4.000 / 4.000 (unit pulled 4.000 x output) | 52–64 of 64, avg 59 | 0 | 1.000x, 5–8 of 8 |
+| 4x high pitch | 25 s | 4.000 / 4.000 | 52–64 of 64 | 0 | 1.000x |
+| 2x normal | 30 s | 1.000 / 1.000, direct path, credit 8 | 5–8 of 8 | 0 | unchanged |
+
+- Toggles: the captures show no sample jumps or silent 50 ms windows at the on/off points (only at startup before
+  the first guest audio). Off drops the turbo backlog (128 ms of guest audio at 2x, 299 ms at 4x) under the fade.
+- Earlier 4x runs, before the headroom and trims, starved 1–20% of the unit's input. The 20% case was while another agent game shared the Mac.
+- The units' own cost isn't measured separately. One AU render per 5.3 ms chunk on the SDL audio thread.
+- Not checked yet: listening by ear on real speakers, a stereo-only output device (the units are created
+  for the device's channel count; on failure the log says so and audio stays at 1x).
 
 ## On-screen notice
 

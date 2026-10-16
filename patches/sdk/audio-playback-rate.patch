@@ -1,0 +1,918 @@
+SDK audio: output-stage playback rate for fable2 turbo (docs/turbo.md, "Turbo audio").
+rex::audio::SetPlaybackRate(rate, mode) makes the SDL device callback consume guest frames
+rate x faster than real time and squeeze them into real time with an Apple audio unit rendered
+offline in the callback (AUNewTimePitch: same pitch; AUVarispeed: resampled, higher pitch).
+The guest's frame credit (client semaphore) grows to base x rate x audio_rate_headroom (2), so
+short guest stalls are absorbed; on the way back the extra credit becomes debt and the turbo backlog is dropped under
+a one-chunk fade. Rate 1 / kNormal leaves the original direct path. Also: audio_rate_stats
+(queue depth / consumption log) and audio_capture (WAV of the device output) cvars. A small
+trim of the unit rate keeps input pulled equal to rate x output (up to +8%; AUNewTimePitch
+pulls less than rate x output on real content) and slows the pull
+(up to -20%) instead of starving when the guest audio worker falls behind.
+Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
+
+--- a/include/rex/audio/downmix.h
++++ b/include/rex/audio/downmix.h
+@@ -62,4 +62,20 @@
+ void SetOutputGain(float linear);
+ float GetOutputGain();
+ 
++/// Playback rate of the output stage (fable2 turbo, docs/turbo.md). The host
++/// consumes guest audio `rate` times faster than real time, so the guest audio
++/// clock keeps pace with a sped-up guest clock, and squeezes it back into real
++/// time on macOS with an Apple audio unit:
++///   kNaturalPitch - AUNewTimePitch time-stretch (faster, same pitch);
++///   kHighPitch    - AUVarispeed resampling (faster and higher, like tape);
++///   kNormal       - no processing; the guest is paced at 1x (original path).
++/// rate <= 1 or kNormal bypasses the units: the output path is the original
++/// one, bit for bit. Safe to call from any thread; the device callback picks
++/// the new value up on its next call, with a short fade across the switch.
++#define REX_AUDIO_PLAYBACK_RATE 1
++enum class PlaybackRateMode { kNormal = 0, kNaturalPitch = 1, kHighPitch = 2 };
++void SetPlaybackRate(float rate, PlaybackRateMode mode);
++float GetPlaybackRate();
++PlaybackRateMode GetPlaybackRateMode();
++
+ }  // namespace rex::audio
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -11,6 +11,8 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <memory>
+ #include <mutex>
+ #include <queue>
+ #include <stack>
+@@ -35,6 +37,20 @@
+   static void SDLCallback(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                           int total_amount);
+ 
++  // Playback-rate stage (fable2 turbo, rex::audio::SetPlaybackRate); defined in
++  // sdl_audio_driver.cpp. Idle (and never touched per frame) at rate 1.
++  struct RateStage;
++  std::unique_ptr<RateStage> rate_;
++  std::atomic<uint64_t> submitted_frames_{0};
++  // Hands one consumed frame's credit back to the guest (or pays rate-stage debt).
++  void ReturnCredit();
++
++ public:
++  // RatePullFn target (the unit's input callback, inside SDLCallback).
++  static uint32_t PullForRateUnit(SDLAudioDriver* driver, float* out, uint32_t frames);
++
++ protected:
++
+   rex::thread::Semaphore* semaphore_ = nullptr;
+ 
+   SDL_AudioStream* sdl_stream_ = nullptr;
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -14,6 +14,8 @@
+     # SDL backend
+     sdl/sdl_audio_system.cpp
+     sdl/sdl_audio_driver.cpp
++    # Playback-rate unit (turbo audio): Apple AUNewTimePitch / AUVarispeed
++    sdl/rate_unit_apple.cpp
+ )
+ add_library(rex::audio ALIAS rexaudio)
+ 
+@@ -39,3 +41,8 @@
+     PUBLIC rexcore SDL3::SDL3
+     PRIVATE libavcodec libavutil
+ )
++if(APPLE)
++    target_link_libraries(rexaudio PUBLIC "-framework AudioToolbox")
++endif()
++# Kept out of the PCH: it includes AudioToolbox and no rex headers.
++set_source_files_properties(sdl/rate_unit_apple.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -59,7 +59,11 @@
+       std::max(static_cast<uint32_t>(REXCVAR_GET(audio_maxqframes)), static_cast<uint32_t>(4)));
+ 
+   for (size_t i = 0; i < kMaximumClientCount; ++i) {
+-    client_semaphores_[i] = rex::thread::Semaphore::Create(0, queued_frames_);
++    // Maximum = kMaximumQueuedFrames, not queued_frames_: the SDL driver raises a
++    // client's credit to queued_frames_ x rate while the playback rate is above 1
++    // (fable2 turbo audio). The initial credit (RegisterClient) is unchanged.
++    client_semaphores_[i] =
++        rex::thread::Semaphore::Create(0, static_cast<int>(kMaximumQueuedFrames));
+     assert_not_null(client_semaphores_[i]);
+     wait_handles_[i] = client_semaphores_[i].get();
+   }
+--- a/src/audio/downmix.cpp
++++ b/src/audio/downmix.cpp
+@@ -8,6 +8,7 @@
+  * @license     BSD 3-Clause License
+  *              See LICENSE file in the project root for full license text.
+  */
++#include <atomic>
+ #include <mutex>
+ 
+ #include <rex/audio/downmix.h>
+@@ -22,6 +23,8 @@
+ StereoFold g_fold = {};
+ SurroundMix g_mix = {};
+ float g_gain = 1.0f;
++std::atomic<float> g_rate{1.0f};
++std::atomic<int> g_rate_mode{0};
+ 
+ }  // namespace
+ 
+@@ -55,4 +58,15 @@
+   return g_gain;
+ }
+ 
++void SetPlaybackRate(float rate, PlaybackRateMode mode) {
++  g_rate_mode.store(static_cast<int>(mode), std::memory_order_relaxed);
++  g_rate.store(rate, std::memory_order_release);
++}
++
++float GetPlaybackRate() { return g_rate.load(std::memory_order_acquire); }
++
++PlaybackRateMode GetPlaybackRateMode() {
++  return static_cast<PlaybackRateMode>(g_rate_mode.load(std::memory_order_relaxed));
++}
++
+ }  // namespace rex::audio
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -11,7 +11,12 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
+ #include <cstring>
++#include <string>
++#include <vector>
+ 
+ #include <rex/assert.h>
+ #include <rex/audio/conversion.h>
+@@ -24,12 +29,140 @@
+ #include <rex/perf/counter.h>
+ #include <SDL3/SDL.h>
+ 
++#include "rate_unit.h"
++
+ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
++REXCVAR_DECLARE(int32_t, audio_maxqframes);  // audio_system.cpp
++REXCVAR_DEFINE_INT32(audio_rate_stats, 0, "Audio",
++                     "Log output-stage queue depth and consumption every N seconds (0 = off)");
++REXCVAR_DEFINE_DOUBLE(audio_rate_headroom, 2.0, "Audio",
++                      "Guest frame credit while the playback rate r is above 1, in multiples of "
++                      "audio_maxqframes x r (1 = the same buffered real time as at 1x; capped at 64 frames)");
++REXCVAR_DEFINE_STRING(audio_capture, "", "Audio",
++                      "Diagnostics: write the device output (before mute) to this WAV file");
+ 
+ namespace rex::audio::sdl {
+ 
++namespace {
++constexpr uint32_t kMaxCredits = 64;    // AudioSystem::kMaximumQueuedFrames
++
++// Linear ramp over one chunk (5.3 ms): up = fade in, else fade out.
++void Ramp(float* data, uint32_t frames, uint32_t channels, bool up) {
++  for (uint32_t i = 0; i < frames; ++i) {
++    const float t = (float(i) + 0.5f) / float(frames);
++    const float g = up ? t : 1.0f - t;
++    for (uint32_t c = 0; c < channels; ++c) data[size_t(i) * channels + c] *= g;
++  }
++}
++
++// Minimal float WAV writer for audio_capture (diagnostics only).
++struct WavCapture {
++  std::FILE* file = nullptr;
++  uint32_t channels = 0;
++  uint64_t frames = 0;
++  void Open(const std::string& path, uint32_t ch) {
++    file = std::fopen(path.c_str(), "wb");
++    channels = ch;
++    if (file) WriteHeader();
++  }
++  void WriteHeader() {
++    auto u32 = [this](uint32_t v) { std::fwrite(&v, 4, 1, file); };
++    auto u16 = [this](uint16_t v) { std::fwrite(&v, 2, 1, file); };
++    const uint32_t bytes = uint32_t(std::min<uint64_t>(frames * channels * 4, 0xFFFFFF00u));
++    std::fseek(file, 0, SEEK_SET);
++    std::fwrite("RIFF", 1, 4, file); u32(36 + bytes);
++    std::fwrite("WAVEfmt ", 1, 8, file); u32(16); u16(3); u16(uint16_t(channels));
++    u32(48000); u32(48000 * channels * 4); u16(uint16_t(channels * 4)); u16(32);
++    std::fwrite("data", 1, 4, file); u32(bytes);
++    std::fseek(file, 0, SEEK_END);
++  }
++  void Write(const float* data, uint32_t n) {
++    if (!file) return;
++    std::fwrite(data, sizeof(float) * channels, n, file);
++    frames += n;
++  }
++  void Close() {
++    if (!file) return;
++    WriteHeader();
++    std::fclose(file);
++    file = nullptr;
++  }
++};
++}  // namespace
++
++// Turbo audio (rex::audio::SetPlaybackRate, docs/turbo.md in fable2). At rate r
++// the device callback consumes guest frames r times faster than real time and
++// squeezes them into real time with an Apple unit (AUNewTimePitch keeps the
++// pitch, AUVarispeed resamples), so the guest audio clock keeps pace with the
++// sped-up guest clock instead of lagging at 1x. The guest's credit (frames it
++// may have queued, AudioSystem's client semaphore) grows to base x r x
++// audio_rate_headroom (default 2, capped at 64): the guest's audio worker
++// competes with a game running r times faster, and the extra buffered real
++// time absorbs its short stalls (at 4x with headroom 1 it starved ~1% of input). When
++// the rate drops back, the extra credit becomes debt: consumed frames repay it
++// instead of releasing, and the frames queued beyond the base are dropped
++// under the fade, so no turbo backlog plays at 1x. At rate 1 (or kNormal) the
++// stage is idle: the callback runs the original direct path.
++struct SDLAudioDriver::RateStage {
++  std::unique_ptr<RateUnit> unit;
++  PlaybackRateMode unit_mode = PlaybackRateMode::kNormal;
++  bool unit_failed[3] = {};
++  bool active = false;  // rendering through the unit
++  float rate = 1.0f;
++  bool fade_in = false;
++  uint32_t channels = 2;
++
++  int credit_base = 8;
++  int credit_target = 8;
++  int credit_debt = 0;
++
++  // One converted guest frame, interleaved in the device layout.
++  std::vector<float> carry;
++  uint32_t carry_pos = 0;
++  uint32_t carry_len = 0;
++  StereoFold fold;
++  SurroundMix mix;
++  float gain = 1.0f;
++
++  // Stats (audio_rate_stats).
++  std::chrono::steady_clock::time_point stats_t0 = std::chrono::steady_clock::now();
++  uint64_t stats_submitted0 = 0;
++  uint64_t in_frames = 0, out_frames = 0, starved_frames = 0, silent_chunks = 0;
++  // Rate control (see the trim block in SDLCallback). ctl_in/ctl_out: input the unit pulled
++  // (starved frames included) and output it rendered since switch-on; fill: smoothed queue
++  // fill as a fraction of the credit.
++  uint64_t ctl_in = 0, ctl_out = 0;
++  float applied_rate = 1.0f;
++  double drift_ms = 0.0;
++  double fill = 1.0;
++  size_t last_queue = 0;
++  double min_trim = 0.0;  // lowest trim this stats window
++  uint64_t win_in0 = 0, win_out0 = 0;
++  double ctl_bias = 0.0;  // error discarded by the +-100 ms hold (frames)
++  size_t queue_min = SIZE_MAX, queue_max = 0, queue_sum = 0, queue_samples = 0;
++  std::string capture_path;
++  WavCapture capture;
++  bool capture_opened = false;
++};
++
++void SDLAudioDriver::ReturnCredit() {
++  // frames_mutex_ held by the caller.
++  if (rate_ && rate_->credit_debt > 0) {
++    --rate_->credit_debt;
++    return;
++  }
++  auto ret = semaphore_->Release(1, nullptr);
++  assert_true(ret);
++}
++
+ SDLAudioDriver::SDLAudioDriver(memory::Memory* memory, rex::thread::Semaphore* semaphore)
+-    : AudioDriver(memory), semaphore_(semaphore) {}
++    : AudioDriver(memory), semaphore_(semaphore) {
++  rate_ = std::make_unique<RateStage>();
++  // Same clamp as AudioSystem's queued_frames_ (the credit it released for us).
++  rate_->credit_base = std::clamp<int>(REXCVAR_GET(audio_maxqframes), 4, int(kMaxCredits));
++  rate_->credit_target = rate_->credit_base;
++  rate_->capture_path = REXCVAR_GET(audio_capture);
++}
+ 
+ SDLAudioDriver::~SDLAudioDriver() {
+   assert_true(frames_queued_.empty());
+@@ -136,6 +269,7 @@
+     frames_queued_.push(output_frame);
+     PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(frames_queued_.size()));
+   }
++  submitted_frames_.fetch_add(1, std::memory_order_relaxed);
+ }
+ 
+ void SDLAudioDriver::Shutdown() {
+@@ -143,6 +277,10 @@
+     SDL_DestroyAudioStream(sdl_stream_);
+     sdl_stream_ = nullptr;
+   }
++  if (rate_) {
++    rate_->capture.Close();
++    rate_->unit.reset();
++  }
+   if (sdl_initialized_) {
+     SDL_QuitSubSystem(SDL_INIT_AUDIO);
+     sdl_initialized_ = false;
+@@ -158,6 +296,11 @@
+   }
+ }
+ 
++namespace {
++// RatePullFn: interleaved device-layout frames from the guest queue.
++uint32_t PullGuestFrames(void* ctx, float* out, uint32_t frames);
++}  // namespace
++
+ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int additional_amount,
+                                  [[maybe_unused]] int total_amount) {
+   SCOPE_profile_cpu_f("apu");
+@@ -166,8 +309,8 @@
+     return;
+   }
+   const auto driver = static_cast<SDLAudioDriver*>(userdata);
+-  const int sample_count =
+-      static_cast<int>(channel_samples_ * std::max<uint8_t>(driver->sdl_device_channels_, 1));
++  const uint32_t channels = std::max<uint8_t>(driver->sdl_device_channels_, 1);
++  const int sample_count = static_cast<int>(channel_samples_ * channels);
+   const int len = static_cast<int>(sizeof(float) * sample_count);
+   float* data = SDL_stack_alloc(float, sample_count);
+   if (!data) {
+@@ -178,53 +321,303 @@
+   const StereoFold fold = GetStereoFold();
+   const SurroundMix mix = GetSurroundMix();
+   const float gain = GetOutputGain();
+-  while (additional_amount > 0) {
+-    static uint32_t sdl_callback_count = 0;
++  const bool mute = REXCVAR_GET(audio_mute);
++  RateStage& rs = *driver->rate_;
++  rs.channels = channels;
++  rs.fold = fold;
++  rs.mix = mix;
++  rs.gain = gain;
++  if (!rs.capture_path.empty() && !rs.capture_opened) {
++    rs.capture_opened = true;
++    rs.capture.Open(rs.capture_path, channels);
++    REXAPU_INFO("[audio-rate] capturing device output to {}{}", rs.capture_path,
++                rs.capture.file ? "" : " (open failed)");
++  }
++  const bool capturing = rs.capture.file != nullptr;
++
++  // Original path: one queued guest frame -> one chunk (silence when none).
++  auto direct_chunk = [&]() {
+     std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++    rs.queue_sum += driver->frames_queued_.size();
++    rs.queue_min = std::min(rs.queue_min, driver->frames_queued_.size());
++    rs.queue_max = std::max(rs.queue_max, driver->frames_queued_.size());
++    ++rs.queue_samples;
+     if (driver->frames_queued_.empty()) {
+-      if (sdl_callback_count < 10) {
+-        REXAPU_DEBUG("SDLCallback: no frames queued (silence)");
+-        sdl_callback_count++;
+-      }
+       std::memset(data, 0, len);
+-      if (!SDL_PutAudioStreamData(stream, data, len)) {
+-        REXAPU_ERROR("SDL_PutAudioStreamData() failed while filling silence: {}", SDL_GetError());
+-        break;
+-      }
+-      additional_amount -= len;
++      ++rs.silent_chunks;
++      return;
++    }
++    auto buffer = driver->frames_queued_.front();
++    driver->frames_queued_.pop();
++    if (mute && !capturing) {
++      std::memset(data, 0, len);
+     } else {
+-      auto buffer = driver->frames_queued_.front();
+-      driver->frames_queued_.pop();
+-      if (REXCVAR_GET(audio_mute)) {
+-        std::memset(data, 0, len);
++      switch (driver->sdl_device_channels_) {
++        case 2:
++          conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_, fold,
++                                                          gain);
++          break;
++        case 6:
++          conversion::sequential_6_BE_to_interleaved_6_LE(data, buffer, channel_samples_, mix,
++                                                          gain);
++          break;
++        default:
++          assert_unhandled_case(driver->sdl_device_channels_);
++          break;
++      }
++    }
++    driver->frames_unused_.push(buffer);
++    driver->ReturnCredit();
++    rs.in_frames += channel_samples_;
++  };
++  // Rate path: the unit pulls rate x chunk frames from the queue.
++  auto unit_chunk = [&]() {
++    {
++      std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++      rs.queue_sum += driver->frames_queued_.size();
++      rs.queue_min = std::min(rs.queue_min, driver->frames_queued_.size());
++      rs.queue_max = std::max(rs.queue_max, driver->frames_queued_.size());
++      ++rs.queue_samples;
++      rs.last_queue = driver->frames_queued_.size();
++    }
++    if (!rs.unit->Render(data, channel_samples_)) std::memset(data, 0, len);
++    rs.ctl_out += channel_samples_;
++  };
++  auto put = [&](bool fade, bool up) -> bool {
++    if (fade) Ramp(data, channel_samples_, channels, up);
++    if (capturing) rs.capture.Write(data, channel_samples_);
++    if (mute) std::memset(data, 0, len);
++    rs.out_frames += channel_samples_;
++    if (!SDL_PutAudioStreamData(stream, data, len)) {
++      REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
++      return false;
++    }
++    return true;
++  };
++  // Credit the guest may have queued: base at 1x, base x rate in turbo.
++  auto set_credit = [&](int target) {
++    target = std::clamp(target, rs.credit_base, int(kMaxCredits));
++    std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++    int extra = target - rs.credit_target;
++    if (extra > 0) {
++      const int repay = std::min(extra, rs.credit_debt);
++      rs.credit_debt -= repay;
++      extra -= repay;
++      if (extra > 0) {
++        auto ret = driver->semaphore_->Release(extra, nullptr);
++        assert_true(ret);
++      }
++    } else if (extra < 0) {
++      rs.credit_debt += -extra;
++    }
++    rs.credit_target = target;
++  };
++
++  // Decide the path for this callback.
++  const float want_rate = GetPlaybackRate();
++  const PlaybackRateMode want_mode = GetPlaybackRateMode();
++  bool want_unit = want_mode != PlaybackRateMode::kNormal && want_rate > 1.0f;
++  if (want_unit && rs.active && rs.unit_mode != want_mode) want_unit = false;  // re-create next time
++  if (want_unit && (!rs.unit || rs.unit_mode != want_mode)) {
++    const int idx = int(want_mode);
++    if (rs.unit_failed[idx]) {
++      want_unit = false;
++    } else {
++      std::string error;
++      rs.unit = RateUnit::Create(want_mode == PlaybackRateMode::kNaturalPitch
++                                     ? RateUnit::Kind::kTimePitch
++                                     : RateUnit::Kind::kVarispeed,
++                                 channels, frame_frequency_, channel_samples_, PullGuestFrames,
++                                 driver, &error);
++      rs.unit_mode = want_mode;
++      if (!rs.unit) {
++        rs.unit_failed[idx] = true;
++        want_unit = false;
++        REXAPU_WARN("[audio-rate] playback-rate unit unavailable ({} ch): {}; audio stays at 1x",
++                    channels, error);
+       } else {
+-        switch (driver->sdl_device_channels_) {
+-          case 2:
+-            conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_, fold,
+-                                                            gain);
+-            break;
+-          case 6:
+-            conversion::sequential_6_BE_to_interleaved_6_LE(data, buffer, channel_samples_, mix,
+-                                                            gain);
+-            break;
+-          default:
+-            assert_unhandled_case(driver->sdl_device_channels_);
+-            break;
++        rs.carry.assign(size_t(channel_samples_) * channels, 0.0f);
++        REXAPU_INFO("[audio-rate] {} ready ({} ch, latency {:.1f} ms)", rs.unit->Name(), channels,
++                    rs.unit->LatencySeconds() * 1000.0);
++      }
++    }
++  }
++  if (want_unit != rs.active) {
++    // Fade the old path out over one chunk, then fade the new one in.
++    if (additional_amount > 0) {
++      if (rs.active) unit_chunk(); else direct_chunk();
++      if (put(true, false)) additional_amount -= len;
++    }
++    if (want_unit) {
++      rs.unit->Reset();
++      rs.carry_pos = rs.carry_len = 0;
++      rs.unit->SetRate(want_rate);
++      rs.rate = want_rate;
++      rs.applied_rate = want_rate;
++      rs.ctl_in = rs.ctl_out = 0;
++      rs.ctl_bias = 0.0;
++      rs.win_in0 = rs.win_out0 = 0;
++      rs.fill = 1.0;
++      const int before = rs.credit_target;
++      set_credit(int(std::ceil(rs.credit_base * want_rate *
++                                std::max(1.0, REXCVAR_GET(audio_rate_headroom)))));
++      REXAPU_INFO("[audio-rate] on: {} rate {:.2f}, guest credit {} -> {} frames", rs.unit->Name(),
++                  want_rate, before, rs.credit_target);
++    } else {
++      const int before = rs.credit_target;
++      set_credit(rs.credit_base);
++      // Drop the turbo backlog beyond the base credit (it would play late at 1x).
++      int dropped = 0;
++      {
++        std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++        while (rs.credit_debt > 0 && !driver->frames_queued_.empty()) {
++          driver->frames_unused_.push(driver->frames_queued_.front());
++          driver->frames_queued_.pop();
++          --rs.credit_debt;
++          ++dropped;
+         }
+       }
+-      if (!SDL_PutAudioStreamData(stream, data, len)) {
+-        REXAPU_ERROR("SDL_PutAudioStreamData() failed: {}", SDL_GetError());
+-        driver->frames_unused_.push(buffer);
+-        break;
+-      }
+-      driver->frames_unused_.push(buffer);
++      rs.carry_pos = rs.carry_len = 0;
++      rs.rate = 1.0f;
++      REXAPU_INFO("[audio-rate] off: direct path, guest credit {} -> {} frames, dropped {} "
++                  "queued frames ({:.1f} ms of guest audio), debt {}",
++                  before, rs.credit_base, dropped, dropped * 256 / 48.0, rs.credit_debt);
++    }
++    rs.active = want_unit;
++    rs.fade_in = true;
++  } else if (rs.active && want_rate != rs.rate) {
++    rs.unit->SetRate(want_rate);
++    rs.rate = want_rate;
++    rs.applied_rate = want_rate;
++    rs.ctl_in = rs.ctl_out = 0;
++    rs.ctl_bias = 0.0;
++    rs.win_in0 = rs.win_out0 = 0;
++    set_credit(int(std::ceil(rs.credit_base * want_rate *
++                                std::max(1.0, REXCVAR_GET(audio_rate_headroom)))));
++  }
+ 
+-      auto ret = driver->semaphore_->Release(1, nullptr);
+-      assert_true(ret);
+-      additional_amount -= len;
++  if (rs.active) {
++    // Two trims of the unit rate, so the guest's audio keeps its clock without gaps:
++    // - drift: the units do not pull exactly rate x output (AUNewTimePitch adapts to the
++    //   content: offline, game audio at rate 4 pulled 3.85-3.99x), so input behind
++    //   rate x output pulls up to 8% faster. The error is held within +-100 ms so it
++    //   cannot wind up while the next trim holds the rate down.
++    // - starvation: when the guest's audio worker cannot keep up (CPU contention at 3-4x),
++    //   a queue below a quarter of the credit slows the pull by up to 20% instead of
++    //   feeding the unit silence (a gap). Time-stretch keeps the pitch; varispeed drops it.
++    constexpr double kMaxBehind = 0.1 * 48000.0;
++    double behind = double(rs.rate) * double(rs.ctl_out) - double(rs.ctl_in) - rs.ctl_bias;
++    if (behind > kMaxBehind || behind < -kMaxBehind) {
++      const double held = std::clamp(behind, -kMaxBehind, kMaxBehind);
++      rs.ctl_bias += behind - held;
++      behind = held;
+     }
++    rs.drift_ms = behind / 48.0;
++    rs.fill += 0.05 * (double(rs.last_queue) / std::max(1, rs.credit_target) - rs.fill);
++    const double slow = rs.fill < 0.25 ? (0.25 - rs.fill) * 0.8 : 0.0;
++    const double trim = std::clamp(behind / 48000.0 * 1.0, -0.08, 0.08) - slow;
++    rs.min_trim = std::min(rs.min_trim, trim);
++    const float target = rs.rate * float(1.0 + trim);
++    if (std::fabs(target - rs.applied_rate) > 0.0005f * rs.rate) {
++      rs.unit->SetRate(target);
++      rs.applied_rate = target;
++    }
+   }
++
++  while (additional_amount > 0) {
++    if (rs.active) unit_chunk(); else direct_chunk();
++    const bool fade = rs.fade_in;
++    rs.fade_in = false;
++    if (!put(fade, true)) break;
++    additional_amount -= len;
++  }
+   SDL_stack_free(data);
++
++  // audio_rate_stats: queue depth and consumption against real time.
++  const int32_t stats_s = REXCVAR_GET(audio_rate_stats);
++  if (stats_s > 0) {
++    const auto now = std::chrono::steady_clock::now();
++    const double dt = std::chrono::duration<double>(now - rs.stats_t0).count();
++    if (dt >= stats_s) {
++      const uint64_t submitted = driver->submitted_frames_.load(std::memory_order_relaxed);
++      const double sub_rate = double(submitted - rs.stats_submitted0) * 256.0 / 48000.0 / dt;
++      size_t queued;
++      {
++        std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++        queued = driver->frames_queued_.size();
++      }
++      REXAPU_INFO(
++          "[audio-rate] stats {:.1f}s: path {} rate {:.2f} | guest produced {:.3f}x real, "
++          "consumed {:.3f}x, output {:.3f}x | queue now {} min {} avg {:.1f} max {} frames "
++          "(credit {}, debt {}) | starved {} frames, silent chunks {} | drift {:.1f} ms, unit rate {:.3f} (lowest {:.3f}), pulled/out {:.3f}",
++          dt, rs.active ? rs.unit->Name() : "direct", rs.active ? rs.rate : 1.0f, sub_rate,
++          rs.in_frames / 48000.0 / dt, rs.out_frames / 48000.0 / dt, queued,
++          rs.queue_samples ? rs.queue_min : 0, rs.queue_samples ? double(rs.queue_sum) / rs.queue_samples : 0.0,
++          rs.queue_max, rs.credit_target, rs.credit_debt, rs.starved_frames, rs.silent_chunks,
++          rs.active ? rs.drift_ms : 0.0, rs.active ? rs.applied_rate : 1.0f,
++          rs.active ? rs.rate * (1.0 + rs.min_trim) : 1.0,
++          rs.active && rs.ctl_out > rs.win_out0
++              ? double(rs.ctl_in - rs.win_in0) / double(rs.ctl_out - rs.win_out0) : 1.0);
++      rs.min_trim = 0.0;
++      rs.win_in0 = rs.ctl_in;
++      rs.win_out0 = rs.ctl_out;
++      if (capturing) {
++        rs.capture.WriteHeader();
++        std::fflush(rs.capture.file);
++      }
++      rs.stats_t0 = now;
++      rs.stats_submitted0 = submitted;
++      rs.in_frames = rs.out_frames = rs.starved_frames = rs.silent_chunks = 0;
++      rs.queue_min = SIZE_MAX;
++      rs.queue_max = rs.queue_sum = rs.queue_samples = 0;
++    }
++  }
+ }
+ 
++namespace {
++uint32_t PullGuestFrames(void* ctx, float* out, uint32_t frames) {
++  return SDLAudioDriver::PullForRateUnit(static_cast<SDLAudioDriver*>(ctx), out, frames);
++}
++}  // namespace
++
++uint32_t SDLAudioDriver::PullForRateUnit(SDLAudioDriver* driver, float* out, uint32_t frames) {
++  RateStage& rs = *driver->rate_;
++  const uint32_t ch = rs.channels;
++  uint32_t done = 0;
++  while (done < frames) {
++    if (rs.carry_pos == rs.carry_len) {
++      std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++      if (driver->frames_queued_.empty()) break;
++      auto buffer = driver->frames_queued_.front();
++      driver->frames_queued_.pop();
++      switch (ch) {
++        case 2:
++          conversion::sequential_6_BE_to_interleaved_2_LE(rs.carry.data(), buffer,
++                                                          channel_samples_, rs.fold, rs.gain);
++          break;
++        case 6:
++          conversion::sequential_6_BE_to_interleaved_6_LE(rs.carry.data(), buffer,
++                                                          channel_samples_, rs.mix, rs.gain);
++          break;
++        default:
++          std::fill(rs.carry.begin(), rs.carry.end(), 0.0f);
++          break;
++      }
++      driver->frames_unused_.push(buffer);
++      driver->ReturnCredit();
++      rs.carry_pos = 0;
++      rs.carry_len = channel_samples_;
++      rs.in_frames += channel_samples_;
++    }
++    const uint32_t n = std::min(frames - done, rs.carry_len - rs.carry_pos);
++    std::memcpy(out + size_t(done) * ch, rs.carry.data() + size_t(rs.carry_pos) * ch,
++                sizeof(float) * n * ch);
++    rs.carry_pos += n;
++    done += n;
++  }
++  rs.starved_frames += frames - done;
++  rs.ctl_in += frames;
++  return done;
++}
++
+ }  // namespace rex::audio::sdl
+--- /dev/null
++++ b/src/audio/sdl/rate_unit.h
+@@ -0,0 +1,40 @@
++/**
++ * @file        audio/sdl/rate_unit.h
++ * @brief       Output-stage playback-rate unit (fable2 turbo): Apple AUNewTimePitch
++ *              or AUVarispeed rendered offline inside the SDL device callback.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <string>
++
++namespace rex::audio::sdl {
++
++// Pulls `frames` interleaved frames into `out`; returns how many it could
++// supply (the unit zero-fills the rest).
++using RatePullFn = uint32_t (*)(void* ctx, float* out, uint32_t frames);
++
++class RateUnit {
++ public:
++  enum class Kind { kTimePitch = 1, kVarispeed = 2 };
++
++  virtual ~RateUnit() = default;
++  // nullptr (and *error set) when the platform has no such unit.
++  static std::unique_ptr<RateUnit> Create(Kind kind, uint32_t channels, uint32_t sample_rate,
++                                          uint32_t max_frames, RatePullFn pull, void* ctx,
++                                          std::string* error);
++
++  virtual bool SetRate(float rate) = 0;
++  // Renders `frames` (<= max_frames) interleaved frames into `out`.
++  virtual bool Render(float* out, uint32_t frames) = 0;
++  // Drops the unit's internal history (next render starts clean).
++  virtual void Reset() = 0;
++  virtual double LatencySeconds() const = 0;
++  virtual const char* Name() const = 0;
++};
++
++}  // namespace rex::audio::sdl
+--- /dev/null
++++ b/src/audio/sdl/rate_unit_apple.cpp
+@@ -0,0 +1,195 @@
++/**
++ * @file        audio/sdl/rate_unit_apple.cpp
++ * @brief       RateUnit on Apple audio units, rendered offline (no AUGraph, no
++ *              device): the SDL device callback calls AudioUnitRender, and the
++ *              unit pulls its input through a render callback from the guest
++ *              frame queue. Kept apart from the rex headers on purpose, so the
++ *              AudioToolbox names never meet them.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#include "rate_unit.h"
++
++#if defined(__APPLE__)
++
++#include <AudioToolbox/AudioToolbox.h>
++
++#include <algorithm>
++#include <cstddef>
++#include <cstring>
++#include <vector>
++
++namespace rex::audio::sdl {
++namespace {
++
++class AppleRateUnit final : public RateUnit {
++ public:
++  AppleRateUnit(Kind kind, uint32_t channels, uint32_t max_frames, RatePullFn pull, void* ctx)
++      : kind_(kind), channels_(channels), max_frames_(max_frames), pull_(pull), ctx_(ctx) {}
++
++  ~AppleRateUnit() override {
++    if (unit_) {
++      AudioUnitUninitialize(unit_);
++      AudioComponentInstanceDispose(unit_);
++    }
++  }
++
++  bool Init(uint32_t sample_rate, std::string* error) {
++    AudioComponentDescription desc = {};
++    desc.componentType = kAudioUnitType_FormatConverter;
++    desc.componentSubType =
++        kind_ == Kind::kTimePitch ? kAudioUnitSubType_NewTimePitch : kAudioUnitSubType_Varispeed;
++    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
++    AudioComponent component = AudioComponentFindNext(nullptr, &desc);
++    if (!component) return Fail(error, "audio unit not found", 0);
++    OSStatus st = AudioComponentInstanceNew(component, &unit_);
++    if (st != noErr) return Fail(error, "AudioComponentInstanceNew", st);
++
++    // Non-interleaved float32, the units' canonical format, at the device rate.
++    AudioStreamBasicDescription fmt = {};
++    fmt.mSampleRate = sample_rate;
++    fmt.mFormatID = kAudioFormatLinearPCM;
++    fmt.mFormatFlags = AudioFormatFlags(kAudioFormatFlagsNativeFloatPacked) |
++                      AudioFormatFlags(kAudioFormatFlagIsNonInterleaved);
++    fmt.mBytesPerPacket = sizeof(float);
++    fmt.mFramesPerPacket = 1;
++    fmt.mBytesPerFrame = sizeof(float);
++    fmt.mChannelsPerFrame = channels_;
++    fmt.mBitsPerChannel = 32;
++    for (AudioUnitScope scope : {kAudioUnitScope_Input, kAudioUnitScope_Output}) {
++      st = AudioUnitSetProperty(unit_, kAudioUnitProperty_StreamFormat, scope, 0, &fmt,
++                                sizeof(fmt));
++      if (st != noErr) return Fail(error, "StreamFormat", st);
++    }
++    UInt32 max_slice = max_frames_;
++    st = AudioUnitSetProperty(unit_, kAudioUnitProperty_MaximumFramesPerSlice,
++                              kAudioUnitScope_Global, 0, &max_slice, sizeof(max_slice));
++    if (st != noErr) return Fail(error, "MaximumFramesPerSlice", st);
++    AURenderCallbackStruct cb = {&AppleRateUnit::Input, this};
++    st = AudioUnitSetProperty(unit_, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input,
++                              0, &cb, sizeof(cb));
++    if (st != noErr) return Fail(error, "SetRenderCallback", st);
++    st = AudioUnitInitialize(unit_);
++    if (st != noErr) return Fail(error, "AudioUnitInitialize", st);
++
++    list_storage_.resize(offsetof(AudioBufferList, mBuffers) + sizeof(AudioBuffer) * channels_);
++    planar_.assign(size_t(channels_) * max_frames_, 0.0f);
++    pull_buffer_.assign(size_t(channels_) * kPullChunk, 0.0f);
++    return true;
++  }
++
++  bool SetRate(float rate) override {
++    const AudioUnitParameterID param =
++        kind_ == Kind::kTimePitch ? AudioUnitParameterID(kNewTimePitchParam_Rate)
++                                  : AudioUnitParameterID(kVarispeedParam_PlaybackRate);
++    return AudioUnitSetParameter(unit_, param, kAudioUnitScope_Global, 0, rate, 0) == noErr;
++  }
++
++  bool Render(float* out, uint32_t frames) override {
++    if (frames > max_frames_) return false;
++    auto* list = reinterpret_cast<AudioBufferList*>(list_storage_.data());
++    list->mNumberBuffers = channels_;
++    for (uint32_t c = 0; c < channels_; ++c) {
++      list->mBuffers[c].mNumberChannels = 1;
++      list->mBuffers[c].mDataByteSize = frames * sizeof(float);
++      list->mBuffers[c].mData = planar_.data() + size_t(c) * max_frames_;
++    }
++    AudioUnitRenderActionFlags flags = 0;
++    AudioTimeStamp ts = {};
++    ts.mFlags = kAudioTimeStampSampleTimeValid;
++    ts.mSampleTime = sample_time_;
++    const OSStatus st = AudioUnitRender(unit_, &flags, &ts, 0, frames, list);
++    sample_time_ += frames;
++    if (st != noErr) {
++      std::memset(out, 0, sizeof(float) * frames * channels_);
++      return false;
++    }
++    // The unit may hand back its own buffers; read through the list.
++    for (uint32_t c = 0; c < channels_; ++c) {
++      const float* src = static_cast<const float*>(list->mBuffers[c].mData);
++      for (uint32_t i = 0; i < frames; ++i) out[size_t(i) * channels_ + c] = src[i];
++    }
++    return true;
++  }
++
++  void Reset() override {
++    AudioUnitReset(unit_, kAudioUnitScope_Global, 0);
++    sample_time_ = 0;
++  }
++
++  double LatencySeconds() const override {
++    Float64 latency = 0;
++    UInt32 size = sizeof(latency);
++    AudioUnitGetProperty(unit_, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0, &latency,
++                         &size);
++    return latency;
++  }
++
++  const char* Name() const override {
++    return kind_ == Kind::kTimePitch ? "AUNewTimePitch" : "AUVarispeed";
++  }
++
++ private:
++  static constexpr uint32_t kPullChunk = 512;
++
++  static bool Fail(std::string* error, const char* what, OSStatus st) {
++    if (error) *error = std::string(what) + " failed (OSStatus " + std::to_string(st) + ")";
++    return false;
++  }
++
++  // Input render callback: interleaved frames from the guest queue, split into
++  // the unit's per-channel buffers.
++  static OSStatus Input(void* ref, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32,
++                        UInt32 frames, AudioBufferList* io) {
++    auto* self = static_cast<AppleRateUnit*>(ref);
++    const uint32_t ch = self->channels_;
++    uint32_t done = 0;
++    while (done < frames) {
++      const uint32_t want = std::min<uint32_t>(frames - done, kPullChunk);
++      const uint32_t got = self->pull_(self->ctx_, self->pull_buffer_.data(), want);
++      for (uint32_t c = 0; c < ch && c < io->mNumberBuffers; ++c) {
++        float* dst = static_cast<float*>(io->mBuffers[c].mData) + done;
++        for (uint32_t i = 0; i < got; ++i) dst[i] = self->pull_buffer_[size_t(i) * ch + c];
++        for (uint32_t i = got; i < want; ++i) dst[i] = 0.0f;
++      }
++      done += want;
++    }
++    return noErr;
++  }
++
++  Kind kind_;
++  uint32_t channels_;
++  uint32_t max_frames_;
++  RatePullFn pull_;
++  void* ctx_;
++  AudioUnit unit_ = nullptr;
++  Float64 sample_time_ = 0;
++  std::vector<uint8_t> list_storage_;
++  std::vector<float> planar_;
++  std::vector<float> pull_buffer_;
++};
++
++}  // namespace
++
++std::unique_ptr<RateUnit> RateUnit::Create(Kind kind, uint32_t channels, uint32_t sample_rate,
++                                           uint32_t max_frames, RatePullFn pull, void* ctx,
++                                           std::string* error) {
++  auto unit = std::make_unique<AppleRateUnit>(kind, channels, max_frames, pull, ctx);
++  if (!unit->Init(sample_rate, error)) return nullptr;
++  return unit;
++}
++
++}  // namespace rex::audio::sdl
++
++#else
++
++namespace rex::audio::sdl {
++std::unique_ptr<RateUnit> RateUnit::Create(Kind, uint32_t, uint32_t, uint32_t, RatePullFn, void*,
++                                           std::string* error) {
++  if (error) *error = "no playback-rate unit on this platform";
++  return nullptr;
++}
++}  // namespace rex::audio::sdl
++
++#endif

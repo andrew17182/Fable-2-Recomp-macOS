@@ -17,6 +17,7 @@
 #include <rex/logging/macros.h>
 #include "fable2_flight_recorder.h"
 #include "fable2_guest_stack.h"
+#include "fable2_fast_pacing.h"
 
 namespace fable2::loading {
 inline int AudioPreloadDelayMs() {
@@ -639,16 +640,19 @@ extern "C" void ProcessAndAllocateAndProcess11_82B4DF08(PPCContext& ctx,uint8_t*
 // 1) "Saving content" minimum display: after the save is written and closed, sub_824EC3B0 sleeps
 //    max(0, K - elapsed) seconds (K = 3.1 (logged as "game 3100 ms"), the double at 8209E728; * 1000 at 82000DC8) through
 //    DelayZero_82CBC6B0 (return 824EC440), so the notice stays up >= 3 s (a TCR rule; the 2.4 s
-//    is pure padding). FABLE2_SAVE_NOTICE_MS=<ms> sets the minimum (default 500; =3100 restores).
+//    is pure padding). FABLE2_SAVE_NOTICE_MS=<ms> sets the minimum (default 500, 0 with FABLE2_FAST_PACING=1;
+//    =3100 restores).
 // 2) sub_824EC168 shows the notice, then Sleep(100) (return 824EC274) before mounting save:\.
 //    Pure pacing; skipped by default (FABLE2_SAVE_FAST_MOUNT=0 restores it).
 namespace fable2::loading {
 inline int SaveNoticeMs() {
   static const int ms=[] {
+    // FABLE2_FAST_PACING=1 ("Skip cosmetic waits", fable2_fast_pacing.h) makes 0 the default; an explicit value wins.
+    const int def=fable2::pacing::FastPacing() ? 0 : 500;
     const char* v=std::getenv("FABLE2_SAVE_NOTICE_MS");
-    if(!v || !*v)return 500;
+    if(!v || !*v)return def;
     char* end=nullptr;const long p=std::strtol(v,&end,10);
-    return end && !*end && p>=0 && p<=10000 ? int(p) : 500;
+    return end && !*end && p>=0 && p<=10000 ? int(p) : def;
   }();
   return ms;
 }

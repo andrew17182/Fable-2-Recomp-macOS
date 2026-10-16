@@ -169,6 +169,13 @@ bool Load(const std::filesystem::path& path) {
       else REXSYS_WARN("[fable2-config] [patches] turbo_scale: expected a number; using {}",
                        values.turbo_scale);
     }
+    if (const auto audio = patches_table[toml::path{"turbo_audio"}]) {
+      const auto str = audio.value_exact<std::string>();
+      const auto mode = str ? ParseTurboAudio(*str) : std::nullopt;
+      if (mode) values.turbo_audio = *mode;
+      else REXSYS_WARN("[fable2-config] [patches] turbo_audio: expected \"natural\", "
+                       "\"high-pitch\" or \"normal\"; using built-in default");
+    }
     values.unlock_website = Read<bool>(patches_table, "patches",
                                        "unlock_website", "boolean",
                                        values.unlock_website);

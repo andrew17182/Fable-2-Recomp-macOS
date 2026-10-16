@@ -10,8 +10,8 @@ click away, and every setting is in Settings.
 | Part | File |
 |---|---|
 | Main executable `FableIIPlayer` (SwiftUI) | `tools/macos/Player/main.swift` |
-| Settings model, defaults, game-environment mapping, auto-resolution table | `tools/macos/Shared/LaunchSettings.swift` (shared with the Dev Launcher) |
-| Settings tab views (`SettingsTabView`, `FlagRow`, `FlagSection`, `SettingsModel`) | `tools/macos/Shared/SettingsViews.swift` (shared with the Dev Launcher) |
+| Settings model, defaults, game-environment mapping, auto-resolution table | `tools/macos/Shared/LaunchSettings.swift` (shared with the launcher) |
+| Settings tab views (`SettingsTabView`, `FlagRow`, `FlagSection`, `SettingsModel`) | `tools/macos/Shared/SettingsViews.swift` (shared with the launcher) |
 | Engine launcher (unchanged role) | `tools/macos/AppLauncher.m` → `FableIILauncher` |
 | Extractor | `tools/macos/Prepare/main.swift` → `FableIIPrepare` |
 
@@ -54,10 +54,10 @@ click away, and every setting is in Settings.
   `AutoResolution` table (`tests/res_auto_sync_tests.py`).
 - **Frame rate**, **Display** (Windowed / Fullscreen), **Settings…** and **Play**.
 
-**Settings (⌘,):** the Dev Launcher's tabs, from the same views:
+**Settings (⌘,):** the launcher's tabs, from the same views:
 
 - General, Display, Controls (keyboard map, mouse, hotkeys, controllers; docs/reference.md), Performance, Fixes;
-- Advanced, which is the Dev Launcher's Diagnostics tab under another name.
+- Advanced, which is the launcher's Diagnostics tab under another name.
 
 Player-only additions:
 
@@ -66,7 +66,7 @@ Player-only additions:
   - Game files: the folder, Show in Finder, Choose Disc Image….
 - Advanced: Open Logs Folder, Open Data Folder, Reset All Settings… (with confirmation).
 
-These stay Dev-Launcher-only: the playtest/latest build choice, save picks and write-back slots, test options,
+These stay in the repo launcher (and developer mode) only: the playtest/latest build choice, save picks and write-back slots, test options,
 benchmark, export, and the dev-session footers and CLI hints.
 
 A setting added to `LaunchSettings` (a `Flag` with a tab, or a picker in `SettingsTabView`) appears in both apps
@@ -82,10 +82,10 @@ without further work.
 Play does the following:
 
 1. Sets the settings' environment, `LaunchSettings.gameEnvironment`:
-   - frame-rate items: the same values `tools/fable2_dev_session.py` sets for `--fps`, and the Dev Launcher's
+   - frame-rate items: the same values `tools/fable2_dev_session.py` sets for `--fps`, and the launcher's
      items for Auto;
    - `FABLE2_SKIP_INTRO_MOVIES=1/0`. This is explicit, because the portable launcher otherwise skips by default;
-   - every `--env` item the Dev Launcher passes (`settingsEnvironment`, the single copy of that mapping).
+   - every `--env` item the launcher passes (`settingsEnvironment`, the single copy of that mapping).
 2. Adds `FABLE2_BOOT_SAVE=1` for Continue (plus `FABLE2_BOOT_SAVE_HERO` with several saves), and
    `FABLE2_PLAYER_LAUNCH=1`.
 3. Runs `Contents/MacOS/FableIILauncher`: as a child process from the Play button, or with `exec` in the same
@@ -103,7 +103,7 @@ With `FABLE2_PLAYER_LAUNCH=1` it ignores the Option key, which is the player's k
 
 `tests/launcher_env_sync_tests.py` builds both apps and checks the result for 5 settings combinations. It compares:
 
-- the Dev Launcher's `--print-args`, turned into the game environment as `fable2_dev_session.py` does;
+- the launcher's `--print-args`, turned into the game environment as `fable2_dev_session.py` does;
 - the environment the player's real Play path hands to a stand-in `FableIILauncher`.
 
 They are equal, except for the player's `FABLE2_PLAYER_LAUNCH=1` and an explicit `FABLE2_SKIP_INTRO_MOVIES=0`
@@ -132,33 +132,33 @@ and the app takes it back when the game exits.
 
 ## Developer mode: one app, one launcher (2026-10-14)
 
-There is no separate Dev Launcher program any more: the Dev Launcher is a role of this app. One binary is built from
+There is no separate Launcher program any more: the launcher is a role of this app. One binary is built from
 `tools/macos/Player/main.swift` (entry point), `tools/macos/DevLauncher/*.swift` and `tools/macos/Shared/*.swift`:
 
 - **Player role** (the release and portable `Fable II.app`): Settings > Advanced > **Developer mode** (off by
   default, stored in `player-settings.plist`). When on:
-  - **Window > Fable II Dev Launcher** (⌥⌘D) opens the Dev Launcher's main window: build choice (playtest / latest),
+  - **Window > Fable II Launcher** (⌥⌘D) opens the launcher's main window: build choice (playtest / latest),
     save picker with stars and titles, boot and write-back options, Launch, Close Game, Update Playtest Build;
   - **Window > Developer** has every Tools item: Run Benchmark, Run Flash Kit, Export Portable Build, Update
     Playtest Build, Close Game, Choose Save, Refresh, and the logs / save library / sessions / benchmark report
     folders;
-  - Settings shows the Dev Launcher's wording and CLI hints, and the **Source checkout** row.
+  - Settings shows the launcher's wording and CLI hints, and the **Source checkout** row.
 - **Source checkout.** Everything that runs repository tools (`tools/fable2_dev_session.py`, the playtest and latest
   builds, kits, exports, `out/` folders) needs one. It is, in order: `FABLE2_REPO_ROOT`, the build's
   `Fable2RepoRoot`, the folder chosen with **Source Checkout…** (remembered), or the first checkout found in the
-  folders above the app (auto-detect, e.g. an app inside or next to the repo). Without one, the Dev Launcher window
+  folders above the app (auto-detect, e.g. an app inside or next to the repo). Without one, the launcher window
   shows "Needs a source checkout" with the picker, and Window > Developer offers to choose one.
-- **Dev Launcher role**: `tools/macos/build_dev_launcher.sh` builds the same binary as `Fable II Dev Launcher.app`
+- **Launcher role**: `tools/macos/build_dev_launcher.sh` builds the same binary as `Fable II Launcher.app`
   with `Fable2DevLauncher` and `Fable2DeveloperModeDefault` in its Info.plist and this checkout as `Fable2RepoRoot`.
-  It opens the Dev Launcher window as before. Name, bundle id (`local.fable2recomp.devlauncher`), executable
+  It opens the launcher window as before. Name, bundle id (`local.fable2recomp.devlauncher`), executable
   (`FableIIDevLauncher`), install path (`--install`), UserDefaults keys and command-line modes (`--launch`,
   `--print-args`, `--picker-rows`, `--snapshot --tab …`) are unchanged, so the agent tools that quit, install and
   reopen it keep working. Settings > Diagnostics shows Developer mode (always on) and the checkout.
-- Both roles take `--launch` and `--picker-rows`. In the player role the Dev Launcher window launches with the player's
-  own settings (one settings file); the Dev Launcher role keeps its UserDefaults as before.
-- Start Fresh / Archives act on the player role's own state folder; the Dev Launcher role has no state folder of its
+- Both roles take `--launch` and `--picker-rows`. In the player role the launcher window launches with the player's
+  own settings (one settings file); the launcher role keeps its UserDefaults as before.
+- Start Fresh / Archives act on the player role's own state folder; the launcher role has no state folder of its
   own (its dev sessions keep theirs), so it does not offer them.
-- `--list-capabilities` prints what a role can reach; `tests/unified_launcher_tests.py` checks that every Dev Launcher
+- `--list-capabilities` prints what a role can reach; `tests/unified_launcher_tests.py` checks that every Launcher
   capability is reachable in the player role with developer mode and a checkout, and that none shows with developer
   mode off.
 
@@ -173,7 +173,7 @@ Without finished game files the Welcome window always appears.
 Everything lives in the app's state folder, `~/Library/Application Support/Fable II Recomp/`
 (`FABLE2_APP_STATE_ROOT` in tests). The portable bundle id is `org.fable2recomp.metal.portable`.
 
-- `player-settings.plist`: the settings. They use the Dev Launcher's keys, written only when changed, so defaults
+- `player-settings.plist`: the settings. They use the launcher's keys, written only when changed, so defaults
   follow new builds. It also holds `skipLauncher` and `startMode`. No `UserDefaults` are used.
 - `launcher.plist`: `GameDataRoot`, `AllowXexMismatch`, read by `FableIILauncher` as before.
 - `logs/player.log`: one line per Play with the environment it set.
@@ -227,7 +227,7 @@ Evidence is in `out/validation/player-app/` (KEEP).
 
   It reached gameplay in Thag's Cave at game 29 FPS (2560×1440 capture, "2x res" in the counter) and was closed by
   its session id.
-- **Dev Launcher.**
+- **Launcher.**
   - `--print-args` is byte-identical before and after the refactor for 6 settings combinations.
   - The main window and all six Settings tabs, snapshotted before and after, are pixel-identical.
 - **Benchmark kit.** `tools/fable2_benchmark_kit.py build --no-shaders`:
@@ -255,3 +255,49 @@ Evidence: `out/validation/continue-loop/` (KEEP). Scratch portable exports (`--n
   logged `game ended: signal 9` and the window came back taller by the note line. Not checked here: activation
   hand-off and the Dock switch outside background test mode (test sessions start the app as an accessory).
 
+
+## The launcher is the way to play (2026-10-15)
+
+Maintainer reports from an M3 Pro with a fresh build from source: the Playtest build failed, Skip intro still
+played the logos, the save library stayed empty, and the launcher's name said "Dev". Changes:
+
+- **Name.** The repo launcher is **Fable II Launcher.app** (window, menus, Setup). Kept for tools and agents:
+  bundle id `local.fable2recomp.devlauncher` (and so its saved settings), executable `FableIIDevLauncher`,
+  `tools/macos/build_dev_launcher.sh`, `out/dev-launcher/` and every CLI flag. `--install` puts the new name next
+  to the repo and removes `Fable II Dev Launcher.app`; Setup does the same.
+- **Build choice defaults to Latest.** A fresh checkout has no `out/playtest`, so the old Playtest default failed
+  every launch ("No playtest copy yet"). A saved `build=playtest` becomes Latest once (`buildChoiceMigration=1`);
+  a later deliberate Playtest pick is kept. Without a playtest copy the Playtest item is disabled with a note
+  ("Update Playtest Build creates one"), and a Playtest launch falls back to Latest with a note (Swift and
+  `fable2_dev_session.py launch`). Tests: `tests/unified_launcher_tests.py`.
+- **Continue from Last Save** on the front page, in every role. Repo launcher: the newest save by save time among
+  the live slots and the library's play saves (agent test saves skipped; a tie goes to the live slot); it launches
+  that pick with boot on through the usual session path (`FABLE2_BOOT_SAVE`), writing back to the live slot it
+  came from (library saves: the slot they were written back to, else library only). Player: the Continue button
+  is the old Continue start mode (`FABLE2_BOOT_SAVE`, `FABLE2_BOOT_SAVE_HERO`). Continue is the default (Return)
+  button when a save exists; otherwise Launch / Play (title screen) is. One click, no confirmation.
+- **Skip intro movies** is on the front page in every role (the same setting as Settings > General) and is **off
+  by default**: the original logo movies and title intro play. Settings are stored only when changed, so an install
+  that never touched it follows the new default; a saved choice is kept. Fast title (`FABLE2_TITLE_FAST`) only
+  runs with skip intro on, so with the default the title screen's own fade-in/out is the original too.
+- **Skip intro on a fresh clone.** The game redirects the logo opens to `<game root>/out/skipintro/{ms,lh,mw}.bik`;
+  a missing file silently plays the full movie. The release app makes them (`FableIIPrepare --stage`), but a
+  source checkout only had them from an old validation script. `tools/fable2_skip_intro.py ensure` makes them
+  (byte-identical to Prepare's trim); `fable2_dev_session.py launch`, `fable2_playtest.py update` and
+  `build_macos_metal.py` call it. The game logs the decision: `[skip-intro] on: logo movies redirected … (3/3
+  stand-ins)`, `[skip-intro] off …`, or a warning naming the missing stand-ins. `Fable II.app` opened directly
+  (Finder, Setup's Play Directly) follows the launcher's saved choice (`AppLauncher.m` reads `skipIntro` from
+  `local.fable2recomp.devlauncher`). The M3 log showed none of the launcher's environment (for example
+  `FABLE2_MEMEXPORT_PRESERVE=unset`, which every launcher launch sets), so that run was most likely a direct open; Setup's default button now opens the launcher.
+- **Save library on a fresh clone.** Only save-pick sessions copied saves into `out/save-library`; title-screen
+  play (the only choice with no saves yet) ran on the live state and never reached the library. A title-play
+  watcher (`fable2_dev_session.py watch-live`, log `out/dev-sessions/title-watch.log`) now copies each save the game
+  makes into the library as `live-heroNNN_<stamp>` (no write-back: it is the live save). `list` creates
+  `out/save-library` on first need. Tests: `tests/fresh_clone_tests.py`.
+- **Back to the launcher.** When a play game ends (the launcher's own, or one opened another way while the
+  launcher runs: Fable II.app, `fable_2`, a `run_macos_*.command`; never an agent test game), the launcher comes to
+  the front with its window, reopening it if it was closed. A crash or kill shows "The game closed unexpectedly
+  (…)" with **Show Logs**. The player's Play button already did this (above). "Skip launcher, play directly" stays
+  off by default; with it the app ends with the game, and a running repo launcher comes forward.
+- **Version of a GitHub ZIP.** `tools/fable2_archive_commit.txt` is filled in by `git archive` (`.gitattributes`
+  export-subst), so a ZIP download reports `0.1.0 (<commit>)` instead of `0.1.0 (source)`.

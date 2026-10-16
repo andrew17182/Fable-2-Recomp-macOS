@@ -10,10 +10,11 @@
 // (never the normal "Fable II Recomp" folder, whose GameData is only read: APFS-cloned when complete,
 // so a Mac that already runs the portable build needs no second extraction).
 //
-//   FableIIBenchmark [--state DIR] [--out DIR] [--iso IMAGE] [--arms cold,1u,1c,2u,2c,3u,3c,census1x,census2x]
+//   FableIIBenchmark [--state DIR] [--out DIR] [--iso IMAGE]
+//                    [--arms cold,1u,1c,2u,2u-ssm,2c,3u,census1x,census2x-ssm,census2x (default; also 3c, 3u-ssm, …)]
 //                    [--headless] [--no-clone] [--arm-timeout SECONDS]
 //                    [--app BUNDLE --game-data DIR --save-dir SAVES] [--warm-cache CACHE] [--label TEXT]
-//   FableIIBenchmark --flash [--reps N] [--arms adapt,adapt-snap,adapt-tess3,noadapt,noadapt-snap,induce] ...
+//   FableIIBenchmark --flash [--reps N] [--arms adapt,adapt-nomatch,adapt-tess3,noadapt(,adapt-snap,noadapt-snap,induce)] ...
 //                    (the flash kit, docs/flash-kit.md; also on when Info.plist has Fable2FlashKit = true:
 //                    one 2x / 60 FPS run per arm and rep with the flash plan and the in-game flash detector)
 //   FableIIBenchmark --reanalyze REPORT_FOLDER [--out DIR]
@@ -36,7 +37,9 @@ struct Options {
   var state: String?
   var out: String?
   var iso: String?
-  var arms = ["cold", "1u", "1c", "2u", "2c", "3u", "3c", "census1x", "census2x"]
+  // 2026-10-16: 3c dropped from the default (a GPU-bound Mac at 3x runs the same as 3u); the switch arms
+  // 2u-ssm / census2x-ssm decide FABLE2_SSM_MERGE on the tester's Mac, paired A-B / B-A against 2u / census2x.
+  var arms = ["cold", "1u", "1c", "2u", "2u-ssm", "2c", "3u", "census1x", "census2x-ssm", "census2x"]
   var headless = false
   var clone = true
   var armTimeout: Double = 420
@@ -87,14 +90,19 @@ struct Options {
 // Flash kit arms (docs/flash-kit.md): 2x, 60 FPS cap, tessellation trace on, the flash plan, the flash detector.
 // Every switch is passed explicitly so nothing else (environment, saved settings) decides the arm.
 enum FlashArms {
-  static let all = ["adapt", "adapt-snap", "adapt-tess3", "noadapt", "noadapt-snap"]
+  // docs/adaptive-terrain-flashes-20261014.md: adapt-nomatch is the build before the layer fix (the flashes);
+  // the snap arms are not default any more (the uv snap made no difference on the M3 Pro).
+  static let all = ["adapt", "adapt-nomatch", "adapt-tess3", "noadapt"]
   static func env(_ id: String) -> (String, [String: String])? {
-    let base = ["FABLE2_NATIVE_TESS_TRACE": "1", "FABLE2_NATIVE_TESS": "1", "FABLE2_NATIVE_TESS_SNAP_UV": "0"]
+    let base = ["FABLE2_NATIVE_TESS_TRACE": "1", "FABLE2_NATIVE_TESS": "1", "FABLE2_NATIVE_TESS_SNAP_UV": "0",
+                "FABLE2_TERRAIN_LAYER_MATCH": "1"]
     func arm(_ title: String, _ extra: [String: String]) -> (String, [String: String]) {
       (title, base.merging(extra) { $1 })
     }
     switch id {
-    case "adapt": return arm("Adaptive terrain on (baseline)", ["FABLE2_TERRAIN_ADAPTIVE": "1"])
+    case "adapt": return arm("Adaptive terrain on (layers matched)", ["FABLE2_TERRAIN_ADAPTIVE": "1"])
+    case "adapt-nomatch": return arm("Adaptive on, layers not matched (before the fix)",
+                                     ["FABLE2_TERRAIN_ADAPTIVE": "1", "FABLE2_TERRAIN_LAYER_MATCH": "0"])
     case "adapt-snap": return arm("Adaptive on + snap uv", ["FABLE2_TERRAIN_ADAPTIVE": "1", "FABLE2_NATIVE_TESS_SNAP_UV": "1"])
     case "adapt-tess3": return arm("Adaptive on + reference tessellator (TESS=3)",
                                    ["FABLE2_TERRAIN_ADAPTIVE": "1", "FABLE2_NATIVE_TESS": "3"])
@@ -104,6 +112,21 @@ enum FlashArms {
     case "induce": return arm("Induced flashes (detector check)", ["FABLE2_TERRAIN_ADAPTIVE": "0", "FABLE2_FLASH_INDUCE": "1"])
     default: return nil
     }
+  }
+}
+
+// Switch arms: "<arm>-<switch>" is <arm> (any non-flash, warm arm) with one renderer switch set, so a kit run on another
+// Mac decides a default there. report.txt pairs each with its base arm ("Switch arms").
+enum SwitchArms {
+  static let all: [String: (title: String, env: [String: String])] = [
+    // docs/ssm-merge-20261015.md: P8a's transfer inside the shadow-mask pass (opt-in; meant for bandwidth-bound Macs).
+    "ssm": ("SSM merge", ["FABLE2_SSM_MERGE": "1"]),
+  ]
+  /// (base arm id, switch) for "<base>-<switch>", else nil.
+  static func split(_ id: String) -> (String, String)? {
+    guard let dash = id.lastIndex(of: "-") else { return nil }
+    let base = String(id[..<dash]), name = String(id[id.index(after: dash)...])
+    return all[name] != nil && !base.isEmpty ? (base, name) : nil
   }
 }
 
@@ -123,6 +146,11 @@ struct Arm {
     if let (title, env) = FlashArms.env(flashId) {
       return Arm(id: id, title: title + (rep.isEmpty ? "" : " (run \(rep.dropFirst(2)))"), scale: 2, capped: true,
                  cold: false, env: env, flash: true, flashArm: flashId)
+    }
+    if let (baseId, name) = SwitchArms.split(id), let sw = SwitchArms.all[name], let base = Arm.make(baseId),
+       !base.flash, !base.cold {
+      return Arm(id: id, title: "\(base.title) + \(sw.title)", scale: base.scale, capped: base.capped, cold: false,
+                 env: base.env.merging(sw.env) { $1 }, census: base.census)
     }
     if id == "cold" { return Arm(id: id, title: "Cold first launch, 1x, 60 FPS cap", scale: 1, capped: true, cold: true) }
     if id.hasPrefix("census"), id.count == 8, id.hasSuffix("x"), let scale = Int(String(id.dropFirst(6).first!)),
@@ -728,8 +756,8 @@ final class Runner {
     if arm.flash {
       env["FABLE2_BENCHMARK_PLAN"] = "flash"
       env["FABLE2_FLASH_DETECT"] = dir
-      for (k, v) in arm.env { env[k] = v }
     }
+    for (k, v) in arm.env { env[k] = v }  // flash and switch arms
     if env["FABLE2_TRACE"] == nil { env["FABLE2_TRACE"] = "gpu:1,cpu:1,sampler:1,frame:1" }  // alias back to default levels
     if env["FABLE2_INSTANCE_ROLE"] == nil { env["FABLE2_INSTANCE_ROLE"] = "benchmark" }
     // Window-title tag (src/core/fable2_window_title.h), e.g. "Fable II … · 3× · uncapped · benchmark 3u".
@@ -783,6 +811,7 @@ final class Runner {
                               "fps_cap": arm.capped ? "60" : "uncapped", "cold_cache": arm.cold,
                               "exit_status": Int(p.terminationStatus), "launch_to_exit_s": round(wall, 1),
                               "thermal_state_after": thermalState()]
+    if !arm.env.isEmpty { out["env"] = arm.env }
     // The game ends with exit status 0 (hard exit after the benchmark's quit). Anything else, a signal
     // (crash) or the arm timeout is abnormal: the caller keeps the data if it was written, else retries once.
     let signalled = p.terminationReason == .uncaughtSignal
@@ -1293,12 +1322,41 @@ final class Runner {
         s += "\n"
       }
     }
+    s += switchLines((report["arms"] as? [[String: Any]]) ?? [])
     let problems = problemLines((report["arms"] as? [[String: Any]]) ?? [])
     if !problems.isEmpty {
       s += "\nRun problems (crash reports and logs in raw/<run>/):\n" + problems.joined(separator: "\n") + "\n"
     }
     return s
   }
+}
+
+/// report.txt: each switch arm against its base arm (same scale, cap and tracing), e.g. 2u-ssm vs 2u.
+func switchLines(_ arms: [[String: Any]]) -> String {
+  var byId: [String: [String: Any]] = [:]
+  for r in arms { if let id = r["arm"] as? String { byId[id] = r } }
+  var lines: [String] = []
+  for r in arms {
+    guard let id = r["arm"] as? String, let (baseId, name) = SwitchArms.split(id), let sw = SwitchArms.all[name],
+          let b = byId[baseId] else { continue }
+    let st = r["sweep"] as? [String: Any] ?? [:], bt = b["sweep"] as? [String: Any] ?? [:]
+    let env = sw.env.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+    var line = "\(sw.title) (\(env)) vs default, \((b["title"] as? String) ?? baseId):"
+    if let f0 = bt["fps_mean"] as? Double, let f1 = st["fps_mean"] as? Double, f0 > 0 {
+      line += String(format: " FPS %.1f -> %.1f (%+.1f%%)", f0, f1, (f1 / f0 - 1) * 100)
+    } else {
+      line += " FPS missing"
+    }
+    if let g0 = bt["gpu_ms_mean"] as? Double, let g1 = st["gpu_ms_mean"] as? Double {
+      line += String(format: ", GPU ms %.2f -> %.2f (%+.2f)", g0, g1, g1 - g0)
+    }
+    if let p0 = bt["frame_ms_p99"] as? Double, let p1 = st["frame_ms_p99"] as? Double {
+      line += String(format: ", p99 ms %.1f -> %.1f", p0, p1)
+    }
+    lines.append(line)
+  }
+  return lines.isEmpty ? "" : "\nSwitch arms (same Mac, same run; a few % is within run-to-run noise):\n"
+    + lines.joined(separator: "\n") + "\n"
 }
 
 // MARK: - UI

@@ -48,7 +48,7 @@ class AgentCacheTests(unittest.TestCase):
         self.fp = dict(key='aaaaaaaaaaaaaaaa', components=dict(translator='t1', optimizer='o1', ns_spec='n1',
                                                                pipeline='p1', toolchain='c1'))
         self.branch_fp = self.fp
-        ac.branch_fingerprints = lambda root=None: {'perf-staging': self.branch_fp}
+        ac.branch_fingerprints = lambda root=None: {'main': self.branch_fp}
         self.n = 0
 
     def tearDown(self):

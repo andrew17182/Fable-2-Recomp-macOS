@@ -16,6 +16,7 @@
 #include "rex/graphics/metal/metal_air_optimizer.h"
 #include "rex/graphics/metal/metal_ns_specialize.h"
 #include "rex/graphics/metal/metal_msl_translator.h"
+#include "rex/graphics/metal/metal_shader_bank.h"
 
 #include <dispatch/dispatch.h>
 #include <sys/sysctl.h>
@@ -1313,6 +1314,9 @@ MetalPipelineCache::~MetalPipelineCache() {
   if (native_geom_prewarm_thread_.joinable()) {
     native_geom_prewarm_thread_.join();
   }
+  if (bank_prep_thread_.joinable()) {
+    bank_prep_thread_.join();  // [bank-prep] stops at the next item (native_geom_prewarm_stop_)
+  }
 
   // Shut down async pipeline creation threads.
   {
@@ -2605,6 +2609,268 @@ void MetalPipelineCache::PrewarmNativeGeometry(
         built.load(), failed.load(), startup::MsSince(start),
         native_geom_archive_hits_.load(), native_geom_archive_misses_.load());
   });
+}
+
+// ---------------------------------------------------------------------------
+// [bank-prep] Shader bank precompile (headless prep; docs/shader-precompile-20261015.md)
+// ---------------------------------------------------------------------------
+
+namespace {
+uint32_t BankPrepThreadCount() {
+  if (const char* v = std::getenv("FABLE2_SHADER_PREP_BANK_THREADS"); v && *v) {  // getenv-ok: once (prep)
+    return uint32_t(std::clamp(std::atoi(v), 1, 64));
+  }
+  // All cores but one, at most 11 (the MSL compiles run in Metal's compiler service processes; this leaves a
+  // core for the prep's own threads). M5 Max and M3 Pro: 11; base M1: 7.
+  const unsigned cores = std::max(2u, std::thread::hardware_concurrency());
+  return std::clamp(cores - 1, 2u, 11u);
+}
+}  // namespace
+
+size_t MetalPipelineCache::StartBankPrecompile(const std::filesystem::path& bank_path) {
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<bank::BankShader> shaders;
+  std::string error;
+  if (!bank::ReadBank(bank_path, &shaders, &error)) {
+    REXLOG_WARN("[bank-prep] shader bank not read: {}", error);
+    return 0;
+  }
+  // FABLE2_SHADER_PREP_BANK_VS: which vertex shaders. Default: those without vertex fetches (D3D patches the
+  // vertex-fetch instructions of the others at bind time, so their runtime microcode is not the bank's); "all";
+  // 0 = none.
+  const char* vs_env = std::getenv("FABLE2_SHADER_PREP_BANK_VS");  // getenv-ok: once (prep)
+  const int vs_mode = (vs_env && vs_env[0] == '0') ? 0 : (vs_env && std::strcmp(vs_env, "all") == 0) ? 2 : 1;
+  using Mod = DxbcShaderTranslator::Modification;
+  using DepthStencilMode = Mod::DepthStencilMode;
+  const DepthStencilMode float24_mode =
+      REXCVAR_GET(depth_float24_convert_in_pixel_shader)
+          ? (REXCVAR_GET(depth_float24_round) ? DepthStencilMode::kFloat24Rounding
+                                              : DepthStencilMode::kFloat24Truncating)
+          : DepthStencilMode::kNoModifiers;
+  // A job installs a translation (as the draw path does), or compiles one of the native expansion functions
+  // of a vertex shader (rectangle / point / domain; GetOrCreateNativePointsPipeline, GetOrCreateNativeTess-
+  // Pipeline) and discards it: only macOS's Metal cache keeps it.
+  enum class JobKind : uint8_t { kInstall, kRects, kPoints, kPointsMesh, kDomain };
+  struct Job {
+    MetalShader::MetalTranslation* t;
+    JobKind kind;
+    bool flag;  // point coordinates / domain CPU pattern
+    // Order of work (lower first), so a time budget keeps the most common variants: 0 pixel shaders without
+    // MSAA, 1 with MSAA and the vertex shaders, 2 float24 depth, 3 footprint variants.
+    uint8_t priority;
+  };
+  uint8_t priority = 0;
+  std::vector<Job> work;
+  std::unordered_set<MetalShader::MetalTranslation*> seen;
+  auto add = [&](MetalShader* shader, uint64_t modification) {
+    auto* t = static_cast<MetalShader::MetalTranslation*>(shader->GetOrCreateTranslation(modification));
+    if (t && !t->is_valid() && seen.insert(t).second) work.push_back({t, JobKind::kInstall, false, priority});
+    return t;
+  };
+  struct Loaded {
+    MetalShader* shader;
+    const bank::BankShader* bank;
+  };
+  std::vector<Loaded> pixel, vertex;
+  std::unordered_set<uint64_t> loaded;
+  size_t vertex_skipped = 0;
+  for (const bank::BankShader& b : shaders) {
+    if (!b.pixel && !vs_mode) continue;
+    MetalShader* shader = LoadShader(b.pixel ? xenos::ShaderType::kPixel : xenos::ShaderType::kVertex,
+                                     b.ucode.data(), uint32_t(b.ucode.size()),
+                                     XXH3_64bits(b.ucode.data(), b.ucode.size() * sizeof(uint32_t)));
+    if (!shader || !loaded.insert(shader->ucode_data_hash()).second) continue;
+    // Not written to the shader list (cache/shaders/shareable/*.xsh): that list stays "what the game used on
+    // this Mac" (QueueStoredShader skips a shader marked as stored in this storage generation).
+    if (storage_writer_.is_active()) shader->try_set_ucode_storage_index(storage_writer_.storage_index());
+    if (!shader->is_ucode_analyzed()) shader->AnalyzeUcode(ucode_disasm_buffer_);
+    if (!b.pixel && vs_mode == 1 && !shader->vertex_bindings().empty()) {
+      ++vertex_skipped;
+      continue;
+    }
+    (b.pixel ? pixel : vertex).push_back({shader, &b});
+  }
+  // Pixel shaders: GetCurrentPixelShaderModification with the SQ_PROGRAM_CNTL / SQ_CONTEXT_MISC /
+  // SQ_INTERPOLATOR_CNTL values D3D sets with the shader (from its container): interpolators, param gen and
+  // centroids are then exact. What stays draw state: MSAA or not (centroids), and the depth mode (early-Z hint
+  // unless alpha test / alpha to coverage; float24 conversion when depth is on with a D24FS8 buffer). The
+  // vertex shader is assumed to write every interpolator the pixel shader reads (512 of 514 remembered
+  // pipelines on the development Mac).
+  // FABLE2_EFFECTS_FOOTPRINT_VARIANT: at a scaled resolution, a shader with offset texture fetches gets a
+  // second translation for draws that sample a resolution-scaled resolve (FootprintVariantNeeded).
+  const uint32_t scale_x = native_xlate_config_.draw_resolution_scale_x;
+  const uint32_t scale_y = native_xlate_config_.draw_resolution_scale_y;
+  const bool footprint_variants = EffectsFootprintMode() && EffectsFootprintVariantMode() &&
+                                  !REXCVAR_GET(draw_resolution_scaled_texture_offsets) &&
+                                  (scale_x > 1 || scale_y > 1);
+  std::set<uint32_t> input_masks;
+  for (const Loaded& l : pixel) {
+    MetalShader* shader = l.shader;
+    reg::SQ_PROGRAM_CNTL program_cntl;
+    program_cntl.value = l.bank->sq_program_cntl;
+    reg::SQ_CONTEXT_MISC context_misc;
+    context_misc.value = l.bank->sq_context_misc;
+    reg::SQ_INTERPOLATOR_CNTL interpolator_cntl;
+    interpolator_cntl.value = l.bank->sq_interpolator_cntl;
+    uint32_t param_gen_pos = UINT32_MAX;
+    // The register count also covers temporaries; the low half of the container's interpolator word is the
+    // interpolators the shader reads (what the paired vertex shader writes).
+    const uint32_t mask = shader->GetInterpolatorInputMask(program_cntl, context_misc, param_gen_pos) &
+                          (l.bank->sq_interpolator_cntl & 0xFFFFu);
+    input_masks.insert(mask);
+    const uint32_t msaa_centroids =
+        mask & ~xenos::GetInterpolatorSamplingPattern(xenos::MsaaSamples::k2X, context_misc.sc_sample_cntl,
+                                                      interpolator_cntl.sampling_pattern);
+    const uint32_t centroids[2] = {0, msaa_centroids};
+    DepthStencilMode modes[3] = {DepthStencilMode::kNoModifiers, DepthStencilMode::kNoModifiers,
+                                 DepthStencilMode::kNoModifiers};
+    int n_modes = 1;
+    if (shader->implicit_early_z_write_allowed()) modes[n_modes++] = DepthStencilMode::kEarlyHint;
+    if (float24_mode != DepthStencilMode::kNoModifiers) modes[n_modes++] = float24_mode;
+    bool footprint = false;
+    if (footprint_variants) {
+      const uint64_t masks = shader->OffsetFetchConstantMasks();
+      footprint = (((scale_x == 2 || scale_x == 3) ? uint32_t(masks) : 0u) |
+                   ((scale_y == 2 || scale_y == 3) ? uint32_t(masks >> 32) : 0u)) != 0;
+    }
+    for (int c = 0; c < (msaa_centroids ? 2 : 1); ++c) {
+      for (int m = 0; m < n_modes; ++m) {
+        Mod mod(shader_translator_->GetDefaultPixelShaderModification(
+            shader->GetDynamicAddressableRegisterCount(program_cntl.ps_num_reg)));
+        mod.pixel.interpolator_mask = mask;
+        mod.pixel.interpolators_centroid = centroids[c];
+        if (param_gen_pos < xenos::kMaxInterpolators) {
+          mod.pixel.param_gen_enable = 1;
+          mod.pixel.param_gen_interpolator = param_gen_pos;
+        } else {
+          mod.pixel.param_gen_enable = 0;
+          mod.pixel.param_gen_interpolator = 0;
+        }
+        mod.pixel.param_gen_point = 0;
+        mod.pixel.depth_stencil_mode = modes[m];
+        mod.pixel.rt0_blend_rgb_factor_for_premult = xenos::BlendFactor::kOne;
+        mod.pixel.rt0_blend_a_factor_for_premult = xenos::BlendFactor::kOne;
+        priority = modes[m] == float24_mode && float24_mode != DepthStencilMode::kNoModifiers ? 2 : uint8_t(c);
+        add(shader, mod.value);
+        // Draws that sample a scaled resolve are post-processing passes without MSAA.
+        priority = 3;
+        if (footprint && c == 0) add(shader, mod.value | kPixelModificationFootprint);
+      }
+    }
+  }
+  // Vertex shaders (plain vertex type): the interpolators any bank pixel shader reads; no user clip planes, no
+  // point size (point lists take the native expansion).
+  for (const Loaded& l : vertex) {
+    MetalShader* shader = l.shader;
+    reg::SQ_PROGRAM_CNTL program_cntl;
+    program_cntl.value = l.bank->sq_program_cntl;
+    std::set<uint32_t> masks;
+    for (uint32_t m : input_masks) masks.insert(shader->writes_interpolators() & m);
+    masks.insert(0);  // no pixel shader (depth only)
+    for (uint32_t mask : masks) {
+      Mod mod(shader_translator_->GetDefaultVertexShaderModification(
+          shader->GetDynamicAddressableRegisterCount(program_cntl.vs_num_reg),
+          Shader::HostVertexShaderType::kVertex));
+      mod.vertex.interpolator_mask = mask;
+      mod.vertex.user_clip_plane_count = 0;
+      mod.vertex.user_clip_plane_cull = 0;
+      mod.vertex.vertex_kill_and = uint32_t((shader->writes_point_size_edge_flag_kill_vertex() & 0b100) != 0);
+      mod.vertex.output_point_size = 0;
+      priority = 1;
+      MetalShader::MetalTranslation* t = add(shader, mod.value);
+      if (!t || !NativeFirstMode()) continue;
+      if (NativeRectsMode()) work.push_back({t, JobKind::kRects, false, 1});
+      if (NativePointsMode()) {
+        for (bool coordinates : {false, true}) {
+          work.push_back({t, NativePointsMode() == 2 ? JobKind::kPointsMesh : JobKind::kPoints, coordinates, 1});
+        }
+      }
+      if (NativeTessMode()) {
+        // Terrain domain shaders: also with one user clip plane (water reflections).
+        mod.vertex.host_vertex_shader_type = Shader::HostVertexShaderType::kQuadDomainPatchIndexed;
+        for (uint32_t clip_planes : {0u, 1u}) {
+          mod.vertex.user_clip_plane_count = clip_planes;
+          auto* domain = static_cast<MetalShader::MetalTranslation*>(shader->GetOrCreateTranslation(mod.value));
+          if (!domain) continue;
+          for (bool cpu_pattern : {false, true}) work.push_back({domain, JobKind::kDomain, cpu_pattern, 1});
+        }
+      }
+    }
+  }
+  std::stable_sort(work.begin(), work.end(), [](const Job& a, const Job& b) { return a.priority < b.priority; });
+  // FABLE2_SHADER_PREP_BANK_BUDGET_S (default 120, 0 = none): no new work starts after this many seconds, so
+  // a slower Mac's install stays bounded; what is left is compiled on the draw path as before.
+  double budget_s = 120.0;
+  if (const char* v = std::getenv("FABLE2_SHADER_PREP_BANK_BUDGET_S"); v && *v) {  // getenv-ok: once (prep)
+    budget_s = std::max(0.0, std::atof(v));
+  }
+  bank_prep_shaders_.store(uint32_t(pixel.size() + vertex.size()), std::memory_order_relaxed);
+  bank_prep_total_.store(uint32_t(work.size()), std::memory_order_relaxed);
+  bank_prep_pending_.store(uint32_t(work.size()), std::memory_order_release);
+  const uint32_t threads = BankPrepThreadCount();
+  REXLOG_INFO("[bank-prep] {}: {} shaders ({} pixel, {} vertex; {} vertex shaders with vertex fetches left to "
+              "the draw path, FABLE2_SHADER_PREP_BANK_VS={}), {} translations queued on {} threads (read in "
+              "{:.0f} ms)",
+              bank_path.filename().string(), shaders.size(), pixel.size(), vertex.size(), vertex_skipped,
+              vs_mode == 0 ? "0" : vs_mode == 2 ? "all" : "fetchless", work.size(), threads,
+              startup::MsSince(start));
+  if (work.empty()) return 0;
+  if (bank_prep_thread_.joinable()) bank_prep_thread_.join();
+  bank_prep_thread_ = std::thread([this, work = std::move(work), threads, budget_s]() {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    const auto t0 = std::chrono::steady_clock::now();
+    std::atomic<size_t> next{0};
+    auto worker = [&]() {
+      pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+      for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < work.size();) {
+        NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+        const Job& job = work[i];
+        if (budget_s > 0 && startup::MsSince(t0) > budget_s * 1000.0) {
+          bank_prep_skipped_.fetch_add(1, std::memory_order_relaxed);
+          bank_prep_pending_.fetch_sub(1, std::memory_order_acq_rel);
+          continue;
+        }
+        bool ok = !native_geom_prewarm_stop_.load(std::memory_order_relaxed);
+        if (ok && job.kind == JobKind::kInstall) {
+          if (NativeFirstMode() && !ConverterBuiltIn()) {
+            // No-converter build: native only. A shader the native translator cannot take is left alone here
+            // (the draw path reports it, [converter-use] refused, if the game ever uses it).
+            const int native = job.t->is_valid() ? 1 : TryNativeFirst(job.t);
+            ok = native > 0 || (native < 0 && job.t->is_valid());
+          } else {
+            ok = EnsureMetalTranslationReady(job.t);
+          }
+        } else if (ok) {
+          MTL::Library* library = nullptr;
+          MTL::Function* function = nullptr;
+          std::string entry;
+          ok = EnsureDxbcTranslationReady(job.t, "bank prep") &&
+               CompileNativeXlate(job.t, {}, &library, &function, &entry,
+                                  job.kind == JobKind::kPoints, /*point_coordinates=*/
+                                  (job.kind == JobKind::kPoints || job.kind == JobKind::kPointsMesh) && job.flag,
+                                  job.kind == JobKind::kRects, job.kind == JobKind::kPointsMesh,
+                                  job.kind == JobKind::kDomain && job.flag);
+          if (function) function->release();
+          if (library) library->release();
+        }
+        (ok ? bank_prep_ok_ : bank_prep_failed_).fetch_add(1, std::memory_order_relaxed);
+        pool->release();
+        bank_prep_pending_.fetch_sub(1, std::memory_order_acq_rel);
+      }
+    };
+    std::vector<std::thread> pool;
+    for (uint32_t i = 1; i < threads; ++i) pool.emplace_back(worker);
+    worker();
+    for (std::thread& t : pool) t.join();
+    bank_prep_ms_.store(uint64_t(startup::MsSince(t0)), std::memory_order_relaxed);
+    REXLOG_INFO("[bank-prep] {} translations ready, {} failed, {} left to the draw path (time budget {:.0f} s), in "
+                "{:.0f} ms ({} threads); native translate {} ms, MSL compile {} ms summed",
+                bank_prep_ok_.load(), bank_prep_failed_.load(), bank_prep_skipped_.load(), budget_s,
+                startup::MsSince(t0), threads,
+                native_xlate_translate_us_.load(std::memory_order_relaxed) / 1000,
+                native_xlate_compile_us_.load(std::memory_order_relaxed) / 1000);
+  });
+  return bank_prep_total_.load();
 }
 
 // ---------------------------------------------------------------------------
@@ -4318,6 +4584,24 @@ bool MetalPipelineCache::EnsureMetalTranslationReady(
     return true;
   }
   hitch::Scope hitch_scope(hitch::kXlate);
+  // [xlate-trace] one line per translation that took >= 10 ms (which shader, which modification, which thread),
+  // so first-play hitches can be attributed (docs/shader-precompile-20261015.md). FABLE2_XLATE_TRACE=0 off.
+  struct XlateTrace {
+    MetalShader::MetalTranslation* t;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~XlateTrace() {
+      static const bool on = [] {
+        const char* v = std::getenv("FABLE2_XLATE_TRACE");
+        return !(v && v[0] == '0');
+      }();
+      const double ms = startup::MsSince(start);
+      if (on && ms >= 10.0) {
+        REXLOG_INFO("[xlate-trace] {} {:016X}/{:X} {:.1f} ms{}",
+                    t->shader().type() == xenos::ShaderType::kVertex ? "VS" : "PS",
+                    t->shader().ucode_data_hash(), t->modification(), ms, t->is_valid() ? "" : " (failed)");
+      }
+    }
+  } xlate_trace{translation};
   converter_census::Scope census_scope(
       translation->shader().type() == xenos::ShaderType::kVertex
           ? converter_census::kGuestVS
@@ -4981,14 +5265,18 @@ std::string MetalPipelineCache::ShaderPrepCountsJson() {
       "\"pipeline_compile_ms\":{},\"archive_hits\":{},\"archive_misses\":{},"
       "\"ns_queued\":{},\"ns_ready\":{},\"ns_from_cache\":{},"
       "\"ns_fallbacks\":{},\"ns_optimize_ms\":{},\"native_xlate\":{},"
-      "\"native_xlate_fallbacks\":{},\"native_xlate_compile_failed\":{}",
+      "\"native_xlate_fallbacks\":{},\"native_xlate_compile_failed\":{},"
+      "\"bank\":{{\"shaders\":{},\"translations\":{},\"ready\":{},\"failed\":{},\"skipped\":{},"
+      "\"pending\":{},\"ms\":{}}}",
       stored, shader_cache_.size(), pipeline_compile_count_.load(),
       pipeline_compile_ms_total_.load(), archive_lookup_hits_.load(),
       archive_lookup_misses_.load(), native_shaders_queued_.load(),
       native_shaders_ready_.load(), native_shaders_cache_hits_.load(),
       native_shaders_fallbacks_.load(), native_shaders_opt_ms_total_.load(),
       native_xlate_ok_.load(), native_xlate_fallback_.load(),
-      native_xlate_compile_failed_.load());
+      native_xlate_compile_failed_.load(), bank_prep_shaders_.load(), bank_prep_total_.load(),
+      bank_prep_ok_.load(), bank_prep_failed_.load(), bank_prep_skipped_.load(), bank_prep_pending_.load(),
+      bank_prep_ms_.load());
 }
 
 readiness::Background MetalPipelineCache::ReadinessBackground() {
@@ -5008,6 +5296,8 @@ readiness::Background MetalPipelineCache::ReadinessBackground() {
   // background (FABLE2_NATIVE_FIRST).
   bg.pipelines_pending +=
       native_geom_prewarm_pending_.load(std::memory_order_acquire);
+  // [bank-prep] shader bank translations (headless prep only).
+  bg.ns_pending += bank_prep_pending_.load(std::memory_order_acquire);
   bg.warmup_pending = background_warmup_pending_;
   return bg;
 }

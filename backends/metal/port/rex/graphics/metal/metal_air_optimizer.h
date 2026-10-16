@@ -76,6 +76,12 @@ uint32_t NativeTessMode();
 // edges correctly, so no cracks (mode 1: the reference tessellator for
 // non-uniform patches). Needs FABLE2_NATIVE_TESS on.
 bool TerrainAdaptiveMode();
+// FABLE2_TERRAIN_LAYER_MATCH (default on, only with FABLE2_TERRAIN_ADAPTIVE=1;
+// docs/adaptive-terrain-flashes-20261014.md): the blended terrain layers take
+// the per-patch factors of the opaque terrain under them, and every terrain
+// pass takes the same tessellation path, so a layer never lands behind the
+// prepass depth (the white flashes). =0: layers at the uniform maximum.
+bool TerrainLayerMatchMode();
 // FABLE2_NATIVE_TESS_BLENDED (default on since 2026-10-14, =0 off): blended
 // tessellated draws (the continuous terrain layers) also take Metal's
 // tessellator in modes 1 and 3 when their factors qualify (uniform, exact in

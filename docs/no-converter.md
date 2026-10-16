@@ -25,7 +25,7 @@ benchmark kits ship the `FABLE2_NO_CONVERTER` build:
   own backend tree (`out/metal-build/backend-release`). The dev build (`out/build`, `out/metal-build/backend`) keeps the
   converter as a fallback while testing, and neither build reconfigures the other. The game executable
   (`out/build/mac-arm64-release`) does not depend on the converter and is shared.
-- `tools/fable2_portable.py build` and `tools/fable2_benchmark_kit.py build` (and the Dev Launcher's Export Portable
+- `tools/fable2_portable.py build` and `tools/fable2_benchmark_kit.py build` (and the launcher's Export Portable
   Build) run that build first (incremental; `make` decides what is stale; log `out/build-release/build.log`), then
   package it. `--no-rebuild` packages it as it is; `--with-converter` packages the dev build with both libraries, as
   before.
@@ -71,7 +71,7 @@ again when a PS swapped from the converter to native (A4A965 was built 4 times).
 
 ## What changed
 
-All behind switches, with Dev Launcher toggles ("Native shaders from the first frame (no converter)", "Native point
+All behind switches, with Launcher toggles ("Native shaders from the first frame (no converter)", "Native point
 sprites: memory-exporting shaders too").
 
 1. **`FABLE2_NATIVE_FIRST`** (`MetalPipelineCache::TryNativeFirst`, `MetalTranslation::InstallNativePrimary`).
@@ -199,11 +199,11 @@ input fine). Without a converter those native paths are the only shader paths.
   - Other values (`FABLE2_NATIVE_TESS=2/3`, `FABLE2_NATIVE_POINTS=1`) are native and still honoured.
   - `FABLE2_NOCONV_ALLOW_OFF=1` (diagnostic, no launcher toggle) honours the `=0`s anyway, to test refused draws.
   - Converter builds are unchanged.
-- **Player app and Dev Launcher** (`LaunchSettings.requiredWithoutConverter`, `SettingsModel.converterProbe`).
+- **Player app and Launcher** (`LaunchSettings.requiredWithoutConverter`, `SettingsModel.converterProbe`).
   - When the app they launch has no `libmetalirconverter.dylib` in `Contents/MacOS`, those toggles show on and
     disabled, with "Required in this build: it has no shader converter to fall back to."
   - Their `=0` is not passed. The stored choice is kept for converter builds.
-  - The player app checks its own bundle; the Dev Launcher checks the build it launches (playtest copy or latest).
+  - The player app checks its own bundle; the launcher checks the build it launches (playtest copy or latest).
 - **Why tessellation off blacked out the whole frame.** It was not EDRAM or resolve state.
   - A refused tessellation-emulation pipeline was not skipped as the geometry path's is. `DispatchDraw` then
     dereferenced the null `TessellationPipelineState`.
@@ -225,8 +225,8 @@ input fine). Without a converter those native paths are the only shader paths.
 
 ## Switches and tools
 
-- `FABLE2_NATIVE_FIRST` (default 1), `FABLE2_NATIVE_POINTS_MEMEXPORT` (default 1): Dev Launcher toggles.
-- `FABLE2_NATIVE_GEOM_PERSIST` (default 1, Dev Launcher toggle): native point/rectangle/tessellation pipelines are recorded for the next launch's prewarm and archived; without it they were rebuilt on the draw path every launch (`docs/prologue-stutter-20261014.md`).
+- `FABLE2_NATIVE_FIRST` (default 1), `FABLE2_NATIVE_POINTS_MEMEXPORT` (default 1): Launcher toggles.
+- `FABLE2_NATIVE_GEOM_PERSIST` (default 1, Launcher toggle): native point/rectangle/tessellation pipelines are recorded for the next launch's prewarm and archived; without it they were rebuilt on the draw path every launch (`docs/prologue-stutter-20261014.md`).
 - `python3 tools/build_macos_metal.py --release`: the no-converter release build in `out/build-release` (what the
   packagers ship). `FABLE2_NO_CONVERTER=1 python3 tools/build_macos_metal.py` still turns the dev build in `out/build`
   into a no-converter build; building it again without the variable restores both dylibs.

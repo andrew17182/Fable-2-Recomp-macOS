@@ -36,6 +36,11 @@ local F6_MENU_ITEMS = {
   { name = "Modify Money", path = "scripts/recomp/modifyMoney.lua" },
   { name = "Morality / Purity", path = "scripts/recomp/modifyMoralityPurity.lua" },
 }
+-- Character Editor mod (opt-in): listed only when the host ran F6_character_editor.lua, i.e. with
+-- FABLE2_CHARACTER_EDITOR=1 (docs/character-editor.md). The page has room for 4 entries.
+if rawget(_G, "__recomp_character_editor") then
+  F6_MENU_ITEMS[#F6_MENU_ITEMS + 1] = { name = "Character Editor", path = "scripts/recomp/character_editor.lua" }
+end
 
 -- Run a script from the game VFS. The game's custom loadfile resolves paths
 -- relative to the data/ root (io is disabled), so there is no "data/" prefix.
