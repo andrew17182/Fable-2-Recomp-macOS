@@ -8,6 +8,8 @@ save start to the first frame of the new area). That profile proposed fixes A–
 - **D**: shorter render-object fades, as an opt-in setting.
 - **E** is dropped: the loading-frames hold is a readiness wait.
 - **F**: one opt-in "Skip cosmetic waits" setting (`FABLE2_FAST_PACING`) for every proven pure-pacing wait.
+- **G**: what the loading-frames CPU is (the game's own zlib inflate; the entities wait is frame-paced streaming), a
+  native inflate_fast (exact, default on, about 0.1 s per area change), the cold-I/O cost and the remaining candidates.
 
 All runs: agent slot build of `perf-staging` 20637bc plus this branch, M5 Max, at the launcher defaults of a new
 install (`out/validation/area-load-20261015/env-defaults.txt`), with no other game running.
@@ -283,3 +285,137 @@ no contention (`perf_comparable: true`). Evidence: `out/validation/fast-pacing-2
 - Both arms reach the same arrival: the Bower Lake beetle fight with HUD, hero and dog (`fp-off-b-last.png`,
   `fp-on-b-last.png`). 0 AVs, verdict ok and `pgrep -x fable_2` = 1 after every run.
 
+
+## G. Where the loading-frames CPU goes, and native decompression (`FABLE2_NATIVE_INFLATE`, default on)
+
+Question: in the 1.6–1.7 s loading-frames hold (section C), state 7 of `sub_8245D088` waits for one world-entry object
+(vtable 820F5F04): first an async request (~0.45 s), then until every entity of its set is ready (~0.7 s). What is the
+CPU work, and can it be made faster without changing the game's behaviour? Runs: `f2diag run area` at the new-install
+launcher defaults (`out/validation/load-cpu-20261016/go.sh`), M5 Max, no other game, traced
+(`FABLE2_LOADING_TRACE=1 FABLE2_LOAD_HOLD_TRACE=1`). Windows on the flight recorder's 1 kHz sampler stream with
+`winprof.py` (per thread WORK/SPIN/WAIT per time window). Evidence: `out/validation/load-cpu-20261016/` (KEEP: logs,
+sampler streams, test logs).
+
+### What the work is
+
+The loader's data is **zlib-compressed and inflated by the game's own zlib 1.2.3**:
+
+| Guest function | zlib 1.2.3 | How it was identified |
+|---|---|---|
+| `ProcessStructFields_82B59D28` | `inflate_fast` | `state` fields at +40..+88 (wsize, whave, write, window, hold, bits, lencode, distcode, lenbits, distbits), `in = next_in - 1` / `out = next_out - 1` (PPC pre-increment build), mode 11 (TYPE) on end of block and 27 (BAD) with three message pointers |
+| `ProcessStructureValidation_82B53A40` | `inflate` | 29-state jump table, gzip magic 0x8B1F, calls the three below |
+| `ProcessHistogram_82B597E8` | `inflate_table` | per-length counts (`count[len]++`), MAXBITS 15, LENS/DISTS/CODES with lbase/lext/dbase/dext at 820F9FE0..820FA0A0 |
+| `ComputeHash2_82B57438`, `sub_82B57748`/`sub_82B57760`, `ComputeAndCacheFlag_82B538F0` | adler32, crc32, updatewindow | callees of inflate |
+
+Static tables in the image: lenfix 820F92F8, distfix 820F9AF8, order 820F9B78.
+
+Per phase (run `lc-trace1`, sampler ms; ± a few samples):
+
+| Phase | Thread doing the work | What |
+|---|---|---|
+| Level-load call (656 ms) | VFS Request Finalizer, ~285 ms busy | ~265 ms `inflate_fast` (+14 ms `inflate_table`). The GameThread waits for these reads (~170 ms guest waits at `82A39260`); its own ~420 ms of CPU is spread over the level setup with no single hot leaf |
+| Async request, state 3 (~0.2 s) | 3D Engine, called synchronously from `sub_82AAA818` state 3 → `sub_82A50EF0` → … → `82A1D440` → inflate | ~140 of 200 ms `inflate_fast` (~44 MB out). States 4–6 (~0.2 s) wait for the request's reads; the finaliser inflates again there (~35 ms) |
+| Entities ready (~0.7 s) | 3D Engine world update `82181270 → sub_82A56428 → sub_82A69728 → sub_83008E98 / sub_82D0F8A8` | **Not CPU-bound**: the 3D Engine is ~40% WORK, ~60% SPIN (its frame wait); VFS idle; only ~40 reads. No inflate |
+| Texture Streamer (level-load) | `82B8D010`/`82B8C1C8` under `82B67950` | ~370–570 ms of streaming bookkeeping (bit arrays, per-mip lists; no decompression). Not on the hold's critical path |
+
+**The entity check.** `sub_82A4F520` marks the entry finished when, for every entity of its set (+3412) with
++72 set, a walk of a 4-way world-region tree (`sub_82A4F7D0`, children at +84, flags at +72, bounds test
+`sub_82A4F8C8`, 16 layers 448 bytes apart) finds the regions around the entity loaded. So it waits for the world
+streaming around the arrival's entities. That streaming advances with the 3D Engine's frames: at 30 FPS (`lc-fps30`)
+the entities finish 1.68 s after the entry's start, against 1.11–1.15 s at 60 FPS, while the async request takes about
+the same time. The phase is paced by frames, not by CPU. Speeding it up would mean more streaming steps per frame
+(a pacing change), not faster code.
+
+### Native inflate_fast (`src/core/hotfunc/load/`)
+
+- `native_inflate_fast.h` is a transcription of the **recompiled guest code**, not of the zlib source:
+  - registers are 64-bit values with the recompiler's operations (slw/srw with the 0x20 rule, 64-bit add/subf,
+    32-bit compares);
+  - every guest load and store is at the same address, in the same order, with the same value;
+  - on return r4–r11, r12, lr and r16–r31 hold what the original leaves (r16–r31 reloaded from the save area as
+    `__restgprlr_16` does).
+- What changes is only how memory is reached:
+  - the input bytes and literal stores use one host pointer per region (checked once at entry: no wrap, one side of the
+    0xE0000000 physical step), instead of a volatile access with a per-byte offset select;
+  - each match copy is one `CopyForward`. It gives the result of the guest's forward byte loop for any overlap: memcpy
+    when disjoint, 8-byte chunks when the source is ahead or at least 8 behind, memset for distance 1, otherwise the
+    byte loop. Ranges that wrap or straddle 0xE0000000 use the byte loop with per-byte mapping.
+- `Eligible()` covers what zlib's `inflate()` guarantees before it calls `inflate_fast`: avail_in ≥ 6, avail_out ≥ 258,
+  start ≥ avail_out, plus the region checks. Any other state runs the recompiled function.
+- `InflateFast_82B59D28.cpp` overrides `ProcessStructFields_82B59D28`:
+  - `FABLE2_NATIVE_INFLATE` unset / 1: native (default);
+  - `=0`: the recompiled function;
+  - `=verify`: every eligible call runs the native code, records what it wrote and its registers, puts memory back,
+    runs the recompiled code for the game and compares the save area, `z_stream`, state header, the whole output buffer
+    and all registers. Logs `[inflate] verify totals`.
+  - `FABLE2_INFLATE_STATS=1`: per thread, an `[inflate]` line every 0.25 s while it inflates (calls, bytes out, ms).
+  - Launcher: Performance → Startup and CPU → **"Native decompression"** (default on).
+
+### Identical output: evidence
+
+1. **Build-time test** (`tests/inflate_fast_tests.cpp`, target `fable_2_inflate_fast_tests`, ~1 s per build).
+   - The game's own recompiled `inflate` and its callees are copied out of `generated/default` at build time by
+     `tools/extract_guest_funcs.py` into the build folder (game-derived, never committed). The image's zlib tables
+     are seeded at their guest addresses; valid streams must decompress to the original data, which checks the
+     driver.
+   - The guest `inflate` runs in lockstep on two fake 4 GB guest memories: one with the recompiled `inflate_fast`, one
+     with the override's native path.
+   - After every `inflate()` call it compares the return value, every register after every `inflate_fast` call, the
+     `z_stream`, the whole 9520-byte state (with tables), the window, output, input and 8 KB of stack.
+   - Streams: host zlib at levels 0–9, five strategies, window bits 9–15, raw / zlib / gzip, random flushes, random
+     chunk sizes; random, text, run, short-period (distance 1–9 overlaps), zero, far-copy and mixed data; plus
+     bit-flipped copies for the error paths.
+   - Layouts: normal heap, physical (≥ 0xE0000000), and input / output / window straddling 0xE0000000.
+   - Results:
+     - default run: 239 streams, 22,676 calls, **0 mismatches**;
+     - `--full`: 5,982 streams, 517,807 `inflate_fast` calls (507,041 native, 10,766 recompiled fallbacks),
+       824 MB out, **0 mismatches**.
+2. **In-game verify** (`lc-verify1`: boot + Cullis Gate transition, real data): ≥ 8,192 calls and ~170 MB compared,
+   **0 mismatches**, 0 ineligible calls.
+
+Matching every call's writes and registers means the decompressed data, and everything the game does with it, is
+identical.
+
+### Measured
+
+Offline (`--bench`, same streams through the guest inflate): `inflate_fast` 1.39 → 0.76 ns/byte (1.8×). On game data
+the gain is smaller (literal-heavy streams; decode, not copies, dominates):
+
+| Run | Inflate ms in the transition (3D Engine / VFS finaliser) | Boot inflate | Level-load | Loading frames | Entry finished after | t0 → arrival |
+|---|---|---|---|---|---|---|
+| native `lc-nat1` | 247 (134 / 99), 2.9 ns/B | 178 ms | 617 ms | 1549 ms | 1.113 s | 3.852 s |
+| native `lc-nat2` | 233 (128 / 92), 2.8 ns/B | 171 ms | 611 ms | 1549 ms | n/a | 3.834 s |
+| recompiled `lc-orig1` | 327 (190 / 135), 4.3 ns/B | 255 ms | 649 ms | 1615 ms | 1.149 s | 3.975 s |
+| recompiled `lc-orig2` | 338 (188 / 131), 4.0 ns/B | 248 ms | 648 ms | 1615 ms | n/a | 3.915 s |
+
+- Inflate CPU drops ~30% (≈ 90 ms per area change, ≈ 75 ms at boot).
+- **Level-load call −35 ms**. Loading frames −66 ms: the entry finishes ~35 ms sooner, and the state machine (checked
+  every second 30 Hz tick) then moves one 67 ms step earlier. Together level-load + loading frames
+  2.26 → 2.16 s (**about 0.1 s per area change**).
+- The async request ends at 0.28 s instead of 0.45 s after the entry starts, but the entity check (frame-paced, above)
+  now ends the wait. It finishes 1.11 vs 1.15 s after the start.
+- 0 AVs and verdict ok in every run.
+
+### Cold page cache (I/O)
+
+- The transition reads 1,366 times, 106 MB: 69 MB from `levels.bnk` (474 reads) and 25 MB from `streaming.bnk` (685
+  reads, mostly 2 KB); the rest from `Globals/*.bnk` and audio banks. Warm, `NtReadFile` time is about 10 ms in total.
+- `cold_io.py` replays the same read sizes serially (as the VFS request manager does) with `F_NOCACHE` (no unified
+  buffer cache) at offsets the game had not just read:
+  - random offsets: **120 ms** (≈ 880 MB/s);
+  - sequential runs: **64 ms** (≈ 1.65 GB/s).
+- So a cold transition costs about **+50–110 ms** of I/O, spread over pre-load, level-load (~51 MB) and the request's
+  states 4–6 (~25 MB). Boot reads ~150 MB: about +90–170 ms cold.
+- No sudo was used, so the first load after a reboot was not measured. The estimate is SSD-bound; the reads are serial,
+  so a slower SSD scales it directly.
+
+### Ranked remaining candidates
+
+| # | Candidate | Estimated saving (M5) | Faithful? | Risk |
+|---|---|---|---|---|
+| 1 | **Native inflate_fast** (done, default on) | about 0.1 s per area change, ≈ 75 ms CPU at boot; more on slower Macs (scales with CPU) | Exact (see the evidence above) | Low; `=0` and verify mode |
+| 2 | Native deflate for the save, the rest of `sub_82B51900` (deflate_slow, fill_window, hashing, `_tr_*` Huffman coding) | ≈ 80–100 ms per save. After section A the save is 427 ms with ~325 ms of compress calls; ~200 ms of that is the (native) search, ~120 ms the rest of deflate | Exact if transcribed like A (several functions, state across calls: sync-flushed streams) | Moderate: about 10× the code of A; test pattern from A plus this part's lockstep driver |
+| 3 | Entities-ready phase (~0.7–0.8 s) | up to ~0.6 s | **Pacing change**: the world streaming advances per 3D Engine frame. More steps per frame changes the game's streaming cadence | Moderate; needs the per-frame streaming budget located first (`sub_82A69728` subtree) |
+| 4 | Rest of the level-load call (GameThread ~420 ms CPU, no single hot leaf) | ≤ 0.1 s, per function | Faithful per override | High effort per ms |
+| 5 | Cold I/O: read-ahead of the next level's ranges | ≤ 0.1 s, cold only | Faithful (I/O only) | Low value on SSDs |
+| — | `inflate` / `inflate_table` slow paths | < 20 ms | — | Not worth it |

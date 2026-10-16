@@ -509,6 +509,7 @@ struct LaunchSettings: Equatable {
   var drawPrepLite2 = true
   var loadCheckExact = true
   var nativeSaveCompress = true  // docs/load-fixes-20261016.md
+  var nativeInflate = true  // docs/load-fixes-20261016.md part G
   // Fixes
   var furFix = true
   var memexportReadback = true
@@ -663,6 +664,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "nativeSaveCompress", path: \.nativeSaveCompress, cli: "native-save-compress", tab: .performance,
          section: "Startup and CPU", title: "Native save compressor",
          detail: "Saves (autosaves at area changes, quick saves) compress with a native version of the game's own search: the same bytes, written sooner. Off: the recompiled search."),
+    Flag(key: "nativeInflate", path: \.nativeInflate, cli: "native-inflate", tab: .performance,
+         section: "Startup and CPU", title: "Native decompression",
+         detail: "Loads decompress the game's data with a native version of its own zlib inflate loop: the same bytes, sooner (about 0.1 s per area change). Off: the recompiled loop."),
     Flag(key: "furFix", path: \.furFix, cli: "fur-fix", tab: .fixes, section: "Dog",
          title: "Dog-fur flash fix",
          detail: "Keeps GPU-written vertex data when a page is re-uploaded (memexport preserve)."),
@@ -996,6 +1000,8 @@ extension LaunchSettings {
     env.append("FABLE2_LOAD_CHECK_EXACT=\(loadCheckExact ? 1 : 0)")
     // Native longest-match search of the game's save compressor: byte-identical saves, less save time (docs/load-fixes-20261016.md).
     env.append("FABLE2_NATIVE_SAVE_COMPRESS=\(nativeSaveCompress ? 1 : 0)")
+    // Native zlib inflate_fast for the game's loader: byte-identical output, less load CPU (docs/load-fixes-20261016.md).
+    env.append("FABLE2_NATIVE_INFLATE=\(nativeInflate ? 1 : 0)")
     // Character texture-space passes (dog lighting, morph) at 1x when scaled: no seam down the dog's
     // chest at 2x/3x (docs/resolution-scale.md section 23).
     env.append("FABLE2_TEXSPACE_NATIVE=\(texspaceNative ? 1 : 0)")

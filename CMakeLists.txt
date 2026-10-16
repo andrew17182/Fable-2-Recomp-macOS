@@ -244,6 +244,32 @@ if(APPLE)
         COMMAND fable_2_save_compress_tests
         COMMENT "Checking the native save-compressor search (tests/save_compress_tests.cpp)")
     add_dependencies(fable_2 fable_2_save_compress_tests)
+
+    # Native zlib inflate_fast of the loader (src/core/hotfunc/load/, FABLE2_NATIVE_INFLATE): the game's own
+    # recompiled zlib 1.2.3 inflate runs in lockstep with the recompiled and with the native inflate_fast
+    # (docs/load-fixes-20261016.md part G). The guest functions are copied out of generated/default into the build
+    # folder at build time (game-derived, never committed). `--full` and `--bench` by hand.
+    find_package(ZLIB REQUIRED)
+    set(FABLE2_INFLATE_GUEST_INC "${CMAKE_CURRENT_BINARY_DIR}/guest-test-funcs/inflate_guest_funcs.inc")
+    add_custom_command(OUTPUT "${FABLE2_INFLATE_GUEST_INC}"
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_guest_funcs.py
+            --gen "${CMAKE_CURRENT_SOURCE_DIR}/generated/default" --out "${FABLE2_INFLATE_GUEST_INC}"
+            --rename ProcessStructFields_82B59D28=Original_82B59D28
+            ProcessStructureValidation_82B53A40 ProcessHistogram_82B597E8 ProcessStructFields_82B59D28
+            ComputeHash2_82B57438 sub_82B57748 sub_82B57760 ComputeAndCacheFlag_82B538F0 MemCpy_SdkRuntime_82CA2C60
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_guest_funcs.py
+            "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/fable_2_funcs.h"
+        COMMENT "Extracting the guest zlib inflate for tests/inflate_fast_tests.cpp")
+    add_executable(fable_2_inflate_fast_tests tests/inflate_fast_tests.cpp "${FABLE2_INFLATE_GUEST_INC}")
+    target_compile_options(fable_2_inflate_fast_tests PRIVATE -UNDEBUG)
+    target_include_directories(fable_2_inflate_fast_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/default" src/core/hotfunc/load
+        "${CMAKE_CURRENT_BINARY_DIR}/guest-test-funcs")
+    target_link_libraries(fable_2_inflate_fast_tests PRIVATE rex::runtime ZLIB::ZLIB)
+    add_custom_command(TARGET fable_2_inflate_fast_tests POST_BUILD
+        COMMAND fable_2_inflate_fast_tests
+        COMMENT "Checking the native zlib inflate_fast (tests/inflate_fast_tests.cpp)")
+    add_dependencies(fable_2 fable_2_inflate_fast_tests)
 endif()
 
 # Build id for the flight recorder's trace/session.json.
