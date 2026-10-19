@@ -35,6 +35,11 @@ class SettingsModel: ObservableObject {
   @Published var showUpdatePlaytest: Bool {
     didSet { if persist { store.set(showUpdatePlaytest, forKey: "showUpdatePlaytest") } }
   }
+  /// The save menu also lists starred library saves and the newest library save (Dev Options > Diagnostics >
+  /// Developer, 2026-10-19). Off by default: the menu shows the live slots only.
+  @Published var showStarredSaves: Bool {
+    didSet { if persist { store.set(showStarredSaves, forKey: "showStarredSaves") } }
+  }
   /// Set by the player role (opens the Dev Launcher model when Dev Options turns on).
   var onDeveloperModeChange: ((Bool) -> Void)?
   /// False during a --snapshot: page, tab and Dev Options set for the picture are not stored.
@@ -75,6 +80,7 @@ class SettingsModel: ObservableObject {
     let developer = Self.snapshotDeveloper ?? (store.object(forKey: "developerMode") as? Bool ?? false)
     developerMode = developer
     showUpdatePlaytest = store.object(forKey: "showUpdatePlaytest") as? Bool ?? false
+    showStarredSaves = store.object(forKey: "showStarredSaves") as? Bool ?? false
     let tab = SettingsTab(rawValue: store.string(forKey: "settingsTab") ?? "") ?? .general
     settingsTab = !developer && tab.devOnly ? .general : tab
   }
@@ -159,11 +165,6 @@ struct FlagSection: View {
   }
 }
 
-private struct SettingsContentHeight: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
-}
-
 struct SettingsTabView: View {
   @ObservedObject var model: SettingsModel
   let tab: SettingsTab
@@ -171,11 +172,7 @@ struct SettingsTabView: View {
   /// App-specific sections appended to a tab (player app: launcher options, logs, reset).
   var extra: (SettingsTab) -> AnyView = { _ in AnyView(EmptyView()) }
 
-  /// Tallest a tab may make the Settings window; taller tabs (Fixes, ~765 pt) scroll so they fit a 900-pt
-  /// laptop screen.
-  static let maxHeight: CGFloat = 600
-  @State private var contentHeight: CGFloat = 0
-
+  /// Fills the page between the tab bar and the page bar (fixed window size, LauncherLayout); a taller tab scrolls.
   var body: some View {
     ScrollView {
       Form {
@@ -184,14 +181,13 @@ struct SettingsTabView: View {
       }
         .formStyle(.grouped)
         .scrollDisabled(true)
-        .fixedSize(horizontal: false, vertical: true)  // each tab sizes the window to its content
-        .background(GeometryReader { proxy in
-          Color.clear.preference(key: SettingsContentHeight.self, value: proxy.size.height)
-        })
+        .fixedSize(horizontal: false, vertical: true)
     }
+    // No scroll bar: a legacy one appeared only on taller tabs and narrowed their rows, shifting every switch
+    // sideways between tabs. Taller tabs still scroll (wheel, trackpad).
+    .scrollIndicators(.never)
     .scrollBounceBehavior(.basedOnSize)
-    .frame(height: contentHeight > 0 ? min(contentHeight, Self.maxHeight) : nil)
-    .onPreferenceChange(SettingsContentHeight.self) { contentHeight = $0 }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
 
   private func row(_ flag: Flag) -> FlagRow { FlagRow(model: model, flag: flag, variant: variant) }
@@ -205,56 +201,39 @@ struct SettingsTabView: View {
       section(.general, "Startup")
       Section("Game") {
         ForEach(LaunchSettings.flags(in: .general).filter { $0.section == "Game" }) { row($0) }
-        Picker("Turbo notice", selection: $model.settings.turboNotice) {
+        FixedPicker("Turbo notice", selection: $model.settings.turboNotice) {
           ForEach(TurboNotice.allCases) { style in Text(style.title).tag(style) }
         }
         .help("How the turbo (F7) notice is shown.")
-        LabeledContent("Turbo speed") {
-          HStack {
-            Slider(value: Binding(get: { model.settings.turboSpeed },
-                                  set: { model.settings.turboSpeed = TurboSpeed.clean($0) }),
-                   in: TurboSpeed.range, step: 0.1)
-            Stepper(TurboSpeed.label(model.settings.turboSpeed),
-                    value: Binding(get: { model.settings.turboSpeed },
-                                   set: { model.settings.turboSpeed = TurboSpeed.clean($0) }),
-                    in: TurboSpeed.range, step: 0.1)
-              .monospacedDigit()
-          }
-        }
-        .help("Game speed while turbo is on. F7 or 7 toggles turbo in game.")
-        Picker("Turbo audio", selection: $model.settings.turboAudio) {
-          ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
-        }
-        .help("Sound while turbo is on.")
       }
     case .mods:
       section(.mods, "Mods")
     case .display:
       Section("Resolution") {
-        Picker("Internal resolution", selection: $model.settings.resolution) {
+        FixedPicker("Internal resolution", selection: $model.settings.resolution) {
           ForEach(InternalResolution.allCases) { scale in
             Text(scale.title(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x)).tag(scale)
           }
         }
         .help(ResolutionHelp.resolution)
-        Picker("Upscaling (window scaling)", selection: $model.settings.upscaling) {
+        FixedPicker("Upscaling (window scaling)", selection: $model.settings.upscaling) {
           ForEach(Upscaling.allCases) { mode in Text(mode.title).tag(mode) }
         }
         .help("How the image is scaled to the window. Does not change the render resolution or its cost.")
-        Picker("Bloom and effects", selection: $model.settings.effects) {
+        FixedPicker("Bloom and effects", selection: $model.settings.effects) {
           ForEach(EffectsSize.allCases) { mode in Text(mode.title).tag(mode) }
         }
         .disabled(model.settings.resolution.effectiveScale(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x) == 1)
         .help("Bloom, blur and glow size at 2× and 3×.")
       }
       Section("Window") {
-        Picker("Display", selection: $model.settings.display) {
+        FixedPicker("Display", selection: $model.settings.display) {
           ForEach(DisplayMode.allCases) { mode in Text(mode.title).tag(mode) }
         }
         .help("Fullscreen is a macOS full-screen Space.")
       }
       Section("Frame rate") {
-        Picker("Frame rate", selection: $model.settings.frameRate) {
+        FixedPicker("Frame rate", selection: $model.settings.frameRate) {
           ForEach(FrameRate.allCases) { fps in Text(fps.title(resolution: model.settings.resolution, rule2x: model.settings.auto2x)).tag(fps) }
         }
         .help(ResolutionHelp.frameRate)
@@ -295,7 +274,7 @@ struct SettingsTabView: View {
       }
     case .diagnostics:
       Section("Tracing") {
-        Picker("Trace preset", selection: $model.settings.tracePreset) {
+        FixedPicker("Trace preset", selection: $model.settings.tracePreset) {
           ForEach(TracePreset.allCases) { preset in Text(preset.title).tag(preset) }
         }
         .help("Flight-recorder preset (docs/telemetry-design-20261008.md).")

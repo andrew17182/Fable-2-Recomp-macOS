@@ -211,6 +211,57 @@ func cliPickerRows(_ argv: [String]) -> Int32 {
   return 0
 }
 
+/// The front page's save menu entries (saves only). Pure, for --save-menu (tests).
+enum SaveMenuItems {
+  /// The newest save by save time among the live slots and the library's play saves (agent test saves skipped);
+  /// a tie goes to the live slot, the playthrough itself.
+  static func newest(live: [SaveItem], library: [SaveItem]) -> SaveItem? {
+    let candidates = live.filter { !$0.savedAt.isEmpty } + library.filter { !$0.test && !$0.savedAt.isEmpty }
+    return candidates.max { a, b in
+      a.savedAt != b.savedAt ? a.savedAt < b.savedAt : (a.id.hasPrefix("library:") && b.id.hasPrefix("live:"))
+    }
+  }
+
+  /// Live slots; with `starred` (Dev Options > "Show starred saves in save menu") also the starred library saves
+  /// and the newest save. `pick`: a library save chosen in the Save Library window, shown while it is the pick.
+  static func items(live: [SaveItem], library: [SaveItem], meta: PickerMeta, starred: Bool,
+                    continueItem: SaveItem?, pick: SaveItem?) -> [SaveItem] {
+    var items = live
+    var extras = [pick]
+    if starred {
+      items += library.filter { meta.starred.contains($0.name) }
+      extras.insert(continueItem, at: 0)
+    }
+    for extra in extras.compactMap({ $0 }) where !items.contains(where: { $0.id == extra.id }) {
+      items.append(extra)
+    }
+    return items.sorted { a, b in
+      a.savedAt != b.savedAt ? a.savedAt > b.savedAt : (a.id.hasPrefix("live:") && !b.id.hasPrefix("live:"))
+    }
+  }
+
+  /// --save-menu LIST.json [--meta PICKER.json] [--show-starred] [--pick ID]
+  static func cli(_ argv: [String]) -> Int32 {
+    func value(_ name: String) -> String? {
+      argv.firstIndex(of: name).flatMap { $0 + 1 < argv.count ? argv[$0 + 1] : nil }
+    }
+    guard let path = value("--save-menu"), let data = FileManager.default.contents(atPath: path),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      print("{\"ok\": false, \"error\": \"--save-menu expects a list JSON file\"}"); return 2
+    }
+    let result = root["result"] as? [String: Any] ?? root
+    let live = (result["live"] as? [[String: Any]] ?? []).map(SaveItem.live)
+    let library = (result["library"] as? [[String: Any]] ?? []).map(SaveItem.library)
+    let meta = PickerMeta.load(value("--meta") ?? (result["picker_meta"] as? String ?? ""))
+    let pick = value("--pick").flatMap { id in (live + library).first { $0.id == id } }
+    let ids = items(live: live, library: library, meta: meta, starred: argv.contains("--show-starred"),
+                    continueItem: newest(live: live, library: library), pick: pick).map(\.id)
+    let out = (try? JSONSerialization.data(withJSONObject: ids, options: [.prettyPrinted]))
+    print(String(decoding: out ?? Data(), as: UTF8.self))
+    return 0
+  }
+}
+
 // MARK: - Sheet
 
 struct SavePickerView: View {
@@ -272,7 +323,8 @@ struct SavePickerView: View {
       }
       Divider()
       HStack {
-        Text("Starred saves show in the launcher's save menu.")
+        Text(model.showsLibrarySaves ? "Starred saves show in the save menu."
+             : "Starred saves are hidden from the save menu (Diagnostics).")
           .font(.caption).foregroundStyle(.secondary)
           .help("Double-click to choose. Right-click to star or rename. Stars and titles: \(metaFileName)")
         Spacer()

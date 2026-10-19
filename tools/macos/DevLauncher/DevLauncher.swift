@@ -5,8 +5,8 @@
 // tools); this app is a small SwiftUI front end for it. Build/install with
 // tools/macos/build_dev_launcher.sh.
 //
-// Layout (2026-10-19): one window with two pages. The front page: save menu (newest first, then Title Screen) with
-// Load Save, Resolution and Frame rate, Skip intro movies, then the rest (build choice with Dev Options, status).
+// Layout (2026-10-19): one window with two pages. The front page: Start at Title Screen and Load Saved Game, the save
+// menu (newest first), Resolution and Frame rate, Skip intro movies, then the rest (build choice with Dev Options, status).
 // Settings is the second page of the same window (the Settings / Launcher button, ⌘,; LauncherPages.swift). Dev
 // Options (off by default, remembered) shows the Performance, Fixes and Diagnostics tabs, the build choice, the
 // Tools menu's dev tools (Save Library…, benchmark, kits, exports) and the option for Update Playtest Build.
@@ -26,13 +26,15 @@
 //       [--print-args]   print the fable2_dev_session.py arguments as JSON instead of launching
 // With no --pick it uses the choices last made in the window.
 //   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics]
-//       [--pick ...] [--dev-options on|off]
+//       [--pick ...] [--dev-options on|off] [--dev-options-sequence on,off]
 //       shows the front page, the save library sheet (picker) or a Settings tab (without taking focus), saves the
 //       window to a PNG, quits. Nothing is stored (--dev-options applies to that picture only).
-//   --press-load / --press-continue (testing): select the newest save and press Load Save once the list is in;
-//   --press-launch: press Load Save with the remembered pick. FABLE2_LAUNCHER_TEST_CONTROL=1 makes the button launch
+//   --press-load / --press-continue (testing): select the newest save and press Load Saved Game once the list is in
+//   (the title screen without saves); --press-launch: Load Saved Game with the remembered pick; --press-title: Start
+//   at Title Screen. FABLE2_LAUNCHER_TEST_CONTROL=1 makes the button launch
 //   a test session (--test-control: input-isolated, no write-back), so agents can drive the button path.
 //   --picker-rows LIST.json [--query TEXT] [--show-tests] [--meta PICKER.json]: the picker's rows as JSON.
+//   --save-menu LIST.json [--meta PICKER.json] [--show-starred] [--pick ID]: the save menu's ids as JSON.
 import AppKit
 import Foundation
 import IOKit
@@ -231,41 +233,36 @@ final class LauncherModel: SettingsModel {
   var selected: SaveItem? { (live + library).first { $0.id == pick } }
   var isLive: Bool { pick.hasPrefix("live:") }
 
-  /// The save menu (2026-10-19): live slots and starred library saves, plus the newest library play save when it is
-  /// newer than every live slot (Continue's pick) and the current pick (e.g. from the save library), newest first.
+  /// The save menu (2026-10-19): the live slots, newest first. With Dev Options and "Show starred saves in save
+  /// menu" also the starred library saves and the newest library play save (Continue's pick). A library save chosen
+  /// in the Save Library window is shown while it is the pick.
+  var showsLibrarySaves: Bool { developerMode && showStarredSaves }
   var saveItems: [SaveItem] {
-    var items = live + library.filter { meta.starred.contains($0.name) }
-    for extra in [continueItem, selected].compactMap({ $0 }) where !items.contains(where: { $0.id == extra.id }) {
-      items.append(extra)
-    }
-    return items.sorted { a, b in
-      a.savedAt != b.savedAt ? a.savedAt > b.savedAt : (a.id.hasPrefix("live:") && !b.id.hasPrefix("live:"))
-    }
+    SaveMenuItems.items(live: live, library: library, meta: meta, starred: showsLibrarySaves,
+                        continueItem: continueItem, pick: selected)
   }
   var saveChoices: [SaveChoice] {
     saveItems.map { item in
       let custom = meta.titles[item.name]
       let label = custom ?? item.label
       return SaveChoice(id: item.id, label: (meta.starred.contains(item.name) ? "★ " : "") + label)
-    } + [SaveChoice.title]
+    }
   }
 
   /// Continue from last save (2026-10-15): the newest save by save time among the live slots and the library's
   /// play saves (agent test saves skipped); a tie goes to the live slot, the playthrough itself.
-  var continueItem: SaveItem? {
-    let candidates = live.filter { !$0.savedAt.isEmpty } + library.filter { !$0.test && !$0.savedAt.isEmpty }
-    return candidates.max { a, b in
-      a.savedAt != b.savedAt ? a.savedAt < b.savedAt : (a.id.hasPrefix("library:") && b.id.hasPrefix("live:"))
-    }
-  }
+  var continueItem: SaveItem? { SaveMenuItems.newest(live: live, library: library) }
 
-  /// --press-continue / --press-load: the newest save in the menu, then Load Save.
+  /// --press-continue / --press-load: the newest save in the menu, then Load Saved Game (title screen without saves).
   func continueLatest() {
     pick = saveItems.first?.id ?? "title"
     loadSave()
   }
 
-  /// Load Save (the front page's default button): boots straight into the pick through the save-pick path (a
+  /// Start at Title Screen: the title (intro movies first unless Skip intro movies is on), no save.
+  func startTitle() { launch(pick: "title", target: nil, boot: nil) }
+
+  /// Load Saved Game (the front page's default button): boots straight into the pick through the save-pick path (a
   /// session copy, FABLE2_BOOT_SAVE), or starts at the title screen. A live slot writes back to itself; a library save
   /// to the slot it was written back to, else library only (with Dev Options: the "Write saves back to" choice).
   func loadSave() {
@@ -583,7 +580,8 @@ final class LauncherModel: SettingsModel {
 
 // MARK: - Main window
 
-/// The front page (2026-10-19): save menu + Load Save, Resolution and Frame rate, Skip intro, then the rest.
+/// The front page (2026-10-19): Start at Title Screen + Load Saved Game, the save menu, Resolution and Frame rate, Skip intro, turbo, then the rest;
+/// the status lines, then the page bar (Settings bottom-left, as on the Settings page).
 struct LauncherView: View {
   @ObservedObject var model: LauncherModel
 
@@ -592,19 +590,13 @@ struct LauncherView: View {
       Form {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.pick, busy: model.busy, disabled: !model.canLaunch,
-                   load: { model.loadSave() })
-          if model.developerMode && model.pick.hasPrefix("library:") {
-            Picker("Write saves back to", selection: $model.targetSlot) {
-              Text("Library only").tag("none")
-              ForEach(LauncherModel.slots, id: \.self) { Text("Live slot \($0)").tag($0) }
-            }
-            .help("Saves made in game always go to the save library. A live slot is backed up first.")
-          }
+                   startTitle: { model.startTitle() }, load: { model.loadSave() })
         }
         FrontPageOptions(model: model)
+        // Dev rows go last, so turning Dev Options on or picking a library save moves nothing above them.
         if model.developerMode {
           Section {
-            Picker("Build", selection: $model.settings.build) {
+            FixedPicker("Build", selection: $model.settings.build) {
               Text("Latest (\(model.gameVersion))").tag(BuildChoice.latest)
               if model.playtestExists {
                 Text("Playtest (\(model.playtestVersion ?? "unknown version"))").tag(BuildChoice.playtest)
@@ -613,6 +605,13 @@ struct LauncherView: View {
               }
             }
             .help("Latest: out/build. Playtest: the frozen copy in out/playtest.")
+            if model.pick.hasPrefix("library:") {
+              FixedPicker("Write saves back to", selection: $model.targetSlot) {
+                Text("Library only").tag("none")
+                ForEach(LauncherModel.slots, id: \.self) { Text("Live slot \($0)").tag($0) }
+              }
+              .help("Saves made in game always go to the save library. A live slot is backed up first.")
+            }
           }
         }
       }
@@ -620,28 +619,32 @@ struct LauncherView: View {
       .scrollDisabled(true)
       .fixedSize(horizontal: false, vertical: true)
 
-      VStack(alignment: .leading, spacing: 10) {
-        HStack(spacing: 10) {
-          PageButton(model: model)
-          Spacer()
-          if model.developerMode && model.showUpdatePlaytest {
-            Button("Update Playtest Build") { model.updatePlaytest() }
-              .disabled(model.busy || (model.running && model.settings.build == .playtest))
-              .help("Copy the latest build to out/playtest.")
-          }
-          if model.running {
-            Button("Close Game") { model.closeGame() }
-              .disabled(model.busy)
-              .help("Quit the game this launcher started.")
-          }
+      Spacer(minLength: 0)
+      statusLines
+        .padding(.horizontal, 20)
+        .frame(height: Self.statusHeight, alignment: .top)
+        .clipped()
+      // Fixed buttons at the right: Close Game always (disabled when no game runs); Show Logs after a crash and
+      // Update Playtest Build (Diagnostics option) appear to its left without moving it.
+      PageBar(model: model) {
+        Spacer()
+        if let logs = model.crashLogs {
+          Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: logs, isDirectory: true)) }
         }
-        Divider()
-        statusLines
+        if model.developerMode && model.showUpdatePlaytest {
+          Button("Update Playtest Build") { model.updatePlaytest() }
+            .disabled(model.busy || (model.running && model.settings.build == .playtest))
+            .help("Copy the latest build to out/playtest.")
+        }
+        Button("Close Game") { model.closeGame() }
+          .disabled(!model.running || model.busy)
+          .help("Quit the game this launcher started.")
       }
-      .padding(.horizontal, 20)
-      .padding(.bottom, 16)
     }
   }
+
+  /// The status lines' fixed height (they never push the page bar).
+  static let statusHeight: CGFloat = 84
 
   private var statusLines: some View {
     VStack(alignment: .leading, spacing: 4) {
@@ -652,29 +655,23 @@ struct LauncherView: View {
         Text("Fable II Recomp \(model.gameVersion)").font(.caption).foregroundStyle(.secondary)
           .textSelection(.enabled)
       }
+      if !model.message.isEmpty {
+        Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled).lineLimit(2)
+      }
+      if !model.lastSave.isEmpty { Text(model.lastSave).font(.caption).lineLimit(1) }
       if !model.others.isEmpty {
         Text("Also running: \(model.others.joined(separator: "; "))")
-          .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-      }
-      if !model.lastSave.isEmpty { Text(model.lastSave).font(.caption) }
-      if !model.message.isEmpty {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-          if let logs = model.crashLogs {
-            Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: logs, isDirectory: true)) }
-              .controlSize(.small)
-          }
-        }
+          .font(.caption).foregroundStyle(.secondary).lineLimit(1)
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 
 /// The launcher window's content: the front page or the Settings page (both roles' Fable II Launcher window).
 struct LauncherWindowContent: View {
   @ObservedObject var model: LauncherModel
-  static let width: CGFloat = 580
+  static let width = LauncherLayout.width
 
   var body: some View {
     Group {
@@ -686,7 +683,7 @@ struct LauncherWindowContent: View {
         LauncherView(model: model)
       }
     }
-    .frame(width: Self.width)
+    .frame(width: Self.width, height: LauncherLayout.height)
     .sheet(isPresented: $model.showPicker) { SavePickerView(model: model) }
   }
 }
@@ -751,7 +748,8 @@ enum DevTools {
             enabled: { !($0.busy || ($0.running && $0.settings.build == .playtest)) }, action: { $0.updatePlaytest() }),
     DevTool(id: "close-game", title: "Close Game", group: 1, shortcut: KeyboardShortcut("w", modifiers: [.command, .shift]),
             devOnly: false, enabled: { $0.running && !$0.busy }, action: { $0.closeGame() }),
-    // The save library (stars, renames, search, test saves); starred saves join the front page's save menu.
+    // The save library (stars, renames, search, test saves); starred saves join the front page's save menu when
+    // Diagnostics > Show starred saves in save menu is on.
     DevTool(id: "choose-save", title: "Save Library…", group: 1, shortcut: KeyboardShortcut("o"), needsWindow: true,
             enabled: { !$0.showPicker }, action: { $0.page = .launcher; $0.showPicker = true }),
     DevTool(id: "refresh", title: "Refresh Saves and Status", group: 1, shortcut: KeyboardShortcut("r"),
@@ -836,10 +834,10 @@ struct DevMainWindow: View {
   var body: some View {
     LauncherWindowContent(model: model).onAppear {
       DevSnapshot.start(model: model)
-      // Testing: --press-load (--press-continue) / --press-launch press Load Save once the save list is in (as the
+      // Testing: --press-load (--press-continue) / --press-launch / --press-title press the button once the save list is in (as the
       // player's --press-play), so the whole button path, game end and return to the launcher run unattended.
       for (flag, press) in [("--press-load", { model.continueLatest() }), ("--press-continue", { model.continueLatest() }),
-                            ("--press-launch", { model.loadSave() })]
+                            ("--press-launch", { model.loadSave() }), ("--press-title", { model.startTitle() })]
       where commandLine.contains(flag) {
         func attempt() { if model.loaded { press() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: attempt) } }
         attempt()
@@ -968,9 +966,16 @@ enum DevSnapshot {
       model.showPicker = true
     }
     let deadline = Date().addingTimeInterval(20)
+    // --dev-options-sequence on,off: flips Dev Options in the shown window before the capture (layout after toggles).
+    var steps = (argument(after: "--dev-options-sequence") ?? "").split(separator: ",").map { $0 == "on" }
     func capture() {
       guard model.loaded || Date() > deadline else {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { capture() }
+        return
+      }
+      if !steps.isEmpty {
+        model.developerMode = steps.removeFirst()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { capture() }
         return
       }
       // Rendering settle time after the data is in (window/sheet animation and layout).
@@ -1002,17 +1007,19 @@ enum Capabilities {
       + LaunchSettings.flags.filter { $0.tab.map(tabs.contains) ?? true }.map { "flag:" + $0.key }
   }
   static func devLauncher(developer: Bool) -> [String] {
-    ["window:dev-launcher", "cli:launch", "cli:print-args", "cli:picker-rows", "settings:dev-options"]
+    ["window:dev-launcher", "cli:launch", "cli:print-args", "cli:picker-rows", "cli:save-menu",
+     "settings:dev-options"]
       + settings(developer: developer)
       + DevTools.visible(developer: developer).map { "tool:" + $0.id }
   }
 }
 
 enum DevLauncherMain {
-  /// The command-line modes (both roles): --launch and --picker-rows; nil when neither is asked for.
+  /// The command-line modes (both roles): --launch, --picker-rows and --save-menu; nil when none is asked for.
   static func cli() -> Int32? {
     if commandLine.contains("--launch") { return cliLaunch(commandLine) }
     if commandLine.contains("--picker-rows") { return cliPickerRows(commandLine) }
+    if commandLine.contains("--save-menu") { return SaveMenuItems.cli(commandLine) }
     return nil
   }
   static func run() -> Never {

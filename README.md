@@ -77,7 +77,7 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
    everything (a few minutes; about 4 on an 18-core Mac).
    If macOS blocks it, run `bash Install.command` in Terminal, or clone with git.
 2. Play: open **`Fable II Launcher.app`**, which setup places in this folder (or click **Open Launcher** in
-   the setup window). Pick a save (newest first, or Title Screen for a new game) and click **Load Save**.
+   the setup window). Click **Load Saved Game** (pick a save below it, newest first) or **Start at Title Screen** for a new game.
    **Settings** is in the same window.
    Advanced: **`Fable II.app`** (same folder) starts the game directly, without the launcher.
 

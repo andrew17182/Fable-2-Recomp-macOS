@@ -5,7 +5,7 @@
 //     and a "Show details" log (the real prepare output, also appended to logs/prepare.log);
 //   - release app (docs/release-app.md): after the game files, the game is built on this Mac (BuildRunner runs
 //     the kit's tools/fable2_game_build.py; Command Line Tools install, progress, cancel, Copy Details);
-//   - every launch: the Play window (2026-10-19: save menu, newest first, then Title Screen, with Load Save;
+//   - every launch: the Play window (2026-10-19: Start at Title Screen and Load Saved Game, the save menu newest first;
 //     resolution and frame rate; Skip intro; display);
 //   - Settings: the second page of the same window (Settings / Launcher button, ⌘,; Shared/LauncherPages.swift),
 //     the shared tabs from tools/macos/Shared/*.swift, stored in <state>/player-settings.plist. General also has
@@ -21,7 +21,7 @@
 //
 // Test and tooling flags (everything else is passed to the game):
 //   --play               start the game as soon as the game files are ready (exec, as "Skip launcher")
-//   --press-play         select the newest save and press Load Save (child game; the launcher returns when it exits)
+//   --press-play         select the newest save and press Load Saved Game (child game; the launcher returns when it exits)
 //   --print-env          print the environment items Play would set (JSON) and exit
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
@@ -218,7 +218,7 @@ enum GameFiles {
 
 struct SaveSummary {
   let title: String
-  let hero: String  // folder name, HeroNNN: Load Save loads this one (FABLE2_BOOT_SAVE_HERO)
+  let hero: String  // folder name, HeroNNN: Load Saved Game loads this one (FABLE2_BOOT_SAVE_HERO)
   let detail: String
   let count: Int
   var label = ""    // the save menu: "Name · Place · date"
@@ -1438,11 +1438,14 @@ final class PlayerModel: SettingsModel {
   /// hides the launcher and leaves the Dock to the game (.accessory). When the game exits the Play window comes
   /// back (latest save refreshed); an abnormal exit shows a note with Show Logs. ⌘Q in the game therefore
   /// returns here, and ⌘Q in the launcher quits the app.
-  /// Load Save (the default button): the menu's save, or the title screen.
+  /// Load Saved Game (the default button): the menu's save (the title screen without saves).
   func loadSave() { playFromLauncher(startPick == SaveChoice.titleID ? .title : .continueSave) }
 
-  /// The save menu: every save, newest first, then Title Screen.
-  var saveChoices: [SaveChoice] { saves.map { SaveChoice(id: $0.hero, label: $0.label) } + [SaveChoice.title] }
+  /// Start at Title Screen: the title (intro movies first unless skipped), no save.
+  func startTitle() { playFromLauncher(.title) }
+
+  /// The save menu: every save, newest first (Start at Title Screen is its own button).
+  var saveChoices: [SaveChoice] { saves.map { SaveChoice(id: $0.hero, label: $0.label) } }
 
   func playFromLauncher(_ mode: StartMode) {
     guard !gameRunning else { return }
@@ -1550,7 +1553,8 @@ struct Header: View {
   }
 }
 
-/// The front page (2026-10-19): save menu + Load Save, Resolution and Frame rate, Skip intro, Display.
+/// The front page (2026-10-19): Start at Title Screen + Load Saved Game, the save menu, Resolution and Frame rate, Skip intro, turbo, Display; the
+/// page bar (Settings bottom-left, as on the Settings page) with the version.
 struct PlayView: View {
   @ObservedObject var model: PlayerModel
 
@@ -1560,11 +1564,11 @@ struct PlayView: View {
       Form {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.startPick, busy: false, disabled: model.gameRunning,
-                   load: { model.loadSave() })
+                   startTitle: { model.startTitle() }, load: { model.loadSave() })
         }
         FrontPageOptions(model: model)
         Section {
-          Picker("Display", selection: $model.settings.display) {
+          Picker("Display", selection: $model.settings.display) {  // segmented: fixed width
             ForEach(DisplayMode.allCases) { mode in Text(mode.title).tag(mode) }
           }
           .pickerStyle(.segmented)
@@ -1575,25 +1579,27 @@ struct PlayView: View {
       .scrollDisabled(true)
       .fixedSize(horizontal: false, vertical: true)
 
-      HStack(spacing: 12) {
-        PageButton(model: model)
-        if !model.message.isEmpty {
-          Text(model.message).font(.caption).foregroundStyle(.red).lineLimit(2)
-        } else if !model.readyNote.isEmpty {
-          Label(model.readyNote, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary)
-            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-        } else if !model.gameNote.isEmpty {
-          Text(model.gameNote).font(.caption).foregroundStyle(.red).lineLimit(2)
+      Spacer(minLength: 0)
+      // Fixed spots: the note fills the middle (truncated), Show Logs and the version sit at the right.
+      PageBar(model: model) {
+        Group {
+          if !model.message.isEmpty {
+            Text(model.message).font(.caption).foregroundStyle(.red)
+          } else if !model.readyNote.isEmpty {
+            Label(model.readyNote, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary)
+          } else if !model.gameNote.isEmpty {
+            Text(model.gameNote).font(.caption).foregroundStyle(.red)
+          }
+        }
+        .lineLimit(2)
+        Spacer(minLength: 0)
+        if !model.gameNote.isEmpty && model.message.isEmpty && model.readyNote.isEmpty {
           Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
         }
-        Spacer()
+        Text("Version \(Paths.version)").font(.caption2).foregroundStyle(.tertiary)
       }
-      .padding(.horizontal, 20)
-      .padding(.top, 4)
-      .padding(.bottom, 14)
-      Text("Version \(Paths.version)").font(.caption2).foregroundStyle(.tertiary).padding(.bottom, 8)
     }
-    .frame(width: 580)
+    .frame(width: LauncherLayout.width, height: LauncherLayout.height)
     .onAppear { model.refresh() }
   }
 }
@@ -2070,7 +2076,7 @@ enum Startup {
     // A new build or shader seed with game files already in place: prepare its shaders before Play.
     if model.screen == .play && ShaderPrepRunner.needed { model.filesReady() }
     if commandLine.contains("--press-play"), model.screen == .play, model.shaderPrep.phase != .running {
-      // Load Save on the newest save (the title screen without saves).
+      // Load Saved Game on the newest save (the title screen without saves).
       DispatchQueue.main.async { model.refresh(pickNewest: true); model.loadSave() }
       return
     }
@@ -2092,7 +2098,7 @@ struct PlayerSettingsPage: View {
 
   var body: some View {
     SettingsPage(model: model, extra: extra)
-      .frame(width: 580)
+      .frame(width: LauncherLayout.width, height: LauncherLayout.height)
       .sheet(isPresented: $model.showStartFresh) { StartFreshSheet(model: model) }
       .sheet(isPresented: $model.showArchives) { ArchivesSheet(model: model) }
       .confirmationDialog("Reset every setting to its default?", isPresented: $confirmReset) {
@@ -2566,7 +2572,8 @@ if commandLine.contains("--list-capabilities") {
     let store = PlistSettingsStore(path: Paths.settingsPlist)
     DevCheckout.store = store
     let developer = store.object(forKey: "developerMode") as? Bool ?? false
-    caps = ["window:player", "cli:launch", "cli:print-args", "cli:picker-rows", "settings:dev-options", "start-fresh"]
+    caps = ["window:player", "cli:launch", "cli:print-args", "cli:picker-rows", "cli:save-menu", "settings:dev-options",
+            "start-fresh"]
       + Capabilities.settings(developer: developer)
     if developer {
       caps.append("window:dev-launcher")

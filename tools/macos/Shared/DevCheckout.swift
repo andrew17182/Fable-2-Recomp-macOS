@@ -66,7 +66,8 @@ enum DevCheckout {
   static func clear() { store.set(nil, forKey: key) }
 }
 
-/// Settings > Diagnostics (Dev Options on, both roles): the source checkout and the front-page dev buttons.
+/// Settings > Diagnostics (Dev Options on, both roles): the source checkout, the front-page dev buttons and the
+/// starred saves in the save menu.
 struct DeveloperSection: View {
   @ObservedObject var model: SettingsModel
   @State private var refresh = 0
@@ -76,6 +77,8 @@ struct DeveloperSection: View {
     Section {
       Toggle("Show Update Playtest Build", isOn: $model.showUpdatePlaytest)
         .help("Adds the button to the launcher page. It copies the latest build to out/playtest.")
+      Toggle("Show starred saves in save menu", isOn: $model.showStarredSaves)
+        .help("Adds starred library saves and the newest library save to the save menu.")
       Group {
         LabeledContent("Source checkout") {
           VStack(alignment: .trailing, spacing: 2) {
