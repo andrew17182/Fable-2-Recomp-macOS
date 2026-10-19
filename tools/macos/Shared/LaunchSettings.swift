@@ -281,7 +281,7 @@ enum InternalResolution: String, CaseIterable, Identifiable {
       return "Auto (\(AutoResolution.onThisMac(frameRate: frameRate))× on this Mac)"
     case .native: return "Native (1280×720)"
     case .double: return "2× (2560×1440)"
-    case .triple: return "3× (3840×2160, for Max-class GPUs)"
+    case .triple: return "3× (3840×2160)"
     }
   }
   static func saved(in defaults: SettingsStore) -> InternalResolution {
@@ -307,8 +307,8 @@ enum Upscaling: String, CaseIterable, Identifiable {
   var id: String { rawValue }
   var title: String {
     switch self {
-    case .off: return "Off (bilinear, original look)"
-    case .metalfxSpatial: return "MetalFX Spatial"
+    case .off: return "Bilinear (original)"
+    case .metalfxSpatial: return "MetalFX"
     }
   }
   /// Reads the saved choice; falls back to the pre-2026-10-12 "upscaler" key (bilinear|metalfx).
@@ -426,15 +426,22 @@ func parseExtraEnv(_ text: String) -> [String] {
 // MARK: - Settings
 
 /// Where a setting is shown.
+/// Everyday tabs: General, Display, Controls, Mods. Performance, Fixes and Diagnostics show only with Dev Options on
+/// (SettingsModel.developerMode, 2026-10-19).
 enum SettingsTab: String, CaseIterable, Identifiable {
-  case general, display, controls, performance, fixes, diagnostics
+  case general, display, controls, mods, performance, fixes, diagnostics
   var id: String { rawValue }
   var title: String { rawValue.capitalized }
+  /// Shown only with Dev Options on.
+  var devOnly: Bool { self == .performance || self == .fixes || self == .diagnostics }
+  /// The tabs shown for a Dev Options state, in order.
+  static func visible(developer: Bool) -> [SettingsTab] { allCases.filter { developer || !$0.devOnly } }
   var symbol: String {
     switch self {
     case .general: return "gearshape"
     case .display: return "display"
     case .controls: return "gamecontroller"
+    case .mods: return "puzzlepiece.extension"
     case .performance: return "speedometer"
     case .fixes: return "wrench.and.screwdriver"
     case .diagnostics: return "stethoscope"
@@ -566,20 +573,20 @@ struct LaunchSettings: Equatable {
   static let flags: [Flag] = [
     Flag(key: "skipIntro", path: \.skipIntro, cli: "skip-intro", tab: .general, section: "Startup",
          title: "Skip intro movies",
-         detail: "Go straight to the title screen without the logo videos; also shortens the title screen's own fade-in and fade-out (fast title). Off: the original intro plays."),
+         detail: "No logo movies; shorter title fade."),
     Flag(key: "boot", path: \.boot, cli: "boot", tab: nil, section: "",
          title: "Boot straight into save", detail: "Load the save from the main menu automatically."),
     Flag(key: "unlockExtras", path: \.unlockExtras, cli: "unlock-extras", tab: .general, section: "Game",
          title: "Unlock Collector's Edition and website gear",
-         detail: "Adds the bonus items of the Collector's Edition and the old website (docs/patches.md)."),
-    Flag(key: "characterEditor", path: \.characterEditor, cli: "character-editor", tab: .general, section: "Mods",
+         detail: "Bonus items from the Collector's Edition and the old website."),
+    Flag(key: "characterEditor", path: \.characterEditor, cli: "character-editor", tab: .mods, section: "Mods",
          title: "Character Editor (F6 menu)",
-         detail: "Adds \"Character Editor\" to the F6 menu: set good/evil, pure/corrupt, fat/thin, muscle, height, Will lines, gold and renown through the game's own stat calls. Backs up the save before any change; edits are kept only when the game saves (docs/character-editor.md). Off: the F6 menu is unchanged."),
+         detail: "Edit morality, looks, gold and renown from the F6 menu. Backs up the save first."),
     Flag(key: "fpsCounter", path: \.fpsCounter, cli: "fps-counter", tab: .display, section: "Frame rate",
          title: "Show FPS counter", detail: "Its state at launch; F9 toggles it in game."),
     Flag(key: "auto2x", path: \.auto2x, cli: "auto-2x", tab: .display, section: "Frame rate",
          title: "Auto: 2× uncapped when 2× can't hold 60",
-         detail: "With Auto resolution and frame rate: a Mac estimated at 45 FPS or more at 2× runs 2× (at 60 FPS when it holds it, else uncapped) instead of 1×. Off: Auto as before (1×, or 30 FPS at a hand-picked 2×). docs/resolution-scale.md §25."),
+         detail: "Auto picks 2× uncapped on Macs that run 2× at 45 FPS or more."),
     Flag(key: "portableShaderCache", path: \.portableShaderCache, cli: "portable-shader-cache",
          tab: .performance, section: "Shader cache", title: "Portable shader cache",
          detail: "Survives macOS updates. Off: tied to this Mac's GPU and exact macOS version."),
@@ -769,7 +776,7 @@ struct LaunchSettings: Equatable {
          detail: "The game sometimes keeps a far-away, low-detail texture on nearby objects until the camera moves (the pale root at Bower Lake, about 1 load in 4). On: the game's size check uses the right distance. Off: original game."),
     Flag(key: "fastPacing", path: \.fastPacing, cli: "fast-pacing", tab: .general, section: "Game",
          title: "Skip cosmetic waits (changes original pacing)",
-         detail: "Shortens fixed waits that only pace the screen, never a wait for loading or streaming: the 15-frame holds after \"Saving content\", before the arrival and at boot (1 frame instead, about 0.5 s each), and the notice's minimum time on screen (0 instead of 0.5 s; the game's own is 3.1 s). Off: original game."),
+         detail: "Shortens fixed screen pauses, never loading."),
     Flag(key: "hitchTrace", path: \.hitchTrace, cli: "hitch-trace", tab: .diagnostics, section: "Logging",
          title: "Hitch trace",
          detail: "Logs a [hitch] line in fable_2.log for each stutter: a frame 1.5× the recent median and 40 ms+, or any 100 ms+."),
@@ -929,12 +936,6 @@ struct LaunchSettings: Equatable {
 }
 
 // MARK: - Game environment (the one settings -> game mapping)
-
-extension SettingsTab {
-  /// The player app's name for a tab: its Diagnostics tab is "Advanced".
-  var playerTitle: String { self == .diagnostics ? "Advanced" : title }
-  var playerSymbol: String { self == .diagnostics ? "slider.horizontal.3" : symbol }
-}
 
 extension LaunchSettings {
   /// NAME=VALUE items every launch passes, in order (the Dev Launcher's --env items after the frame-rate

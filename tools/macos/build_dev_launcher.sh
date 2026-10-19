@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Build "Fable II Launcher.app" (named "Fable II Dev Launcher.app" before 2026-10-15): the one Fable II app (the
 # player app's binary, docs/player-app.md "Developer mode") in its launcher role (Info.plist Fable2DevLauncher),
-# developer mode on, this checkout pre-set. The way to play from source.
+# this checkout pre-set (Dev Options off by default, 2026-10-19). The way to play from source.
 # Kept for tools and agents: bundle id local.fable2recomp.devlauncher (and its defaults domain), executable
 # FableIIDevLauncher, this script's name, out/dev-launcher and every CLI flag. --install removes the old-named copy.
 #   tools/macos/build_dev_launcher.sh            -> out/dev-launcher/Fable II Launcher.app
@@ -45,7 +45,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>Fable2RepoRoot</key><string>$REPO</string>
   <key>Fable2DevLauncher</key><true/>
-  <key>Fable2DeveloperModeDefault</key><true/>
 </dict>
 </plist>
 PLIST

@@ -135,8 +135,8 @@ and the app takes it back when the game exits.
 There is no separate Launcher program any more: the launcher is a role of this app. One binary is built from
 `tools/macos/Player/main.swift` (entry point), `tools/macos/DevLauncher/*.swift` and `tools/macos/Shared/*.swift`:
 
-- **Player role** (the release and portable `Fable II.app`): Settings > Advanced > **Developer mode** (off by
-  default, stored in `player-settings.plist`). When on:
+- **Player role** (the release and portable `Fable II.app`): **Dev Options** (Settings, was Settings > Advanced >
+  Developer mode; off by default, stored in `player-settings.plist`). When on:
   - **Window > Fable II Launcher** (⌥⌘D) opens the launcher's main window: build choice (playtest / latest),
     save picker with stars and titles, boot and write-back options, Launch, Close Game, Update Playtest Build;
   - **Window > Developer** has every Tools item: Run Benchmark, Run Flash Kit, Export Portable Build, Update
@@ -149,11 +149,11 @@ There is no separate Launcher program any more: the launcher is a role of this a
   folders above the app (auto-detect, e.g. an app inside or next to the repo). Without one, the launcher window
   shows "Needs a source checkout" with the picker, and Window > Developer offers to choose one.
 - **Launcher role**: `tools/macos/build_dev_launcher.sh` builds the same binary as `Fable II Launcher.app`
-  with `Fable2DevLauncher` and `Fable2DeveloperModeDefault` in its Info.plist and this checkout as `Fable2RepoRoot`.
+  with `Fable2DevLauncher` in its Info.plist and this checkout as `Fable2RepoRoot`.
   It opens the launcher window as before. Name, bundle id (`local.fable2recomp.devlauncher`), executable
   (`FableIIDevLauncher`), install path (`--install`), UserDefaults keys and command-line modes (`--launch`,
   `--print-args`, `--picker-rows`, `--snapshot --tab …`) are unchanged, so the agent tools that quit, install and
-  reopen it keep working. Settings > Diagnostics shows Developer mode (always on) and the checkout.
+  reopen it keep working. Since 2026-10-19 Dev Options is off by default here too (below).
 - Both roles take `--launch` and `--picker-rows`. In the player role the launcher window launches with the player's
   own settings (one settings file); the launcher role keeps its UserDefaults as before.
 - Start Fresh / Archives act on the player role's own state folder; the launcher role has no state folder of its
@@ -186,12 +186,12 @@ Everything lives in the app's state folder, `~/Library/Application Support/Fable
 | Flag | What |
 |---|---|
 | `--play` | start the game as soon as the game files are ready (exec, as "Skip launcher"; the app ends with the game) |
-| `--press-play` | press the Play window's button: the game runs as a child and the launcher returns when it exits |
+| `--press-play` | select the newest save and press Load Save: the game runs as a child and the launcher returns when it exits |
 | `--print-env` | print the environment items Play would set (JSON) and exit |
 | `--iso IMAGE` | on the Welcome window, extract IMAGE at once (as if chosen in the panel) |
 | `--reuse` | on the Welcome window, use the offered sibling files at once |
 | `--show-launcher` | as holding Option |
-| `--snapshot PATH.png [--window play\|welcome\|progress\|general\|display\|performance\|fixes\|advanced]` | show that window without taking focus, save it as PNG and quit; `progress` needs `--iso` |
+| `--snapshot PATH.png [--window play\|welcome\|progress\|general\|display\|controls\|mods\|performance\|fixes\|diagnostics] [--dev-options on\|off]` | show that window or Settings tab without taking focus, save it as PNG and quit (nothing is stored); `progress` needs `--iso` |
 
 Other arguments are passed to the game. The environment overrides of the portable build still apply:
 
@@ -301,3 +301,42 @@ played the logos, the save library stayed empty, and the launcher's name said "D
   off by default; with it the app ends with the game, and a running repo launcher comes forward.
 - **Version of a GitHub ZIP.** `tools/fable2_archive_commit.txt` is filled in by `git archive` (`.gitattributes`
   export-subst), so a ZIP download reports `0.1.0 (<commit>)` instead of `0.1.0 (source)`.
+
+
+## Launcher page, Settings page and Dev Options (2026-10-19)
+
+Maintainer notes from a playtest; the same shared views in both roles (`tools/macos/Shared/LauncherPages.swift`).
+
+- **Front page, top to bottom:** a save menu with **Load Save** beside it (the default button), then Resolution and
+  Frame rate, then Skip intro movies, then the rest (player: Display; repo launcher with Dev Options: Build, and for
+  a library save "Write saves back to"; Close Game while a game runs; the status lines). The menu lists the saves
+  newest first, labelled "Name · Place · date", then **Title Screen** (start at the title, for New Game). It starts
+  on the newest save. Player: every hero save in the state folder. Repo launcher: the live slots, starred library
+  saves, the newest library play save when it is newer than every live slot, and the current pick. Load Save
+  always boots the save (`FABLE2_BOOT_SAVE`); write-back as Continue did (live slot to itself; library save to the
+  slot it was written back to, else library only; with Dev Options the "Write saves back to" choice).
+  Removed: the Choose Save… button, Continue from Last Save, Launch and the separate Title Screen button.
+- **Save library** (stars, renames, search, test saves): Tools > Save Library… (⌘O) with Dev Options. Starred saves
+  join the front page's menu.
+- **Settings is a page of the launcher window**, not a separate window. One button switches pages: "Settings" on
+  the front page, "Launcher" on Settings (Esc). ⌘, opens Settings.
+- **Tabs:** General, Display, Controls, **Mods** (the Character Editor; future mods go here). Performance, Fixes and
+  Diagnostics only with **Dev Options** on.
+- **Dev Options** (a switch at the bottom of the Settings page) is the old Developer mode merged into one control:
+  the dev tabs, the build choice, the Tools menu's dev items (Save Library, benchmark, flash kit, export, Update
+  Playtest Build, the out/ folders), and in the player role Window > Fable II Launcher / Developer. Off by default
+  in both roles (the repo launcher defaulted it on before), stored as `developerMode`. The command-line modes
+  (`--launch`, `--print-args`, `--picker-rows`) never read it. Settings > Diagnostics > Developer has the source
+  checkout and **Show Update Playtest Build**, which puts that button on the front page (off by default).
+- **Player role:** the old Advanced tab's player items (logs and data folders, Import Saves, Reset All Settings,
+  Start Fresh, Archives) moved to General > Logs and data.
+- **Upscaling** is "Upscaling (window scaling)": Bilinear (original) / MetalFX. It only changes how the image is
+  scaled to the window, never the render resolution or its cost.
+- **UI text:** switch explanations are tooltips (no caption lines under switches); long sentences in the launcher
+  and release app were cut to short labels.
+- **Testing:** the repo launcher takes `--press-load` (newest save, then Load Save; `--press-continue` is an alias)
+  and `--press-launch` (Load Save on the remembered pick). With `FABLE2_LAUNCHER_TEST_CONTROL=1` its launches are
+  test sessions (`--test-control`, input-isolated, no write-back), watched by pid so the return to the launcher
+  works. Launches and game ends are logged to `out/dev-sessions/launcher.log`. Snapshots:
+  `out/validation/launcher-ui-20261019/`. Tests: `tests/unified_launcher_tests.py` (dev tabs hidden by default in
+  both roles, parity with Dev Options on, `--print-args` independent of Dev Options, no Settings window).

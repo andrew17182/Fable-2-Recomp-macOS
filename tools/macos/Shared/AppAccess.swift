@@ -180,8 +180,7 @@ enum AppAccess {
       if let folder = folder, folder.hasPrefix("an ") { return "Fable II is running from \(folder)." }
       if let folder = folder { return "Fable II is running from your \(folder) folder." }
       if readOnly { return "Fable II is running from a disk image or another read-only volume." }
-      return "Fable II is running from the temporary, read-only copy macOS uses for downloaded apps that have not "
-        + "been moved yet."
+      return "Fable II is running from a temporary copy made by macOS."
     }
     var json: [String: Any] {
       ["bundlePath": bundlePath, "originalPath": (originalPath as Any?) ?? NSNull(), "translocated": translocated,

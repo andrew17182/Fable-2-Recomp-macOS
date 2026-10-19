@@ -290,15 +290,18 @@ Normal launcher play retains in-game subtitles and audio preferences across laun
 `Fable II Launcher.app` (source `tools/macos/DevLauncher/*.swift` with the player app's entry point, build with
 `tools/macos/build_dev_launcher.sh [--install]`; named "Fable II Dev Launcher" before 2026-10-15) picks a save and
 boots straight into it. Opening `Fable II.app`, `fable_2` or `run_macos_*.command` directly still works (advanced).
-The main window only plays: **Build** (Latest by default / Playtest), **Save**, **Skip intro movies**,
-**Continue from Last Save** (the default button when a save exists: the newest live or library save, booted
-straight in), **Launch**, **Update Playtest Build** and the running status. When a game ends the launcher comes
-back to the front; after a crash it shows a note with **Show Logs** (docs/player-app.md, 2026-10-15). Every setting is in **Settings** (⌘,), with these tabs: General (intro, extras, turbo notice, turbo speed, turbo audio), Display
-(resolution, upscaling, effects, window, frame rate, FPS counter), Controls (keyboard map, mouse look, hotkeys,
-controllers; see **Settings > Controls** above), Performance (shader cache and specialization
-switches), Fixes (the correctness switches, all on by default; **Reset All to Defaults**) and Diagnostics (trace
-preset, hitch trace, verify modes, extra env). The **Tools** menu has Run Benchmark…, Export Portable Build…, Close
-Game, Refresh, and Open Logs / Save Library / Sessions / Benchmark Reports. Default-on kill switches
+The front page (2026-10-19, docs/player-app.md): a save menu (newest first, then Title Screen) with **Load Save**
+(the default button, boots straight in), **Resolution** and **Frame rate**, **Skip intro movies**, then the running
+status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when
+shown). When a game ends the launcher comes back to the front; after a crash it shows a note with **Show Logs**.
+**Settings** is a page of the same window (the Settings / Launcher button, ⌘,), with these tabs: General (intro,
+extras, turbo notice, turbo speed, turbo audio), Display (resolution, upscaling, effects, window, frame rate, FPS
+counter), Controls (keyboard map, mouse look, hotkeys, controllers; see **Settings > Controls** above), Mods
+(Character Editor), and with Dev Options on: Performance (shader cache and specialization switches), Fixes (the
+correctness switches, all on by default; **Reset All to Defaults**) and Diagnostics (trace preset, hitch trace,
+verify modes, extra env, source checkout). The **Tools** menu has Close Game, Refresh and Open Logs Folder, and with
+Dev Options: Save Library…, Run Benchmark…, Run Flash Kit…, Export Portable Build…, Update Playtest Build and the
+save library / sessions / benchmark report folders. Default-on kill switches
 (`FABLE2_NATIVE_SHADERS`, `FABLE2_NS_SPECIALIZE`, `FABLE2_SHADOWS_NATIVE`, `FABLE2_DEFERRED_CLEARS`, `FABLE2_ALIAS_CLEAR_NATIVE`, `FABLE2_MAIN_DEPTH_NATIVE`, `FABLE2_EFFECTS_FOOTPRINT_VARIANT`, `FABLE2_CLEAR_LOAD_ACTION`, `FABLE2_SSM_STENCIL_FOLD`, `FABLE2_CLEAR_CONST_SOURCE`, `FABLE2_TILE_EDRAM`,
 `FABLE2_RING_REINIT_FIX`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
 when turned on (`=1`). Every on/off setting also has `--<name>` / `--no-<name>` for `--launch`, and `--print-args`

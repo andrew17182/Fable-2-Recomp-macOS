@@ -1,16 +1,14 @@
-// Developer mode and the source checkout it works with (docs/player-app.md "Developer mode"). The one Fable II app
-// has two roles: the player (release/portable app) and the Dev Launcher (tools/macos/build_dev_launcher.sh). In the
-// player role, Settings > Advanced > Developer mode shows everything the Dev Launcher has; features that need the
-// repository (dev sessions, playtest/latest builds, kits, exports, out/ folders) work once a source checkout is known.
+// Dev Options and the source checkout it works with (docs/player-app.md "Developer mode"). The one Fable II app
+// has two roles: the player (release/portable app) and the Dev Launcher (tools/macos/build_dev_launcher.sh). Dev
+// Options (Settings, SettingsModel.developerMode, off by default in both roles since 2026-10-19) shows the dev tabs
+// and tools; features that need the repository (dev sessions, playtest/latest builds, kits, exports, out/ folders)
+// work once a source checkout is known.
 import AppKit
 import SwiftUI
 
 enum AppRole {
   /// The Dev Launcher role (Info.plist Fable2DevLauncher, set by tools/macos/build_dev_launcher.sh).
   static let devLauncher = Bundle.main.object(forInfoDictionaryKey: "Fable2DevLauncher") as? Bool ?? false
-  /// Developer mode's default when nothing is stored (the dev build: on).
-  static let developerModeDefault = devLauncher
-    || (Bundle.main.object(forInfoDictionaryKey: "Fable2DeveloperModeDefault") as? Bool ?? false)
 }
 
 enum DevCheckout {
@@ -68,27 +66,17 @@ enum DevCheckout {
   static func clear() { store.set(nil, forKey: key) }
 }
 
-/// Settings > Advanced (player role) and Settings > Diagnostics (Dev Launcher role): developer mode and the checkout.
+/// Settings > Diagnostics (Dev Options on, both roles): the source checkout and the front-page dev buttons.
 struct DeveloperSection: View {
-  @Binding var developerMode: Bool
-  /// The Dev Launcher role is always in developer mode.
-  var locked = false
+  @ObservedObject var model: SettingsModel
   @State private var refresh = 0
   @State private var error = ""
 
   var body: some View {
     Section {
-      Toggle(isOn: locked ? .constant(true) : $developerMode) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Developer mode")
-          Text(locked ? "This is the Fable II Launcher build: developer mode is always on."
-               : "Shows everything the Fable II Launcher has: Window > Fable II Launcher (save picker, dev sessions, "
-                 + "playtest and latest builds) and Window > Developer (benchmark, flash kit, exports, folders).")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      .disabled(locked)
-      if developerMode || locked {
+      Toggle("Show Update Playtest Build", isOn: $model.showUpdatePlaytest)
+        .help("Adds the button to the launcher page. It copies the latest build to out/playtest.")
+      Group {
         LabeledContent("Source checkout") {
           VStack(alignment: .trailing, spacing: 2) {
             Text(DevCheckout.path ?? "none").font(.caption).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
@@ -98,7 +86,7 @@ struct DeveloperSection: View {
         }
         HStack {
           if DevCheckout.path == nil {
-            Text("Features that use the repository need a source checkout.").font(.caption).foregroundStyle(.secondary)
+            Text("No source checkout").font(.caption).foregroundStyle(.secondary)
           }
           Spacer()
           Button("Source Checkout…") { error = DevCheckout.choose() ?? ""; refresh += 1 }
@@ -116,9 +104,8 @@ struct NeedsCheckoutView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Needs a source checkout").font(.title3.weight(.semibold))
-      Text("The launcher's dev sessions, save library, playtest and latest builds, benchmark, flash kit and exports "
-           + "run the tools in a Fable II Recomp source checkout. Choose yours (the folder with CMakeLists.txt).")
-        .fixedSize(horizontal: false, vertical: true)
+      Text("Choose the Fable II Recomp source folder.")
+        .help("The folder with CMakeLists.txt. Dev sessions, the save library, builds and kits use it.")
       HStack {
         Spacer()
         Button("Source Checkout…") { onChoose() }.buttonStyle(.borderedProminent)

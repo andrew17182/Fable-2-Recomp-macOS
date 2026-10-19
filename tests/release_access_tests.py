@@ -195,7 +195,7 @@ class ReleaseAccessTests(unittest.TestCase):
         ])
         self.assertEqual([r['translocated'] for r in rows], [True, False, False, False, False])
         self.assertEqual([r['shouldOfferMove'] for r in rows], [True, True, True, False, False])
-        self.assertIn('temporary, read-only copy', rows[0]['reason'])
+        self.assertIn('temporary copy', rows[0]['reason'])
         self.assertIn('Downloads folder', rows[1]['reason'])
 
     # --- Real paths ----------------------------------------------------------------------------------------

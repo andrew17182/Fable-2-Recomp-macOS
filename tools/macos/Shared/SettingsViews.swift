@@ -1,6 +1,6 @@
-// Settings tab views shared by the Dev Launcher and the player app (see LaunchSettings.swift). Each app
-// builds its own Settings window from SettingsTabView: the Dev Launcher shows every tab as before; the
-// player app calls the Diagnostics tab "Advanced" and adds its own sections through `extra`.
+// Settings tab views shared by both roles of the app (see LaunchSettings.swift). Settings live inside the launcher
+// window (2026-10-19, LauncherPages.swift): SettingsPage shows the tabs Dev Options allows, and each role adds its
+// own sections through `extra`.
 import AppKit
 import SwiftUI
 
@@ -10,9 +10,41 @@ enum SettingsVariant {
   case dev, player
 }
 
+/// The launcher window's two pages: the front page and Settings (one button toggles them; ⌘, opens Settings).
+enum LauncherPage { case launcher, settings }
+
 /// The settings and where they are stored. The Dev Launcher's LauncherModel subclasses it.
 class SettingsModel: ObservableObject {
   let store: SettingsStore
+  /// Front page or Settings (not remembered: the app opens on the front page).
+  @Published var page = LauncherPage.launcher
+  /// The Settings tab shown (remembered).
+  @Published var settingsTab: SettingsTab { didSet { if persist { store.set(settingsTab.rawValue, forKey: "settingsTab") } } }
+  /// Dev Options (2026-10-19, was "Developer mode"): the Performance, Fixes and Diagnostics tabs and the dev
+  /// launcher features (build choice, save library, Tools menu, Update Playtest Build option, the Fable II Launcher
+  /// window in the player role). Off by default in every role; remembered. CLI modes (--launch, --print-args) never
+  /// read it.
+  @Published var developerMode: Bool {
+    didSet {
+      if persist { store.set(developerMode, forKey: "developerMode") }
+      if !developerMode && settingsTab.devOnly { settingsTab = .general }
+      onDeveloperModeChange?(developerMode)
+    }
+  }
+  /// Shows "Update Playtest Build" on the front page (Dev Options > Diagnostics > Developer). Off by default.
+  @Published var showUpdatePlaytest: Bool {
+    didSet { if persist { store.set(showUpdatePlaytest, forKey: "showUpdatePlaytest") } }
+  }
+  /// Set by the player role (opens the Dev Launcher model when Dev Options turns on).
+  var onDeveloperModeChange: ((Bool) -> Void)?
+  /// False during a --snapshot: page, tab and Dev Options set for the picture are not stored.
+  let persist = !commandLine.contains("--snapshot")
+  /// --snapshot ... --dev-options on|off: Dev Options for that picture only (never stored).
+  static var snapshotDeveloper: Bool? {
+    guard commandLine.contains("--snapshot"), let value = argument(after: "--dev-options") else { return nil }
+    return value == "on"
+  }
+  var visibleTabs: [SettingsTab] { SettingsTab.visible(developer: developerMode) }
   @Published var settings: LaunchSettings {
     didSet {
       // The build choice decides which app runs, so whether it has the converter (assigning inside didSet does
@@ -40,7 +72,15 @@ class SettingsModel: ObservableObject {
   init(store: SettingsStore) {
     self.store = store
     settings = LaunchSettings.load(from: store)
+    let developer = Self.snapshotDeveloper ?? (store.object(forKey: "developerMode") as? Bool ?? false)
+    developerMode = developer
+    showUpdatePlaytest = store.object(forKey: "showUpdatePlaytest") as? Bool ?? false
+    let tab = SettingsTab(rawValue: store.string(forKey: "settingsTab") ?? "") ?? .general
+    settingsTab = !developer && tab.devOnly ? .general : tab
   }
+
+  /// ⌘, and the Settings button.
+  func toggleSettingsPage() { page = page == .launcher ? .settings : .launcher }
 
   func binding(_ path: WritableKeyPath<LaunchSettings, Bool>) -> Binding<Bool> {
     Binding(get: { self.settings[keyPath: path] }, set: { self.settings[keyPath: path] = $0 })
@@ -82,19 +122,18 @@ class SettingsModel: ObservableObject {
   }
 }
 
-/// A switch with its one-line explanation (also the tooltip).
+/// A switch with its label; the explanation is the tooltip (2026-10-19: no caption lines under switches).
 struct FlagRow: View {
   @ObservedObject var model: SettingsModel
   let flag: Flag
   var variant: SettingsVariant = .dev
-  static let forcedNote = "Required in this build: it has no shader converter to fall back to."
+  static let forcedNote = "Required in this build (no shader converter)."
   var body: some View {
     let forced = model.forcedOn(flag)
     Toggle(isOn: forced ? .constant(true) : model.binding(flag.path)) {
       VStack(alignment: .leading, spacing: 2) {
         Text(flag.title)
-        Text(forced ? Self.forcedNote : flag.detail).font(.caption).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+        if forced { Text("Required in this build").font(.caption).foregroundStyle(.secondary) }
       }
     }
     .disabled(forced)
@@ -169,7 +208,7 @@ struct SettingsTabView: View {
         Picker("Turbo notice", selection: $model.settings.turboNotice) {
           ForEach(TurboNotice.allCases) { style in Text(style.title).tag(style) }
         }
-        .help("How the \"Turbo 2x on/off\" notice (F7) is shown (docs/turbo.md).")
+        .help("How the turbo (F7) notice is shown.")
         LabeledContent("Turbo speed") {
           HStack {
             Slider(value: Binding(get: { model.settings.turboSpeed },
@@ -182,17 +221,14 @@ struct SettingsTabView: View {
               .monospacedDigit()
           }
         }
-        .help("How fast the game runs while turbo is on. Press F7 (or 7) in game to turn turbo on or off; "
-              + "it starts off every launch. 1.1× to 4.0×, default 2.0× (docs/turbo.md).")
+        .help("Game speed while turbo is on. F7 or 7 toggles turbo in game.")
         Picker("Turbo audio", selection: $model.settings.turboAudio) {
           ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
         }
-        .help("Sound while turbo (F7) is on. Natural pitch: speech and music speed up with the game "
-              + "without sounding higher (Apple time-stretch). High pitch: sped up like a fast-forwarded "
-              + "tape. Normal speed: audio stays at 1× and drifts behind the game (the old behaviour). "
-              + "No effect while turbo is off.")
+        .help("Sound while turbo is on.")
       }
-      section(.general, "Mods")
+    case .mods:
+      section(.mods, "Mods")
     case .display:
       Section("Resolution") {
         Picker("Internal resolution", selection: $model.settings.resolution) {
@@ -200,21 +236,16 @@ struct SettingsTabView: View {
             Text(scale.title(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x)).tag(scale)
           }
         }
-        .help("The size the game renders at (docs/resolution-scale.md). Auto picks 1×, 2× or 3× from this "
-              + "Mac's GPU, RAM and the frame-rate setting, aiming to hold the frame rate with headroom "
-              + "(the game log's [res-auto] line says why).")
-        Picker("Upscaling", selection: $model.settings.upscaling) {
+        .help(ResolutionHelp.resolution)
+        Picker("Upscaling (window scaling)", selection: $model.settings.upscaling) {
           ForEach(Upscaling.allCases) { mode in Text(mode.title).tag(mode) }
         }
-        .help("Off: one bilinear filter to the window (original look). MetalFX Spatial: Apple's spatial "
-              + "upscaler from the internal resolution to the window; sharper, changes the look, and only "
-              + "acts when the window is larger (e.g. 2× in 4K fullscreen: cheaper than 3×).")
+        .help("How the image is scaled to the window. Does not change the render resolution or its cost.")
         Picker("Bloom and effects", selection: $model.settings.effects) {
           ForEach(EffectsSize.allCases) { mode in Text(mode.title).tag(mode) }
         }
         .disabled(model.settings.resolution.effectiveScale(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x) == 1)
-        .help("At 2×/3×: keep bloom, blur and glow at their original size, or shrink them with the resolution. "
-              + "No effect at native resolution.")
+        .help("Bloom, blur and glow size at 2× and 3×.")
       }
       Section("Window") {
         Picker("Display", selection: $model.settings.display) {
@@ -226,10 +257,7 @@ struct SettingsTabView: View {
         Picker("Frame rate", selection: $model.settings.frameRate) {
           ForEach(FrameRate.allCases) { fps in Text(fps.title(resolution: model.settings.resolution, rule2x: model.settings.auto2x)).tag(fps) }
         }
-        .help("Auto: 60 FPS when this Mac's GPU is estimated to average about 54 FPS or more at the chosen "
-              + "internal resolution, else 30 FPS. At 2× (and with Auto resolution, when 2× is estimated at 45 FPS "
-              + "or more), uncapped instead of 30 (docs/resolution-scale.md §25). The original game runs at 30: "
-              + "pick 30 FPS for that.")
+        .help(ResolutionHelp.frameRate)
         ForEach(LaunchSettings.flags(in: .display)) { row($0) }
       }
     case .controls:
@@ -248,7 +276,7 @@ struct SettingsTabView: View {
       } header: {
         Text("Game bug fixes (changes original behaviour)")
       } footer: {
-        Text("Off by default: these correct bugs in the original game, so the game no longer behaves exactly as on Xbox 360.")
+        Text("Off by default: they change the original game.")
           .font(.caption).foregroundStyle(.secondary)
       }
       Section {
@@ -257,12 +285,12 @@ struct SettingsTabView: View {
         Text("Boot")
       } footer: {
         HStack(alignment: .firstTextBaseline) {
-          Text("Leave these on; turn one off only to compare with the old behaviour.")
+          Text("Leave on unless comparing.")
             .font(.caption).foregroundStyle(.secondary)
           Spacer()
           Button("Reset All to Defaults") { model.resetFlags(in: .fixes) }
             .disabled(LaunchSettings.flags(in: .fixes).allSatisfy { model.settings[keyPath: $0.path] == $0.defaultValue })
-            .help("Restore every fix to its default (game bug fixes off, the rest on).")
+            .help("Game bug fixes off, the rest on.")
         }
       }
     case .diagnostics:
@@ -283,11 +311,10 @@ struct SettingsTabView: View {
         Text("Extra environment")
       } footer: {
         if variant == .dev {
-          Text("Flight-recorder dumps: <session>/test-state/logs/trace/dumps. "
-               + "Report: python3 tools/f2diag.py report <session>")
+          Text("Report: python3 tools/f2diag.py report <session>")
             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         } else {
-          Text("Passed to the game last, so it wins over every setting above. For troubleshooting.")
+          Text("Overrides the settings above.")
             .font(.caption).foregroundStyle(.secondary)
         }
       }

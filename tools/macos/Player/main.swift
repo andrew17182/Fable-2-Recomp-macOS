@@ -5,11 +5,12 @@
 //     and a "Show details" log (the real prepare output, also appended to logs/prepare.log);
 //   - release app (docs/release-app.md): after the game files, the game is built on this Mac (BuildRunner runs
 //     the kit's tools/fable2_game_build.py; Command Line Tools install, progress, cancel, Copy Details);
-//   - every launch: the Play window (plain native window; Continue or title screen; resolution, frame rate,
-//     display; Play);
-//   - Settings > Advanced: Start Fresh and Archives (tools/macos/Shared/StartFresh.swift);
-//   - Settings (⌘,): the Dev Launcher's tabs, from the shared tools/macos/Shared/*.swift (Diagnostics is
-//     "Advanced" here), stored in <state>/player-settings.plist.
+//   - every launch: the Play window (2026-10-19: save menu, newest first, then Title Screen, with Load Save;
+//     resolution and frame rate; Skip intro; display);
+//   - Settings: the second page of the same window (Settings / Launcher button, ⌘,; Shared/LauncherPages.swift),
+//     the shared tabs from tools/macos/Shared/*.swift, stored in <state>/player-settings.plist. General also has
+//     the launcher, game files, logs and data (Start Fresh, Archives: Shared/StartFresh.swift); Performance, Fixes
+//     and Diagnostics only with Dev Options on;
 // Play sets the settings' environment (LaunchSettings.gameEnvironment, the same mapping the Dev Launcher
 // passes through tools/fable2_dev_session.py) and runs Contents/MacOS/FableIILauncher (AppLauncher.m). That
 // launcher stages the side files, seeds the shader cache, takes the state folder's lock and execs fable_2,
@@ -20,12 +21,13 @@
 //
 // Test and tooling flags (everything else is passed to the game):
 //   --play               start the game as soon as the game files are ready (exec, as "Skip launcher")
-//   --press-play         press the Play window's button (child game; the launcher returns when it exits)
+//   --press-play         select the newest save and press Load Save (child game; the launcher returns when it exits)
 //   --print-env          print the environment items Play would set (JSON) and exit
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
 //   --show-launcher      as holding Option
-//   --snapshot PATH.png [--window play|ready|welcome|progress|move|denied|general|display|controls|performance|fixes|advanced]
+//   --snapshot PATH.png [--window play|ready|welcome|progress|move|denied|general|display|controls|mods|performance|
+//                        fixes|diagnostics|advanced|devlauncher] [--dev-options on|off]
 //                        show that window without taking focus, save it to a PNG and quit (progress: once
 //                        the extraction has started, with details shown; move: the Move to Applications offer;
 //                        denied: once a refused access is shown)
@@ -216,9 +218,10 @@ enum GameFiles {
 
 struct SaveSummary {
   let title: String
-  let hero: String  // folder name, HeroNNN: Continue loads this one (FABLE2_BOOT_SAVE_HERO)
+  let hero: String  // folder name, HeroNNN: Load Save loads this one (FABLE2_BOOT_SAVE_HERO)
   let detail: String
   let count: Int
+  var label = ""    // the save menu: "Name · Place · date"
 }
 
 /// Import saves (release app, 2026-10-15): the release app has its own state folder, so it starts without the saves
@@ -339,38 +342,44 @@ enum Saves {
     return String(match[match.index(after: open)..<close.lowerBound]).components(separatedBy: " ").first
   }
 
-  /// The newest hero save in the state folder (saves/<profile>/4D5307F1/00000001/HeroNNN) and how many there are.
-  static func latest() -> SaveSummary? {
+  /// Every hero save in the state folder (saves/<profile>/4D5307F1/00000001/HeroNNN), newest first; `count` is the
+  /// number of saves.
+  static func all() -> [SaveSummary] {
     let fm = FileManager.default
     let root = Paths.state + "/saves"
-    var newest: (date: Date, hero: String, container: String)?
-    var count = 0
+    var found: [(date: Date, hero: String, container: String)] = []
     for profile in (try? fm.contentsOfDirectory(atPath: root)) ?? [] {
       let container = root + "/" + profile + "/4D5307F1"
       for hero in (try? fm.contentsOfDirectory(atPath: container + "/00000001")) ?? [] where hero.hasPrefix("Hero") {
         guard let date = (try? fm.attributesOfItem(atPath: container + "/00000001/" + hero + "/mainsave.bin"))?[.modificationDate]
                 as? Date else { continue }
-        count += 1
-        if newest == nil || date > newest!.date { newest = (date, hero, container) }
+        found.append((date, hero, container))
       }
     }
-    guard let save = newest else { return nil }
-    let folder = save.container + "/00000001/" + save.hero
-    var title = save.hero
-    if let header = fm.contents(atPath: save.container + "/Headers/00000001/" + save.hero + ".header"), header.count >= 0x108 {
-      let name = String(data: header[8..<0x108], encoding: .utf16BigEndian)?.components(separatedBy: "\0").first ?? ""
-      if !name.isEmpty { title = name }
-    }
-    var parts: [String] = []
-    if let quest = field(folder + "/chaptersave.bin", "QuestName") { parts.append(words(quest)) }
-    if let level = field(folder + "/chaptersave.bin", "LevelName") { parts.append(words(level)) }
+    found.sort { $0.date > $1.date }
     let formatter = DateFormatter()
     formatter.dateStyle = .medium
     formatter.timeStyle = .short
     formatter.doesRelativeDateFormatting = true
-    parts.append(formatter.string(from: save.date))
-    return SaveSummary(title: title, hero: save.hero, detail: parts.joined(separator: " · "), count: count)
+    return found.map { save in
+      let folder = save.container + "/00000001/" + save.hero
+      var title = save.hero
+      if let header = fm.contents(atPath: save.container + "/Headers/00000001/" + save.hero + ".header"), header.count >= 0x108 {
+        let name = String(data: header[8..<0x108], encoding: .utf16BigEndian)?.components(separatedBy: "\0").first ?? ""
+        if !name.isEmpty { title = name }
+      }
+      let quest = field(folder + "/chaptersave.bin", "QuestName").map(words)
+      // "Caves\\Bower Lake\\Thags Cave" -> "Thags Cave"
+      let level = field(folder + "/chaptersave.bin", "LevelName").map { words($0.components(separatedBy: "\\").last ?? $0) }
+      let when = formatter.string(from: save.date)
+      let detail = [quest, level, when].compactMap { $0 }.joined(separator: " · ")
+      let label = [title, level, when].compactMap { $0 }.joined(separator: " · ")
+      return SaveSummary(title: title, hero: save.hero, detail: detail, count: found.count, label: label)
+    }
   }
+
+  /// The newest hero save and how many there are.
+  static func latest() -> SaveSummary? { all().first }
 }
 
 // MARK: - Helper processes and access tests
@@ -1113,6 +1122,11 @@ enum Screen { case move, welcome, preparing, building, play }
 final class PlayerModel: SettingsModel {
   @Published var screen: Screen
   @Published var latestSave: SaveSummary?
+  /// The save menu's entries, newest first (refresh()).
+  @Published var saves: [SaveSummary] = []
+  /// The save menu's choice: a hero folder (HeroNNN) or "title". Starts on the newest save, and again after a game.
+  @Published var startPick = SaveChoice.titleID
+  private var pickedNewest = false
   @Published var candidates: [GameFiles.Candidate] = []
   @Published var message = ""
   @Published var skipLauncher: Bool { didSet { store.set(skipLauncher, forKey: "skipLauncher") } }
@@ -1123,13 +1137,6 @@ final class PlayerModel: SettingsModel {
   @Published var gameNote = ""
   @Published var showStartFresh = false
   @Published var showStartFreshMain = false
-  /// Developer mode (Settings > Advanced): the Dev Launcher's window and tools in this app (docs/player-app.md).
-  @Published var developerMode: Bool {
-    didSet {
-      store.set(developerMode, forKey: "developerMode")
-      if developerMode { DevHost.shared.ensure() }
-    }
-  }
   @Published var showArchives = false
   /// Where this app runs from (docs/release-app.md "Protected folders and Move to Applications").
   let location = AppAccess.location(of: Paths.bundle.bundleURL)
@@ -1150,7 +1157,6 @@ final class PlayerModel: SettingsModel {
     let store = PlistSettingsStore(path: Paths.settingsPlist)
     skipLauncher = store.object(forKey: "skipLauncher") as? Bool ?? false
     startMode = StartMode(rawValue: store.string(forKey: "startMode") ?? "") ?? .continueSave
-    developerMode = store.object(forKey: "developerMode") as? Bool ?? AppRole.developerModeDefault
     // One settings file, one store object: the checkout and the Dev Launcher window share it.
     DevCheckout.store = store
     DevHost.shared.store = store
@@ -1159,12 +1165,11 @@ final class PlayerModel: SettingsModel {
     // The game next to this executable: no-converter (release/portable) builds force the native switches on.
     let hasConverter = LaunchSettings.hasConverter(macOSFolder: Paths.macOS)
     converterProbe = { _ in hasConverter }
+    onDeveloperModeChange = { if $0 { DevHost.shared.ensure() } }
     prepare.onDone = { [weak self] in self?.filesReady() }
     builder.onDone = { [weak self] in
       guard let self = self else { return }
-      self.readyNote = self.buildWasUpdate
-        ? "Fable II is updated and ready. Check the settings if you like, then press Play."
-        : "The game is built and ready. Check the settings if you like, then press Play."
+      self.readyNote = self.buildWasUpdate ? "Updated. Ready to play." : "Ready to play."
       appendLog(Paths.logs + "/player.log", "[player] game built (\(self.buildWasUpdate ? "update" : "first build")); "
                 + "the Play window waits for the player")
       self.filesReady()
@@ -1250,15 +1255,20 @@ final class PlayerModel: SettingsModel {
         guard let self = self else { return }
         self.lock = self.relock()
         PlayerApp.heldLock = self.lock
-        self.moveError = "Fable II was copied to \(app.deletingLastPathComponent().path), but could not be opened from "
-          + "there (\(error.localizedDescription)). Quit this copy and open Fable II from the Applications folder."
+        self.moveError = "Copied, but could not open it (\(error.localizedDescription)). Open Fable II from Applications."
       }
     }
   }
 
-  func refresh() {
+  /// `pickNewest`: put the save menu on the newest save (first time, and after a game).
+  func refresh(pickNewest: Bool = false) {
     if screen == .play {
-      latestSave = Saves.latest()
+      saves = Saves.all()
+      latestSave = saves.first
+      if pickNewest || !pickedNewest || (startPick != SaveChoice.titleID && !saves.contains { $0.hero == startPick }) {
+        pickedNewest = true
+        startPick = saves.first?.hero ?? SaveChoice.titleID
+      }
       offerImportIfNeeded()
     } else {
       candidates = GameFiles.reuseCandidates()
@@ -1276,9 +1286,7 @@ final class PlayerModel: SettingsModel {
     DispatchQueue.main.async {
       let alert = NSAlert()
       alert.messageText = "Import your saves?"
-      alert.informativeText = "Found \(count) save\(count == 1 ? "" : "s") from another Fable II install on this Mac "
-        + "(\((source as NSString).deletingLastPathComponent)). Importing copies them; the originals stay where they are. "
-        + "You can also import later from File > Import Saves…."
+      alert.informativeText = "\(count) save\(count == 1 ? "" : "s") found from another Fable II install. They are copied."
       alert.addButton(withTitle: "Import")
       alert.addButton(withTitle: "Not Now")
       if alert.runModal() == .alertFirstButtonReturn { self.importSaves(from: source) }
@@ -1290,8 +1298,7 @@ final class PlayerModel: SettingsModel {
     if let found = SaveImport.otherInstalls().first {
       let alert = NSAlert()
       alert.messageText = "Import saves"
-      alert.informativeText = "Copy the \(SaveImport.heroes(in: found).count) save(s) of the other Fable II install on "
-        + "this Mac (\((found as NSString).deletingLastPathComponent)), or choose a folder?"
+      alert.informativeText = "\(SaveImport.heroes(in: found).count) save(s) found from another Fable II install."
       alert.addButton(withTitle: "Import")
       alert.addButton(withTitle: "Choose Folder…")
       alert.addButton(withTitle: "Cancel")
@@ -1303,7 +1310,7 @@ final class PlayerModel: SettingsModel {
     }
     let panel = NSOpenPanel()
     panel.title = "Choose a Fable II saves folder"
-    panel.message = "Choose a \"saves\" folder, or the data folder that contains one. Its saves are copied."
+    panel.message = "A saves folder, or the data folder that holds one."
     panel.canChooseFiles = false
     panel.canChooseDirectories = true
     guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -1324,8 +1331,8 @@ final class PlayerModel: SettingsModel {
     if !conflicts.isEmpty {
       let alert = NSAlert()
       alert.messageText = "Replace saves you already have here?"
-      alert.informativeText = "This app already has " + conflicts.map(SaveImport.name).joined(separator: ", ")
-        + ". Keep them and import only the others, or replace them (the current ones are backed up first)."
+      alert.informativeText = conflicts.map(SaveImport.name).joined(separator: ", ")
+        + ". Replaced saves are backed up first."
       alert.addButton(withTitle: "Keep Mine")
       alert.addButton(withTitle: "Replace")
       alert.addButton(withTitle: "Cancel")
@@ -1399,8 +1406,7 @@ final class PlayerModel: SettingsModel {
     if image == nil {
       let panel = NSOpenPanel()
       panel.title = "Choose your Fable II disc image"
-      panel.message = "Its game files are copied into this Mac's Application Support folder (about 7 GB). "
-        + "The image itself is only read."
+      panel.message = "Its game files are copied (about 7 GB). The image is only read."
       panel.prompt = "Use This Image"
       panel.canChooseFiles = true
       panel.canChooseDirectories = false
@@ -1418,7 +1424,8 @@ final class PlayerModel: SettingsModel {
   /// tells FableIILauncher the files are prepared and Option is ours.
   var playEnvironment: [String] {
     var env = settings.gameEnvironment
-    if startMode == .continueSave, let save = latestSave, save.count > 0 {
+    let all = Saves.all()
+    if startMode == .continueSave, let save = all.first(where: { $0.hero == startPick }) ?? all.first, save.count > 0 {
       env.append("FABLE2_BOOT_SAVE=1")
       // With several saves the game would show its slot cards; load the newest one directly instead.
       if save.count > 1 { env.append("FABLE2_BOOT_SAVE_HERO=" + save.hero) }
@@ -1431,6 +1438,12 @@ final class PlayerModel: SettingsModel {
   /// hides the launcher and leaves the Dock to the game (.accessory). When the game exits the Play window comes
   /// back (latest save refreshed); an abnormal exit shows a note with Show Logs. ⌘Q in the game therefore
   /// returns here, and ⌘Q in the launcher quits the app.
+  /// Load Save (the default button): the menu's save, or the title screen.
+  func loadSave() { playFromLauncher(startPick == SaveChoice.titleID ? .title : .continueSave) }
+
+  /// The save menu: every save, newest first, then Title Screen.
+  var saveChoices: [SaveChoice] { saves.map { SaveChoice(id: $0.hero, label: $0.label) } + [SaveChoice.title] }
+
   func playFromLauncher(_ mode: StartMode) {
     guard !gameRunning else { return }
     startMode = mode  // also what "Skip launcher" starts with next time
@@ -1486,7 +1499,7 @@ final class PlayerModel: SettingsModel {
         ? "The game closed unexpectedly (exit code \(status))."
         : "The game closed unexpectedly (signal \(status))."
     }
-    refresh()
+    refresh(pickNewest: true)
     let background = Paths.environment["FABLE2_TEST_BACKGROUND"] == "1"
     if !background { NSApp.setActivationPolicy(.regular) }
     let windows = hiddenWindows.isEmpty ? NSApp.windows.filter { $0.title == "Fable II" } : hiddenWindows
@@ -1537,6 +1550,7 @@ struct Header: View {
   }
 }
 
+/// The front page (2026-10-19): save menu + Load Save, Resolution and Frame rate, Skip intro, Display.
 struct PlayView: View {
   @ObservedObject var model: PlayerModel
 
@@ -1545,35 +1559,11 @@ struct PlayView: View {
       Header()
       Form {
         Section {
-          if let save = model.latestSave {
-            // Continue from last save (2026-10-15): the default button below loads this one.
-            VStack(alignment: .leading, spacing: 2) {
-              Text("Continue: \(save.title)")
-              Text(save.detail).font(.caption).foregroundStyle(.secondary)
-              if save.count > 1 {
-                Text("To pick another of your \(save.count) saves, use Title Screen.")
-                  .font(.caption).foregroundStyle(.secondary)
-              }
-            }
-          } else {
-            LabeledContent("Start", value: "New game (no saves yet)")
-          }
-          Toggle("Skip intro movies", isOn: model.binding(\.skipIntro))
-            .help("Off (default): the original logo movies and title intro play. On: straight to the title screen, "
-                  + "with a shorter title fade. Same setting as Settings > General.")
+          SaveMenu(choices: model.saveChoices, selection: $model.startPick, busy: false, disabled: model.gameRunning,
+                   load: { model.loadSave() })
         }
+        FrontPageOptions(model: model)
         Section {
-          Picker("Resolution", selection: $model.settings.resolution) {
-            ForEach(InternalResolution.allCases) { scale in
-              Text(scale.title(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x)).tag(scale)
-            }
-          }
-          .help("The size the game renders at. Auto picks 1×, 2× or 3× from this Mac's GPU and memory.")
-          Picker("Frame rate", selection: $model.settings.frameRate) {
-            ForEach(FrameRate.allCases) { fps in Text(fps.title(resolution: model.settings.resolution, rule2x: model.settings.auto2x)).tag(fps) }
-          }
-          .help("Auto: 60 FPS when this Mac's GPU is estimated to hold it at the chosen resolution, uncapped at 2× when it "
-                + "holds 45 FPS or more there, else 30 FPS. The original game runs at 30.")
           Picker("Display", selection: $model.settings.display) {
             ForEach(DisplayMode.allCases) { mode in Text(mode.title).tag(mode) }
           }
@@ -1586,8 +1576,7 @@ struct PlayView: View {
       .fixedSize(horizontal: false, vertical: true)
 
       HStack(spacing: 12) {
-        SettingsLink { Text("Settings…") }
-          .controlSize(.large)
+        PageButton(model: model)
         if !model.message.isEmpty {
           Text(model.message).font(.caption).foregroundStyle(.red).lineLimit(2)
         } else if !model.readyNote.isEmpty {
@@ -1598,35 +1587,13 @@ struct PlayView: View {
           Button("Show Logs") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
         }
         Spacer()
-        if model.latestSave != nil {
-          Button { model.playFromLauncher(.title) } label: { Text("Title Screen").frame(minWidth: 90) }
-            .controlSize(.large)
-            .disabled(model.gameRunning)
-            .help("Start at the title screen (pick any save or a new game there).")
-          Button { model.playFromLauncher(.continueSave) } label: {
-            Text("Continue").font(.title3.weight(.semibold)).frame(minWidth: 120)
-          }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-          .disabled(model.gameRunning)
-          .help("Boot straight into the latest save. ↩")
-        } else {
-          Button { model.playFromLauncher(.title) } label: {
-            Text("Play").font(.title3.weight(.semibold)).frame(minWidth: 120)
-          }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.large)
-          .keyboardShortcut(.defaultAction)
-          .disabled(model.gameRunning)
-        }
       }
       .padding(.horizontal, 20)
       .padding(.top, 4)
-      .padding(.bottom, 18)
+      .padding(.bottom, 14)
       Text("Version \(Paths.version)").font(.caption2).foregroundStyle(.tertiary).padding(.bottom, 8)
     }
-    .frame(width: 560)
+    .frame(width: 580)
     .onAppear { model.refresh() }
   }
 }
@@ -1640,16 +1607,15 @@ struct WelcomeView: View {
       VStack(alignment: .leading, spacing: 12) {
         Text("Welcome").font(.title2.weight(.semibold))
         if let candidate = model.candidates.first {
-          Text("Fable II's game files are already on this Mac, from the \(candidate.appName) data "
-               + "folder. They can be used here without copying them again, and take no extra space.")
+          Text("Game files found in \(candidate.appName). Use them here?")
             .fixedSize(horizontal: false, vertical: true)
-          Text("Or choose your Fable II disc image (.iso) to copy the game files from it.")
-            .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .help("No copy and no extra space. Or choose your disc image (.iso) instead.")
         } else {
-          Text("To play, choose your own Fable II disc image (.iso). Its game files are copied once into this Mac's "
-               + "Application Support folder (" + (Paths.buildsGame ? "about 8 GB of free space needed, with the game "
-               + "built on this Mac" : "about 7 GB of free space needed") + "). The image itself is only read.")
+          Text("Choose your Fable II disc image (.iso).")
             .fixedSize(horizontal: false, vertical: true)
+          Text(Paths.buildsGame ? "Needs about 8 GB free." : "Needs about 7 GB free.")
+            .font(.callout).foregroundStyle(.secondary)
+            .help("The game files are copied to Application Support. The image is only read.")
         }
         if !model.message.isEmpty {
           Text(model.message).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -1701,46 +1667,39 @@ enum AccessText {
 
   static func build(_ problem: AppAccess.Problem) -> (title: String, text: String) {
     switch problem {
-    case .privacy(let folder, let path):
+    case .privacy(let folder, _):
       if inApp(problem) {
         return ("macOS is not letting Fable II read its own files",
-                "Fable II is in \(place(folder)), and macOS has been told not to let it read files there (“Don’t Allow”). "
-                + "Building the game reads the build kit inside the app. Move Fable II to the Applications folder "
-                + "(recommended: nothing else is needed there), or turn on Fable II for this folder in \(settingsPath), "
-                + "then click Try Again.")
+                "Move Fable II to Applications, or allow it for \(place(folder)) in \(settingsPath).")
       }
       return ("macOS is not letting Fable II read \(place(folder))",
-              "The build needs “\(name(path))” in \(place(folder)), and macOS has been told not to let Fable II read files "
-              + "there. Turn on Fable II for this folder in \(settingsPath), then click Try Again.")
+              "Allow Fable II for this folder in \(settingsPath), then click Try Again.")
     case .permissions(let path):
       return ("Fable II cannot read its build files",
-              "You do not have permission to read “\(name(path))” (\(path)). "
-              + (inApp(problem) ? "Download Fable II again and move it to the Applications folder, then open it from there."
-                 : "Check its permissions in Finder (File › Get Info › Sharing & Permissions), then click Try Again."))
+              "No permission to read “\(name(path))”. "
+              + (inApp(problem) ? "Download Fable II again and move it to Applications."
+                 : "Check its permissions in Finder, then click Try Again."))
     case .missing(let path):
-      return ("A build file is missing", "“\(path)” is missing. Download Fable II again and move it to the Applications folder.")
+      return ("A build file is missing", "“\(name(path))” is missing. Download Fable II again.")
     case .other(let path, let code):
-      return ("A build file could not be read", "“\(path)” could not be read (\(String(cString: strerror(code)))). Click Try Again.")
+      return ("A build file could not be read", "“\(name(path))”: \(String(cString: strerror(code))).")
     }
   }
 
   static func image(_ problem: AppAccess.Problem) -> (title: String, text: String) {
     switch problem {
-    case .privacy(let folder, let path):
+    case .privacy:
       return ("macOS is not letting Fable II read the disc image",
-              "“\(name(path))” is in \(place(folder)), and macOS has been told not to let Fable II read files there. "
-              + "Choose the disc image again: picking it in the file window, or dragging it onto this window, lets "
-              + "Fable II read that one file. Or turn on Fable II for this folder in \(settingsPath), then click Try Again.")
+              "Choose the disc image again (or drag it onto this window).")
     case .permissions(let path):
       return ("The disc image cannot be read",
-              "You do not have permission to read “\(name(path))” (\(path)). Choose another copy, or fix its permissions "
-              + "in Finder (File › Get Info › Sharing & Permissions), then click Try Again.")
+              "No permission to read “\(name(path))”. Choose another copy or fix its permissions in Finder.")
     case .missing(let path):
       return ("The disc image is not there any more",
-              "“\(name(path))” is no longer in \((path as NSString).deletingLastPathComponent). Choose it again where it is now.")
+              "“\(name(path))” has moved. Choose it again.")
     case .other(let path, let code):
       return ("The disc image could not be opened",
-              "“\(name(path))” could not be opened (\(String(cString: strerror(code)))). Choose it again, or click Try Again.")
+              "“\(name(path))”: \(String(cString: strerror(code))).")
     }
   }
 }
@@ -1755,13 +1714,12 @@ struct MoveView: View {
       Header()
       VStack(alignment: .leading, spacing: 12) {
         Text("Move Fable II to the Applications folder?").font(.title2.weight(.semibold))
-        Text(model.location.reason + " The first launch builds the game from files inside the app, and macOS asks for "
-             + "permission before an app there may read them. From the Applications folder no permission is needed.")
+        Text(model.location.reason)
           .fixedSize(horizontal: false, vertical: true)
-        Text("Fable II is copied to \(AppAccess.applicationsFolder().path) and opens from there; "
-             + (model.location.translocated && model.location.originalPath == nil
-                ? "the downloaded copy can then be deleted." : "the copy here moves to the Trash."))
-          .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+          .help("From Applications, macOS needs no extra permission for the first build.")
+        Text(model.location.translocated && model.location.originalPath == nil
+             ? "The downloaded copy can then be deleted." : "This copy moves to the Trash.")
+          .font(.callout).foregroundStyle(.secondary)
         if !model.moveError.isEmpty {
           Text(model.moveError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -1826,7 +1784,7 @@ struct PreparingView: View {
         Text("Preparing shaders…").font(.title3.weight(.semibold))
         CopyBar(fraction: shaders.fraction)
         Text(shaders.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-        Text("Done once per version, so the game starts without stutter at every resolution.")
+        Text("Once per version.")
           .font(.caption).foregroundStyle(.secondary)
         HStack {
           Button("Show Log File") {
@@ -1921,12 +1879,9 @@ struct PreparingView: View {
     } message: {
       if case .mismatch(let digest) = prepare.phase {
         if Paths.mismatchBlocks {
-          Text("Its default.xex has SHA-256 \(digest), but this release translates the game code from the version with "
-               + "SHA-256 \(Paths.expectedXex ?? "?"). The translation is specific to that exact file, so this image "
-               + "cannot be used. See the README for the supported disc.")
+          Text("This release needs a different disc version. See the README.\n\ndefault.xex SHA-256: \(digest)")
         } else {
-          Text("default.xex on this image has SHA-256 \(digest); this build was compiled from \(Paths.expectedXex ?? "?"). "
-               + "The game may misbehave.")
+          Text("The game may misbehave.\n\ndefault.xex SHA-256: \(digest)")
         }
       }
     }
@@ -1963,10 +1918,9 @@ struct BuildView: View {
         Text(title).font(.title3.weight(.semibold))
         switch builder.phase {
         case .needsTools, .waitingForTools:
-          Text("Fable II is translated from your disc and compiled on this Mac once. That needs Apple's free Command "
-               + "Line Tools (not Xcode). macOS shows its own installer; this window continues by itself when they are "
-               + "installed.")
+          Text("Building the game needs Apple's free Command Line Tools.")
             .fixedSize(horizontal: false, vertical: true)
+            .help("Not Xcode. macOS shows its own installer; this window continues when they are installed.")
           if builder.phase == .waitingForTools {
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(builder.detail).font(.callout).foregroundStyle(.secondary) }
           }
@@ -1988,7 +1942,7 @@ struct BuildView: View {
             }
           }
         case .cancelled:
-          Text("What was built so far is kept. Try Again continues from there.").foregroundStyle(.secondary)
+          Text("Progress is kept.").foregroundStyle(.secondary)
         default:
           CopyBar(fraction: builder.fraction)
           HStack {
@@ -2070,10 +2024,12 @@ struct BuildView: View {
 
 struct MainView: View {
   @ObservedObject var model: PlayerModel
-  @Environment(\.openSettings) private var openSettings
   @Environment(\.openWindow) private var openWindow
   var body: some View {
     Group {
+      if model.page == .settings {
+        PlayerSettingsPage(model: model)
+      } else {
       switch model.screen {
       case .move: MoveView(model: model)
       case .welcome: WelcomeView(model: model)
@@ -2081,11 +2037,12 @@ struct MainView: View {
       case .building: BuildView(model: model, builder: model.builder)
       case .play: PlayView(model: model)
       }
+      }
     }
     .sheet(isPresented: $model.showStartFreshMain) { StartFreshSheet(model: model) }
     .onAppear {
       Startup.run(model: model)
-      Snapshot.start(model: model, openWindow: { openWindow(id: $0) }) { openSettings() }
+      Snapshot.start(model: model, openWindow: { openWindow(id: $0) })
     }
   }
 }
@@ -2113,8 +2070,8 @@ enum Startup {
     // A new build or shader seed with game files already in place: prepare its shaders before Play.
     if model.screen == .play && ShaderPrepRunner.needed { model.filesReady() }
     if commandLine.contains("--press-play"), model.screen == .play, model.shaderPrep.phase != .running {
-      // The default button: Continue with a save, else Play (title screen).
-      DispatchQueue.main.async { model.playFromLauncher(Saves.latest() != nil ? .continueSave : .title) }
+      // Load Save on the newest save (the title screen without saves).
+      DispatchQueue.main.async { model.refresh(pickNewest: true); model.loadSave() }
       return
     }
     if commandLine.contains("--reuse"), model.screen == .welcome, let candidate = model.candidates.first {
@@ -2126,29 +2083,23 @@ enum Startup {
   }
 }
 
-// MARK: - Settings window
+// MARK: - Settings page
 
-struct PlayerSettingsView: View {
+/// Settings, the second page of the Play window (2026-10-19; was the Settings window).
+struct PlayerSettingsPage: View {
   @ObservedObject var model: PlayerModel
-  @State private var tab = Snapshot.settingsTab?.rawValue ?? SettingsTab.display.rawValue
   @State private var confirmReset = false
 
   var body: some View {
-    TabView(selection: $tab) {
-      ForEach(SettingsTab.allCases) { item in
-        SettingsTabView(model: model, tab: item, variant: model.developerMode ? .dev : .player, extra: extra)
-          .tabItem { Label(item.playerTitle, systemImage: item.playerSymbol) }
-          .tag(item.rawValue)
+    SettingsPage(model: model, extra: extra)
+      .frame(width: 580)
+      .sheet(isPresented: $model.showStartFresh) { StartFreshSheet(model: model) }
+      .sheet(isPresented: $model.showArchives) { ArchivesSheet(model: model) }
+      .confirmationDialog("Reset every setting to its default?", isPresented: $confirmReset) {
+        Button("Reset All Settings", role: .destructive) { model.resetAll() }
+      } message: {
+        Text("Saves and game files are kept.")
       }
-    }
-    .frame(width: 580)
-    .sheet(isPresented: $model.showStartFresh) { StartFreshSheet(model: model) }
-    .sheet(isPresented: $model.showArchives) { ArchivesSheet(model: model) }
-    .confirmationDialog("Reset every setting to its default?", isPresented: $confirmReset) {
-      Button("Reset All Settings", role: .destructive) { model.resetAll() }
-    } message: {
-      Text("Your saves and game files are not touched.")
-    }
   }
 
   private func extra(_ tab: SettingsTab) -> AnyView {
@@ -2156,14 +2107,8 @@ struct PlayerSettingsView: View {
     case .general:
       return AnyView(Group {
         Section {
-          Toggle(isOn: $model.skipLauncher) {
-            VStack(alignment: .leading, spacing: 2) {
-              Text("Skip launcher, play directly")
-              Text("Opening Fable II starts the game with these settings. Hold Option while opening it to see "
-                   + "the launcher again.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-          }
+          Toggle("Skip launcher, play directly", isOn: $model.skipLauncher)
+            .help("Opening Fable II starts the game. Hold Option while opening to see the launcher.")
         } header: { Text("Launcher") }
         Section {
           LabeledContent("Folder") {
@@ -2179,35 +2124,31 @@ struct PlayerSettingsView: View {
               .help("Copy the game files again from another disc image.")
           }
         } header: { Text("Game files") }
+        Section {
+          HStack {
+            Button("Open Logs Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
+            Button("Open Data Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.state, isDirectory: true)) }
+              .help("Saves, settings, shader cache and logs.")
+            if Paths.buildsGame {
+              Button("Import Saves…") { model.importSavesInteractive() }
+                .disabled(model.gameRunning)
+                .help("Copy saves from another Fable II install or a folder.")
+            }
+            Spacer()
+          }
+          HStack {
+            Button("Reset All Settings…") { confirmReset = true }
+              .disabled(model.isDefault)
+            Spacer()
+            Button("Start Fresh…") { model.showStartFresh = true }
+              .help("Archive the game files, build, caches, logs and settings, so the next launch is a first launch. "
+                    + "Nothing is deleted.")
+            Button("Archives…") { model.showArchives = true }
+          }
+        } header: { Text("Logs and data") }
       })
     case .diagnostics:
-      return AnyView(Section {
-        HStack {
-          Button("Open Logs Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.logs, isDirectory: true)) }
-          Button("Open Data Folder") { NSWorkspace.shared.open(URL(fileURLWithPath: Paths.state, isDirectory: true)) }
-            .help("Saves, settings, shader cache and logs.")
-          if Paths.buildsGame {
-            Button("Import Saves…") { model.importSavesInteractive() }
-              .disabled(model.gameRunning)
-              .help("Copy saves from another Fable II install on this Mac or from a folder (never moved).")
-          }
-          Spacer()
-          Button("Reset All Settings…") { confirmReset = true }
-            .disabled(model.isDefault)
-        }
-        DeveloperSection(developerMode: $model.developerMode)
-        HStack {
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Start fresh")
-            Text("Moves this app's game files, build, caches, logs and settings into an archive, so the next launch is a "
-                 + "first launch again. Nothing is deleted.")
-              .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-          }
-          Spacer()
-          Button("Start Fresh…") { model.showStartFresh = true }
-          Button("Archives…") { model.showArchives = true }
-        }
-      } header: { Text("Logs and data") })
+      return AnyView(DeveloperSection(model: model))
     default:
       return AnyView(EmptyView())
     }
@@ -2225,13 +2166,13 @@ enum Snapshot {
     return window == "advanced" ? .diagnostics : SettingsTab(rawValue: window)
   }
 
-  @MainActor static func start(model: PlayerModel, openWindow: @escaping (String) -> Void = { _ in },
-                               openSettings: @escaping () -> Void) {
+  @MainActor static func start(model: PlayerModel, openWindow: @escaping (String) -> Void = { _ in }) {
     guard let path = path else { return }
     if let tab = settingsTab {
       model.screen = .play
-      openSettings()
-      capture(after: 2.0, path: path) { NSApp.windows.first { $0.isVisible && $0.title == tab.playerTitle } }
+      model.settingsTab = tab
+      model.page = .settings
+      capture(after: 2.0, path: path) { NSApp.windows.first { $0.isVisible && $0.title == "Fable II" } }
       return
     }
     if window == "devlauncher" {  // developer mode: the Dev Launcher's window in this app
@@ -2243,7 +2184,7 @@ enum Snapshot {
     switch window {
     case "move": break  // PlayerModel shows the offer for this snapshot
     case "ready":  // the Play window right after the build
-      model.readyNote = "The game is built and ready. Check the settings if you like, then press Play."
+      model.readyNote = "Ready to play."
       model.screen = .play
       model.refresh()
     case "denied":
@@ -2315,6 +2256,7 @@ struct PlayerCommands: Commands {
   var body: some Commands {
     // A game started from the launcher window ended and that window was closed: reopen it (LauncherReturn).
     let _ = LauncherReturn.reopen = { [openWindow] in openWindow(id: "devlauncher") }
+    SettingsPageCommand(model: model, windowTitles: ["Fable II"])
     CommandGroup(after: .windowArrangement) {
       if model.developerMode {
         Divider()
@@ -2323,7 +2265,7 @@ struct PlayerCommands: Commands {
         if let devModel = dev.model {
           Menu("Developer") { DevToolItems(model: devModel, openWindow: { openWindow(id: "devlauncher") }) }
         } else {
-          Button("Developer tools need a source checkout…") { _ = DevCheckout.choose(); DevHost.shared.ensure() }
+          Button("Choose Source Checkout…") { _ = DevCheckout.choose(); DevHost.shared.ensure() }
         }
       }
     }
@@ -2359,8 +2301,7 @@ struct PlayerApp: App {
     Window("Fable II", id: "main") { MainView(model: model) }
       .windowResizability(.contentSize)
       .commands { PlayerCommands(model: model) }
-    Settings { PlayerSettingsView(model: model) }
-    // Developer mode: the Dev Launcher's main window (opened from the Window menu).
+    // Dev Options: the Dev Launcher's main window (opened from the Window menu).
     Window("Fable II Launcher", id: "devlauncher") { DevLauncherWindowHost() }
       .windowResizability(.contentSize)
   }
@@ -2463,11 +2404,11 @@ struct StartFreshSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Start fresh?").font(.title3.weight(.semibold))
-      Text("These move into a new archive in \(Paths.state)/Archive. Nothing is deleted; Archives… can move them back. "
-           + "Fable II then opens as on its first launch.")
+      Text("These move into an archive. Nothing is deleted.")
+        .help("Archives… can move them back. Fable II then opens as on its first launch.")
         .fixedSize(horizontal: false, vertical: true)
       Toggle("Keep my saves", isOn: $keepSaves)
-        .help("On: your saves stay where they are. Off: they go into the archive too.")
+        .help("Off: saves go into the archive too.")
       ScrollView {
         VStack(alignment: .leading, spacing: 4) {
           ForEach(items, id: \.original) { item in
@@ -2530,7 +2471,7 @@ struct ArchivesSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("Archives").font(.title3.weight(.semibold))
-      Text("Restore moves an archive back. What is here now is archived first, so nothing is lost.")
+      Text("What is here now is archived first.")
         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       List(archives, selection: $selection) { archive in
         VStack(alignment: .leading, spacing: 1) {
@@ -2558,12 +2499,12 @@ struct ArchivesSheet: View {
     .confirmationDialog("Restore \(selected?.name ?? "")?", isPresented: $confirmRestore) {
       Button("Restore and Relaunch") { restore() }
     } message: {
-      Text("The current game files, build, caches and settings are archived first. Fable II then relaunches.")
+      Text("The current files are archived first. Fable II relaunches.")
     }
     .confirmationDialog("Delete \(selected?.name ?? "") permanently?", isPresented: $confirmDelete) {
       Button("Delete Archive", role: .destructive) { delete() }
     } message: {
-      Text("This removes the archive's files from this Mac. It cannot be undone.")
+      Text("This cannot be undone.")
     }
   }
 
@@ -2620,16 +2561,16 @@ if commandLine.contains("--list-capabilities") {
   // The player role: its own windows, plus the Dev Launcher's in developer mode (with a checkout for the tools).
   var caps: [String]
   if AppRole.devLauncher {
-    caps = Capabilities.devLauncher()
+    caps = Capabilities.devLauncher(developer: UserDefaults.standard.object(forKey: "developerMode") as? Bool ?? false)
   } else {
     let store = PlistSettingsStore(path: Paths.settingsPlist)
     DevCheckout.store = store
-    let developer = store.object(forKey: "developerMode") as? Bool ?? AppRole.developerModeDefault
-    caps = ["window:player", "cli:launch", "cli:print-args", "cli:picker-rows", "settings:developer", "start-fresh"]
-      + SettingsTab.allCases.map { "settings:" + $0.rawValue } + LaunchSettings.flags.map { "flag:" + $0.key }
+    let developer = store.object(forKey: "developerMode") as? Bool ?? false
+    caps = ["window:player", "cli:launch", "cli:print-args", "cli:picker-rows", "settings:dev-options", "start-fresh"]
+      + Capabilities.settings(developer: developer)
     if developer {
       caps.append("window:dev-launcher")
-      if DevCheckout.path != nil { caps += DevTools.items.map { "tool:" + $0.id } }
+      if DevCheckout.path != nil { caps += DevTools.visible(developer: true).map { "tool:" + $0.id } }
     }
   }
   let data = (try? JSONSerialization.data(withJSONObject: ["role": AppRole.devLauncher ? "dev-launcher" : "player",

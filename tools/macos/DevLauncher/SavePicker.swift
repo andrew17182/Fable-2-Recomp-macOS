@@ -1,4 +1,6 @@
-// Save picker of the Dev Launcher (2026-10-14): readable titles, grouping, test-save hiding, stars, renames, search.
+// Save library of the Dev Launcher (2026-10-14; Tools > Save Library… with Dev Options since 2026-10-19, when the
+// front page got the save menu): readable titles, grouping, test-save hiding, stars, renames, search. Starred saves
+// appear in the front page's save menu.
 //
 // The data comes from `tools/fable2_dev_session.py list`; tools/fable2_save_picker.py adds each library entry's
 // friendly place/quest names, its group (LevelName, QuestName, hero folder) and the test-save flag. Stars and custom
@@ -23,6 +25,14 @@ struct SaveItem: Identifiable, Hashable {
   var search = ""     // lowercased text the search field matches
   var savedAt = ""    // "yyyy-MM-dd HH:mm:ss" of mainsave.bin (sortable): Continue picks the newest
   var writtenBack = "" // library entry: the live slot it was written back to ("" = library only)
+  var label = ""      // the front page's save menu: "Name · Place · Oct 7, 2:45 pm"
+
+  /// "Name · Place · date" from the parts that exist.
+  static func shortLabel(_ info: [String: Any], when: String) -> String {
+    let place = (info["place"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (info["LevelName"] as? String)
+    return [info["header_display_name"] as? String, place, when.isEmpty ? nil : when]
+      .compactMap { $0 }.joined(separator: " · ")
+  }
 
   static let parse: DateFormatter = {
     let f = DateFormatter()
@@ -59,8 +69,11 @@ struct SaveItem: Identifiable, Hashable {
     var parts = placeAndQuest(info)
     let when = friendlyDate(info["saved_mtime"] as? String)
     if !when.isEmpty { parts.append("saved " + when) }
-    return SaveItem(id: "live:" + folder, title: "\(name) (\(folder))", detail: parts.joined(separator: " · "),
-                    folder: folder, savedAt: info["saved_mtime"] as? String ?? "")
+    var item = SaveItem(id: "live:" + folder, title: "\(name) (\(folder))", detail: parts.joined(separator: " · "),
+                        folder: folder, savedAt: info["saved_mtime"] as? String ?? "")
+    item.label = shortLabel(info, when: when)
+    if item.label.isEmpty { item.label = folder }
+    return item
   }
 
   static func library(_ info: [String: Any]) -> SaveItem {
@@ -80,10 +93,13 @@ struct SaveItem: Identifiable, Hashable {
     detail.append(name)
     let search = ([name, hero, info["LevelName"], info["QuestName"], info["place"], info["quest"], info["note"]]
                   .compactMap { $0 as? String } + titleParts).joined(separator: " ").lowercased()
-    return SaveItem(id: "library:" + name, title: titleParts.joined(separator: " · "),
-                    detail: detail.joined(separator: " · "), folder: folder, name: name,
-                    group: info["group"] as? String ?? name, test: test, hero: hero, search: search,
-                    savedAt: info["saved_mtime"] as? String ?? "", writtenBack: info["written_back_to"] as? String ?? "")
+    var item = SaveItem(id: "library:" + name, title: titleParts.joined(separator: " · "),
+                        detail: detail.joined(separator: " · "), folder: folder, name: name,
+                        group: info["group"] as? String ?? name, test: test, hero: hero, search: search,
+                        savedAt: info["saved_mtime"] as? String ?? "", writtenBack: info["written_back_to"] as? String ?? "")
+    item.label = shortLabel(info, when: when)
+    if item.label.isEmpty { item.label = name }
+    return item
   }
 }
 
@@ -219,13 +235,13 @@ struct SavePickerView: View {
           .textFieldStyle(.roundedBorder)
         Toggle("Show test saves", isOn: $showTests)
           .toggleStyle(.checkbox)
-          .help("Saves made by agent test sessions (hidden by default; play saves are always shown).")
+          .help("Saves made by agent test sessions.")
       }
       .padding(12)
       ScrollViewReader { scroller in
       List(selection: $selection) {
         if query.isEmpty {
-          Text("Title screen (live saves, like Fable II.app)").tag("title")
+          Text("Title Screen").tag("title")
         }
         if !rows.starred.isEmpty {
           Section("Starred") { ForEach(rows.starred) { row($0) } }
@@ -256,8 +272,9 @@ struct SavePickerView: View {
       }
       Divider()
       HStack {
-        Text("Double-click to pick · right-click to star or rename · stars and titles: \(metaFileName)")
+        Text("Starred saves show in the launcher's save menu.")
           .font(.caption).foregroundStyle(.secondary)
+          .help("Double-click to choose. Right-click to star or rename. Stars and titles: \(metaFileName)")
         Spacer()
         Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
         Button("Choose") { if let id = selection { choose(id) } }
@@ -278,7 +295,7 @@ struct SavePickerView: View {
       Button("Use Automatic Title") { if let item = renaming { model.setTitle(item, "") }; renaming = nil }
       Button("Cancel", role: .cancel) { renaming = nil }
     } message: {
-      Text(renaming.map { "\($0.title)\n\($0.name)\nOnly the picker's title changes; the save itself is not touched." } ?? "")
+      Text(renaming.map { "\($0.title)\n\($0.name)" } ?? "")
     }
   }
 
@@ -320,7 +337,7 @@ struct SavePickerView: View {
             .foregroundStyle(starred ? Color.yellow : Color.secondary)
         }
         .buttonStyle(.borderless)
-        .help(starred ? "Unstar" : "Star (starred saves are listed first)")
+        .help(starred ? "Unstar" : "Star")
       }
       VStack(alignment: .leading, spacing: 2) {
         HStack(spacing: 6) {
