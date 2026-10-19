@@ -4,13 +4,15 @@
   re-copies changed ones with a new mtime, removes files a newer kit dropped and never touches anything else in the
   build tree; the RAM-based job rule; status() against a kit;;
 - tools/apply_recomp_patches.py: the per-file passes give the same files and counts in worker processes as in one;
-- tools/fable2_release.py: check_release refuses game-derived files and build output in a package.
+- tools/fable2_release.py: check_release refuses game-derived files and build output in a package; the release zip
+  has no __MACOSX/._ (AppleDouble) entries, even when the files carry extended attributes; no unsealed signing.
 Runs under /usr/bin/python3 (3.9)."""
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import time
 import unittest
 
@@ -129,6 +131,43 @@ class ReleaseCheckTests(unittest.TestCase):
             self.assertTrue(release.FORBIDDEN.search(rel.split('Contents/Resources/kit/', 1)[-1]), rel)
         for rel in good:
             self.assertFalse(release.FORBIDDEN.search(rel.split('Contents/Resources/kit/', 1)[-1]), rel)
+
+
+
+class ReleaseZipTests(unittest.TestCase):
+    """macOS 27 called a downloaded release "damaged" when its zip carried __MACOSX/._* entries (--sequesterRsrc);
+    without them it shows "Not Opened" and Open Anyway works (docs/release-app.md "Gatekeeper")."""
+
+    def test_zip_has_no_appledouble_entries(self):
+        import fable2_release as release
+        import fable2_portable as portable
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / 'Test.app'
+            write(app / 'Contents/MacOS/tool', '#!/bin/sh\n')
+            write(app / 'Contents/Resources/a.txt', 'a')
+            for path in (app, app / 'Contents/MacOS/tool', app / 'Contents/Resources/a.txt'):
+                subprocess.run(['xattr', '-w', 'com.example.test', 'x', str(path)], check=True)
+            sequestered = root / 'old.zip'
+            subprocess.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(app), str(sequestered)],
+                           check=True)
+            self.assertTrue(portable.metadata_entries(sequestered))  # the check sees what the old zip shipped
+            with self.assertRaises(RuntimeError):
+                portable.check_zip(sequestered)
+            fixed = root / 'new.zip'
+            release.zip_app(app, fixed)
+            self.assertEqual(portable.metadata_entries(fixed), [])
+
+    def test_built_release_zip(self):
+        import fable2_portable as portable
+        zip_path = ROOT / 'out/release/Fable II.zip'
+        if not zip_path.exists(): self.skipTest('no out/release/Fable II.zip')
+        self.assertEqual(portable.metadata_entries(zip_path), [])
+
+    def test_no_unsealed_signing(self):
+        import fable2_release as release
+        self.assertEqual(release.SIGNING_MODES[0], 'sealed')
+        self.assertNotIn('unsealed', release.SIGNING_MODES)
 
 
 class RecipeTests(unittest.TestCase):

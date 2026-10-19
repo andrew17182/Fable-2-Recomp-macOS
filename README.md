@@ -35,9 +35,9 @@ no game content: on first launch the app copies the game files from your disc an
 your Mac.
 
 1. Download **`Fable II.zip`** from the [Releases page](https://github.com/andrew17182/Fable-2-Recomp-macOS/releases), unzip it, and drag **Fable II** to Applications.
-2. Open it. macOS says it "could not verify" the app, because it is not notarized. Click **Done**, then
-   open **System Settings → Privacy & Security**, scroll to Security, click **Open Anyway** next to
-   "Fable II", and confirm with your password. This is needed once per downloaded version.
+2. Open it. macOS says **"Fable II" Not Opened**, because the app is not notarized. Click **Done**.
+   Open **System Settings → Privacy & Security**, click **Open Anyway** next to "Fable II", and confirm.
+   No Terminal needed. This is needed once per downloaded version.
 3. Choose your disc image. The game files are copied into `~/Library/Application Support/Fable II for Mac`.
 4. If asked, install Apple's free **Command Line Tools** (macOS shows its own installer; Xcode is not
    needed). The app downloads CMake by itself if it is missing.

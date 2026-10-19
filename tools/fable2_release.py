@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Release package: one "Fable II.app" that builds the game on the player's Mac (docs/release-app.md).
 
-  python3 tools/fable2_release.py build [--out DIR] [--no-rebuild] [--no-zip]
+  python3 tools/fable2_release.py build [--out DIR] [--no-rebuild] [--no-zip] [--signing sealed|runtime]
   python3 tools/fable2_release.py check APP_OR_ZIP          run the package checks on an existing app or zip
 
 Writes <DIR>/Fable II.app, <DIR>/Fable II.zip and <DIR>/manifest.json (default DIR: out/release).
@@ -170,6 +170,43 @@ def write_kit(kit, app, version):
     return record
 
 
+# How the release app is signed (--signing; docs/release-app.md "Gatekeeper"). Both are ad-hoc (no Developer ID),
+# nested code first: the kit's runtime libraries, then the helpers, then the bundle (Contents/_CodeSignature).
+#   sealed    the shipped default. Downloaded and unzipped, macOS shows "Not Opened"; Open Anyway in System Settings
+#             then runs it.
+#   runtime   as sealed, with the hardened runtime (`--options runtime`) on the executables and the bundle. Same
+#             Gatekeeper result; kept for testing. The executables load only system libraries and spawn/exec
+#             separately signed programs, so no entitlement is needed (RUNTIME_ENTITLEMENTS).
+# Leaving the bundle unsealed makes macOS call the download "damaged"; do not ship it.
+SIGNING_MODES = ('sealed', 'runtime')
+# Entitlements for --signing runtime. None so far: the executables load only system libraries (otool -L). Kept as a
+# hook in case a hardened-runtime run check needs one.
+RUNTIME_ENTITLEMENTS = {}
+
+
+def sign_app(app, work, mode='sealed'):
+    """Sign the app as --signing MODE says (SIGNING_MODES), nested code first, then verify it."""
+    if mode not in SIGNING_MODES: raise ValueError('unknown signing mode: %s' % mode)
+    macos, resources = app / 'Contents/MacOS', app / 'Contents/Resources'
+    # The kit's runtime libraries are copied into the game bundle and re-signed on the player's Mac; they are signed
+    # plainly in both modes (the hardened runtime applies to executables only).
+    for library in sorted((resources / 'kit/runtime').iterdir()):
+        run('codesign', '--force', '--sign', '-', library, stderr=subprocess.DEVNULL)
+    options = []
+    if mode == 'runtime':
+        options = ['--options', 'runtime']
+        if RUNTIME_ENTITLEMENTS:
+            entitlements = work / 'entitlements.plist'
+            entitlements.write_bytes(plistlib.dumps(RUNTIME_ENTITLEMENTS))
+            options += ['--entitlements', entitlements]
+    main = plistlib.loads((app / 'Contents/Info.plist').read_bytes())['CFBundleExecutable']
+    for helper in sorted(macos.iterdir()):
+        if helper.name != main: run('codesign', '--force', '--sign', '-', *options, helper, stderr=subprocess.DEVNULL)
+    # The bundle last: this signs the main executable and seals everything else.
+    run('codesign', '--force', '--sign', '-', *options, app, stderr=subprocess.DEVNULL)
+    run('codesign', '--verify', '--deep', '--strict', app)
+
+
 def check_release(app):
     """Release-only checks on top of fable2_portable.check_package."""
     problems = []
@@ -221,7 +258,7 @@ def write_shader_recipe(resources):
                 bytes=(resources / 'shader-recipe.json').stat().st_size)
 
 
-def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False):
+def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False, signing='sealed'):
     started = time.monotonic()
     if rebuild: portable.ensure_release_build()
     portable.RUNTIME = portable.RELEASE_RUNTIME
@@ -270,12 +307,7 @@ def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False):
         plist_path.write_bytes(plistlib.dumps(info))
         # Every file but itself; written before signing so the seal covers it.
         (resources / 'release-manifest.json').write_text(json.dumps(manifest(app), indent=1, sort_keys=True) + '\n')
-        for helper in ('FableIIPrepare', portable.PLAYER_EXECUTABLE, 'FableIILauncher'):
-            run('codesign', '--force', '--sign', '-', macos / helper, stderr=subprocess.DEVNULL)
-        for library in sorted((resources / 'kit/runtime').iterdir()):
-            run('codesign', '--force', '--sign', '-', library, stderr=subprocess.DEVNULL)
-        run('codesign', '--force', '--sign', '-', app, stderr=subprocess.DEVNULL)
-        run('codesign', '--verify', '--deep', '--strict', app)
+        sign_app(app, work, signing)
         portable.check_package(app, third_party=THIRD_PARTY)
         check_release(app)
         final = out_dir / APP_NAME
@@ -284,21 +316,27 @@ def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False):
     zip_path = out_dir / ZIP_NAME
     if zip_it:
         if zip_path.exists(): zip_path.unlink()
-        run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', final, zip_path)
+        zip_app(final, zip_path)
     files = manifest(final)
     result = dict(app=str(final), zip=str(zip_path) if zip_it else None,
                   app_bytes=sum(f['bytes'] for f in files.values()),
                   zip_bytes=zip_path.stat().st_size if zip_it else None,
                   zip_sha256=sha256(zip_path) if zip_it else None, version=version['string'],
                   kit_id=kit_record['kit_id'], xex_sha256=kit_record['xex_sha256'], files=len(files),
-                  shader_recipe=recipe_info, seconds=round(time.monotonic() - started, 1))
+                  shader_recipe=recipe_info, signing=signing, seconds=round(time.monotonic() - started, 1))
     (out_dir / 'manifest.json').write_text(json.dumps(dict(result, contents=files), indent=1) + '\n')
     return result
+
+
+def zip_app(app, zip_path):
+    """The release zip (fable2_portable.zip_bundle: no __MACOSX/._* entries, which made macOS call it "damaged")."""
+    portable.zip_bundle(app, zip_path)
 
 
 def check(target):
     target = Path(target)
     if target.suffix == '.zip':
+        portable.check_zip(target)
         with tempfile.TemporaryDirectory() as temporary:
             run('ditto', '-x', '-k', target, temporary)
             app = Path(temporary) / APP_NAME
@@ -319,6 +357,9 @@ def main():
     b.add_argument('--shader-recipe', action='store_true',
                    help='ship the disc shader recipe (hashes, bank locations, patched fetch dwords, pipeline list; no '
                         'microcode) so the first launch prepares shaders; derived metadata, off by default')
+    b.add_argument('--signing', choices=SIGNING_MODES, default='sealed',
+                   help='sealed (default): ad-hoc, bundle sealed; runtime: the same with the hardened runtime '
+                        '(docs/release-app.md "Gatekeeper")')
     c = sub.add_parser('check')
     c.add_argument('target')
     args = ap.parse_args()
@@ -327,7 +368,7 @@ def main():
             check(args.target)
             print(json.dumps({'ok': True}))
             return 0
-        result = build(args.out, not args.no_rebuild, not args.no_zip, args.shader_recipe)
+        result = build(args.out, not args.no_rebuild, not args.no_zip, args.shader_recipe, args.signing)
     except Exception as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1

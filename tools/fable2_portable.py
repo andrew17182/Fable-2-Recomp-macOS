@@ -46,6 +46,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fable2_version  # noqa: E402
@@ -400,6 +401,27 @@ def resolve_seed(work, scales, source='auto'):
 
 # --- Package ----------------------------------------------------------------------------------------
 
+def zip_bundle(source, zip_path):
+    """Every user-facing zip (release app, portable, benchmark and flash kits). No extended attributes, resource forks
+    or ACLs: --sequesterRsrc stored the build Mac's com.apple.provenance as __MACOSX/._* entries, and macOS 27 called
+    the downloaded app "damaged" (docs/release-app.md "Gatekeeper")."""
+    run('ditto', '-c', '-k', '--norsrc', '--noextattr', '--noacl', '--keepParent', source, zip_path)
+    check_zip(zip_path)
+
+
+def metadata_entries(zip_path):
+    """AppleDouble entries in a zip (__MACOSX/ or ._name): the ones zip_bundle must never write."""
+    with zipfile.ZipFile(str(zip_path)) as archive:
+        return [name for name in archive.namelist()
+                if name.startswith('__MACOSX/') or any(part.startswith('._') for part in name.split('/'))]
+
+
+def check_zip(zip_path):
+    found = metadata_entries(zip_path)
+    if found:
+        raise RuntimeError('%s has %d __MACOSX/._ entries (e.g. %s)' % (Path(zip_path).name, len(found), found[0]))
+
+
 # Name-guard labels ignored in third-party source trees (check_package third_party): author credits and examples in
 # upstream headers (simde, SDL, spdlog, ...). The surname check and the build-machine path check still apply.
 THIRD_PARTY_IGNORED = ('first name', 'personal email', 'home path')
@@ -562,7 +584,7 @@ def build(out_dir, zip_it=True, skip_intro=True, shader_sources=None, warm_scale
         folder.rename(final)
     if zip_it:
         if zip_path.exists(): zip_path.unlink()
-        run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', final, zip_path)
+        zip_bundle(final, zip_path)
     app = final / 'Fable II.app'
     size = sum(p.stat().st_size for p in app.rglob('*') if p.is_file() and not p.is_symlink())
     return dict(folder=str(final), app=str(app), zip=str(zip_path) if zip_it else None,
