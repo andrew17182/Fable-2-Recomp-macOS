@@ -1,6 +1,7 @@
 #include <algorithm>
 #include "rex/graphics/metal/metal_frame_log.h"
 #include "rex/graphics/metal/metal_trace.h"
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 /**
@@ -107,6 +108,10 @@ bool TestDrawableOverride(uint32_t& width, uint32_t& height) {
   height = size.second;
   return true;
 }
+
+// Filter used for the last presented guest output: 0 none yet, 1 bilinear, 2 MetalFX spatial.
+// One relaxed store per present; read by the F9 FPS counter (fable2_present_filter below).
+std::atomic<int> g_present_filter{0};
 }  // namespace
 
 namespace rex {
@@ -722,6 +727,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
       fragment_constants.output_size_inv[1] = bilinear_constants.output_size_inv[1];
 
       paint_texture = guest_output_texture;
+      bool metalfx_applied = false;
 #if XE_METALFX_AVAILABLE
       if (REXCVAR_GET(metal_presenter_use_metalfx)) {
         if (@available(macOS 13.0, *)) {
@@ -827,6 +833,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
                 scaler.inputContentHeight = input_height;
                 [scaler encodeToCommandBuffer:command_buffer];
                 paint_texture = metalfx_output_texture_;
+                metalfx_applied = true;
                 if (REXCVAR_GET(metal_presenter_debug_markers)) {
                   [command_buffer popDebugGroup];
                 }
@@ -836,6 +843,9 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
         }
       }
 #endif
+      if (g_present_filter.load(std::memory_order_relaxed) != (metalfx_applied ? 2 : 1)) {
+        g_present_filter.store(metalfx_applied ? 2 : 1, std::memory_order_relaxed);
+      }
       draw_guest_output = true;
     }
   }
@@ -1178,6 +1188,12 @@ bool MetalPresenter::RefreshGuestOutputImpl(
 // Flash kit window (src/core/fable2_benchmark.h, via dlsym): 1 = open, 2 = close and write the results.
 extern "C" __attribute__((visibility("default"), used)) int fable2_flash_control(int op) {
   return rex::ui::metal::flash::Detector::Get().Control(op);
+}
+
+// Upscaling filter of the last presented frame (src/core/fable2_fps_counter.h, via dlsym):
+// 0 = nothing presented yet, 1 = bilinear, 2 = MetalFX spatial.
+extern "C" __attribute__((visibility("default"), used)) int fable2_present_filter() {
+  return g_present_filter.load(std::memory_order_relaxed);
 }
 
 // Test control `capture at <frame>`: on the GPU thread, right after the target frame's guest output copy was

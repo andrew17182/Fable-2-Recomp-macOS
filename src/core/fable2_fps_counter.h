@@ -1,16 +1,20 @@
 // On-screen FPS counter (bottom-left corner), toggled with F9.
 //
-// Shows presented frames per second and the average frame time, both over the
-// last ~0.5 s, e.g. "60 FPS · 16.7 ms". Extra fields appear only when they say
-// something: the guest (game) frame rate when it differs from the presented
-// rate, "2× res" for a higher internal resolution, and "turbo" while turbo is
-// on. The text uses the game's UI font (src/core/fable2_turbo_notice.h) and
-// falls back to the ImGui font.
+// Headline: the game's own frame rate and average frame time over the last
+// ~0.5 s, e.g. "52 FPS · 19.2 ms". Guest frames come from the flight recorder's
+// swap counter (fable2::fr::g_frame, counted on every guest swap). Extra fields
+// appear only when they say something: "display N" when the presented rate
+// differs from the game's (the presenter repaints every UI tick while any
+// overlay, this one included, is shown, so the presented rate tends toward the
+// display refresh), "2× res" for a higher internal resolution, "turbo 2.5x"
+// while turbo is on, and the upscaling filter in use for presenting
+// ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter
+// export, MetalFX only when it is actually applied). The text uses the game's
+// UI font (src/core/fable2_turbo_notice.h) and falls back to the ImGui font.
 //
 // Presented frames are counted in the overlay's draw callback, which the
 // presenter runs once per presented frame (Metal: PaintAndPresentImpl, just
-// before presentDrawable). Guest frames come from the flight recorder's swap
-// counter (fable2::fr::g_frame, counted on every guest swap).
+// before presentDrawable).
 //
 // Off by default. Start state: [graphics] fps_counter in fable2_config.toml,
 // overridden by FABLE2_FPS_COUNTER=1|0 (Dev Launcher "Show FPS counter").
@@ -26,6 +30,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#include <dlfcn.h>
 
 #include <imgui.h>
 #include <rex/logging/macros.h>
@@ -80,25 +86,39 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
   void Update(Clock::time_point now) {
     const double seconds = std::chrono::duration<double>(now - start_).count();
     const uint32_t guest_now = fable2::fr::g_frame.load(std::memory_order_relaxed);
-    const double fps = frames_ / seconds;
-    const double ms = frames_ ? seconds * 1000.0 / frames_ : 0.0;
-    const double guest_fps = double(guest_now - guest_start_) / seconds;
+    const uint32_t guest_frames = guest_now - guest_start_;
+    const double display_fps = frames_ / seconds;
+    const double fps = guest_frames / seconds;
     start_ = now;
     frames_ = 0;
     guest_start_ = guest_now;
 
     if (!separator_) ChooseSymbols();
-    int n = std::snprintf(text_, sizeof(text_), "%.0f FPS%s%.1f ms", fps, separator_, ms);
-    // Guest rate only when it tells something the presented rate does not.
-    if (n > 0 && std::abs(guest_fps - fps) >= std::max(2.0, fps * 0.05)) {
-      n += std::snprintf(text_ + n, sizeof(text_) - n, "%sgame %.0f", separator_, guest_fps);
+    const char* sep = separator_;
+    int n = guest_frames ? std::snprintf(text_, sizeof(text_), "%.0f FPS%s%.1f ms", fps, sep,
+                                         seconds * 1000.0 / guest_frames)
+                         : std::snprintf(text_, sizeof(text_), "0 FPS");
+    auto append = [&](const char* fmt, auto... args) {
+      if (n > 0 && size_t(n) < sizeof(text_)) n += std::snprintf(text_ + n, sizeof(text_) - n, fmt, args...);
+    };
+    // Presented rate only when it tells something the game rate does not.
+    if (std::abs(display_fps - fps) >= std::max(2.0, fps * 0.05)) append("%sdisplay %.0f", sep, display_fps);
+    if (res_scale_ > 1) append("%s%d%s res", sep, res_scale_, times_);
+    if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::ConfiguredScale());
+    switch (PresentFilter()) {
+      case 1: append("%sBilinear", sep); break;
+      case 2: append("%sMetalFX", sep); break;
+      default: break;
     }
-    if (n > 0 && size_t(n) < sizeof(text_) && res_scale_ > 1) {
-      n += std::snprintf(text_ + n, sizeof(text_) - n, "%s%d%s res", separator_, res_scale_, times_);
-    }
-    if (n > 0 && size_t(n) < sizeof(text_) && fable2::turbo::Active()) {
-      std::snprintf(text_ + n, sizeof(text_) - n, "%sturbo", separator_);
-    }
+  }
+
+  // The Metal presenter's export (backends/metal/port/rex/ui/metal/metal_presenter.mm):
+  // 0 = unknown, 1 = bilinear, 2 = MetalFX. Looked up until found.
+  static int PresentFilter() {
+    using Fn = int (*)();
+    static Fn fn = nullptr;
+    if (!fn) fn = reinterpret_cast<Fn>(dlsym(RTLD_DEFAULT, "fable2_present_filter"));
+    return fn ? fn() : 0;
   }
 
   void ChooseSymbols() {
@@ -150,7 +170,7 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     }
   }
 
-  char text_[96] = {};
+  char text_[128] = {};
   const char* separator_ = nullptr;
   const char* times_ = "x";
   int res_scale_ = 1;

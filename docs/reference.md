@@ -260,10 +260,15 @@ Front-end audio preloading uses a 10 ms yield between banks instead of the origi
 
 ### FPS counter (macOS)
 
-**F9** shows or hides a small counter in the bottom-left corner: presented frames per second and
-the average frame time over the last ~0.5 s (e.g. `60 FPS · 16.7 ms`). It adds `game N` when the
-guest frame rate differs from the presented rate, `2× res` at a higher internal resolution and
-`turbo` while turbo is on. It uses the game's UI font (ImGui font as fallback) and is off by
+**F9** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
+rate and average frame time over the last ~0.5 s (guest swaps, e.g. `52 FPS · 19.2 ms`). Extra fields, in
+order: `display N` when the presented rate differs (while any overlay is shown, this one included, the
+presenter repaints every UI tick, so the presented rate tends toward the display refresh), `2× res` at a
+higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on, and the upscaling filter in
+use for presenting, `Bilinear` or `MetalFX` (MetalFX only when it is actually applied: the window must be
+larger than the internal size, otherwise the presenter logs `[metalfx] not applied` and uses bilinear; read
+from the Metal plugin's `fable2_present_filter` export). Example: `52 FPS · 19.2 ms · display 120 · 2× res ·
+turbo 2.5x · MetalFX`. It uses the game's UI font (ImGui font as fallback) and is off by
 default: `[graphics] fps_counter = true` in `fable2_config.toml`, `FABLE2_FPS_COUNTER=1|0`, or the
 Launcher's **Show FPS counter** sets the start state. Code: `src/core/fable2_fps_counter.h`.
 
