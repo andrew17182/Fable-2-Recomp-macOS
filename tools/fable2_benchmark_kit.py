@@ -184,7 +184,7 @@ def build(out_dir, save=SAVE, zip_it=True, shader_sources=None, warm_scales=None
         folder.rename(final)
     if zip_it:
         if zip_path.exists(): zip_path.unlink()
-        run('ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', final, zip_path)
+        portable.zip_bundle(final, zip_path)
     app = final / v['app']
     package_seconds = round(time.monotonic() - started, 1)
     out = dict(folder=str(final), app=str(app), zip=str(zip_path) if zip_it else None, save=saved,

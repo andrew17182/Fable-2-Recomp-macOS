@@ -178,7 +178,7 @@ Snapshots: `out/validation/release-access/` (KEEP): `move-offer-downloads.png`, 
 **Manual check (a real privacy prompt cannot be automated):**
 
 1. Download the release zip in Safari (so it is quarantined), let it unzip in `~/Downloads`, approve it with Open
-   Anyway, open it from Downloads. Expect the Move to Applications screen before any other window.
+   Anyway, open it from Downloads (from a script: `open "Fable II.app" --args -ApplePersistenceIgnoreState YES`). Expect the Move to Applications screen before any other window.
 2. Click **Move to Applications**: Fable II reopens from `/Applications` (the Downloads copy is in the Trash),
    with no Gatekeeper question and no Downloads prompt during the build.
 3. Start Fresh, move the app back to Downloads by hand, open it, choose **Not Now** and a disc image in Downloads.
@@ -193,6 +193,31 @@ CMake + `/usr/bin:/bin:/usr/sbin:/sbin`, and CMake's Python steps (recomp patche
 Homebrew CMake its `bin/` is on PATH and CMake otherwise picks Homebrew's Python. The CMake option `FABLE2_GPU_PLUGIN_XENOS=OFF` keeps the Xenos plugin
 (not in the kit) from being staged. CLI: `fable2_game_build.py plan` (job count and why), `status`,
 `measure-report STATE` (for `--measure` builds).
+
+## Gatekeeper (2026-10-19)
+
+The app is ad-hoc signed and not notarized. Downloaded and unzipped, it opens with **"Fable II" Not Opened**; the
+player clicks **Done**, then **System Settings → Privacy & Security → Open Anyway**, and confirms. No Terminal.
+
+Test on an M5, macOS 27: each zip downloaded the Safari way (quarantined), extracted with `ditto`, then opened.
+
+| Arm | Signing | Zip | Result |
+|---|---|---|---|
+| A | sealed ad-hoc (`codesign --sign -`: runtime libraries, helpers, then the bundle) | no `__MACOSX/._*` entries | "Not Opened"; Open Anyway, confirm: it runs |
+| B | sealed ad-hoc + hardened runtime (`--signing runtime`) | no `__MACOSX/._*` entries | "Not Opened" |
+| C | unsealed (each executable signed alone, no `_CodeSignature`) | no `__MACOSX/._*` entries | **"damaged"** (Move to Trash only) |
+| previous release | sealed ad-hoc | `ditto --sequesterRsrc`: 1,724 `__MACOSX/._*` entries | **"damaged"** |
+
+Cause: the zip, not the signature. `ditto -c -k --sequesterRsrc` stored the build Mac's extended attributes
+(`com.apple.provenance`) as AppleDouble `__MACOSX/._*` entries; extracted back onto the app, macOS 27 rejected it as
+damaged. Every user-facing zip (release, portable, benchmark and flash kits) is now made by
+`fable2_portable.zip_bundle`: `ditto -c -k --norsrc --noextattr --noacl --keepParent`, then `check_zip` refuses any
+`__MACOSX/` or `._` entry (`tools/fable2_release.py check` runs it on a zip; `tests/release_build_tests.py`). The
+signing stays sealed ad-hoc; `--signing runtime` is kept for testing; an unsealed bundle reads as damaged, so it is
+gone. If Open Anyway is not offered, `xattr -dr com.apple.quarantine "/Applications/Fable II.app"` is the fallback.
+
+**Test launches** of the release app (`open "Fable II.app"` or the executable) need `-ApplePersistenceIgnoreState
+YES`: otherwise macOS restores the saved window state of an earlier run, and that can leave no window open.
 
 ## Updates
 
@@ -234,6 +259,7 @@ test never touches system folders). CLI (same code): `FableIIPlayer --start-fres
 
 | Variable | Effect |
 |---|---|
+| `-ApplePersistenceIgnoreState YES` (argument, not a variable) | always pass it on test launches: saved window state from an earlier run can otherwise leave no window |
 | `FABLE2_APP_STATE_ROOT` | state folder (tests never use the real one) |
 | `FABLE2_PORTABLE_REUSE_FROM=` | no reuse of other apps' extractions |
 | `FABLE2_SIMULATE_NO_CLT=<file>` | the Command Line Tools count as missing until `<file>` exists; Install only logs |
@@ -341,7 +367,7 @@ performance cores + 0.4 × efficiency cores):
 | M3 Pro, 18 GB (6P + 6E) | 12 | ~3 min | ~3–4 GB |
 
 Not tested here: a Mac without the Command Line Tools (simulated only: `xcode-select --install` and Apple's dialog
-were not run), Gatekeeper on a downloaded zip, and a real 8 GB Mac.
+were not run) and a real 8 GB Mac. Gatekeeper on a downloaded zip was tested by hand (see Gatekeeper).
 
 ## Import saves (2026-10-15)
 

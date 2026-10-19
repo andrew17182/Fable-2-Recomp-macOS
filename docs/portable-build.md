@@ -83,9 +83,10 @@ package, which lives in ignored `out/`. Never commit it or copy it into a tracke
 
 1. Unzip it and copy `Fable II.app` anywhere.
 2. The app is ad-hoc signed (`spctl --assess` rejects it) and a downloaded or AirDropped zip is quarantined.
-   Run `xattr -dr com.apple.quarantine "/path/to/Fable II.app"` once, or open it, dismiss the warning and use
-   System Settings > Privacy & Security > Open Anyway. macOS 15 removed the right-click > Open bypass. No
-   notarization.
+   Open it, click Done on "Not Opened", then System Settings > Privacy & Security > Open Anyway. macOS 15 removed
+   the right-click > Open bypass. No notarization. Fallback: `xattr -dr com.apple.quarantine "/path/to/Fable II.app"`.
+   The zip has no `__MACOSX/._*` entries (`fable2_portable.zip_bundle`; with them macOS 27 called the app "damaged",
+   `docs/release-app.md` "Gatekeeper").
 Since 2026-10-13 the app opens a launcher window first (`docs/player-app.md`): a Welcome window on first launch
 (reuse offer or disc image, extraction progress with "Show details" and Cancel), then the Play window on every
 launch (Continue, resolution, frame rate, display, Play; Settings with ⌘,). The steps below describe what happens
