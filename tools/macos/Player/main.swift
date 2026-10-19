@@ -921,6 +921,10 @@ final class BuildRunner: ObservableObject {
   @Published var finished: Set<String> = []
   @Published var eta: Int?
   @Published var log = ""
+  /// Failure lines of the whole build (with the two lines before each) for Copy Details: an error can scroll far
+  /// out of the last lines while parallel jobs finish (fable2_release.py ERROR_LINE is the same rule).
+  private var errorLines: [String] = []
+  private var recentLines: [String] = []
   @Published var seconds: [String: Double] = [:]
   /// After Try Again: when it was checked and that access is still refused (shown under the explanation).
   @Published var retryNote = ""
@@ -1011,6 +1015,8 @@ final class BuildRunner: ObservableObject {
       }
     }
     log = ""
+    errorLines = []
+    recentLines = []
     phase = .running
     fraction = 0
     detail = "Starting…"
@@ -1056,7 +1062,19 @@ final class BuildRunner: ObservableObject {
       appendLog(GameBuild.logPath, line)
       log += line + "\n"
       if log.count > 120_000 { log = String(log.suffix(80_000)) }
+      noteError(line)
     }
+  }
+
+  private static let errorPattern = try! NSRegularExpression(
+    pattern: #"error:|\*\*\* |No rule to make|fatal|Error \d|\[error\]|CMake Error|FAILED"#)
+
+  private func noteError(_ line: String) {
+    let range = NSRange(line.startIndex..., in: line)
+    if errorLines.count < 80, BuildRunner.errorPattern.firstMatch(in: line, range: range) != nil {
+      errorLines += recentLines.filter { !errorLines.suffix(2).contains($0) } + [line]
+    }
+    recentLines = Array((recentLines + [line]).suffix(2))
   }
 
   private func ended(status: Int32) {
@@ -1103,6 +1121,10 @@ final class BuildRunner: ObservableObject {
     if case .failed(let error) = phase { lines.append("Error: \(error)") }
     if case .denied(let problem) = phase { lines.append("Access refused (\(problem.kind)): \(problem.path)") }
     lines.append("App location: \(AppAccess.location(of: Paths.bundle.bundleURL).json)")
+    if !errorLines.isEmpty {
+      lines.append("Error lines:")
+      lines += errorLines
+    }
     lines.append("Log (\(GameBuild.logPath)), last lines:")
     lines += log.split(separator: "\n", omittingEmptySubsequences: false).suffix(200).map(String.init)
     return lines.joined(separator: "\n")

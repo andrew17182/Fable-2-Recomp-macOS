@@ -228,6 +228,19 @@ version has a new kit_id, so the next launch rebuilds in the same tree:
 Players replace the app (drag the new one over the old). Gatekeeper's "Open Anyway" is needed again for a new
 download.
 
+## Release checks
+
+`fable2_release.py build` refuses a package unless:
+
+- `check`: no game content, nothing game-derived, no converter, no local path, and the kit has every file its
+  `CMakeLists.txt` uses in the player's build (blocks the player build skips: Windows, Debug, the test options);
+- `verify-build`: a full player build from the zip, as the Player runs it, in `out/release-verify/<time>` (removed
+  when it passes, kept with its logs when it fails). Needs `default.xex` and `data/` (default: this checkout).
+  `--update-from OLD_ZIP` also builds the older release first and this one over its tree. `--no-verify-build` skips it.
+
+The player build passes `-DFABLE2_BUILD_TIME_TESTS=OFF`: the developer build-time checks that `fable_2` depends on
+are not built there (0.1.0 (91cfcdb) failed every player build: one of them runs a tool the kit did not ship).
+
 ## Start Fresh
 
 Settings → Advanced → **Start Fresh…** (also File menu) moves everything the app owns into

@@ -3,6 +3,8 @@
 
   python3 tools/fable2_release.py build [--out DIR] [--no-rebuild] [--no-zip] [--signing sealed|runtime]
   python3 tools/fable2_release.py check APP_OR_ZIP          run the package checks on an existing app or zip
+  python3 tools/fable2_release.py verify-build APP_OR_ZIP [--update-from OLD_APP_OR_ZIP] [--game-data DIR] [--keep]
+                                                            full player build from the package in a scratch folder
 
 Writes <DIR>/Fable II.app, <DIR>/Fable II.zip and <DIR>/manifest.json (default DIR: out/release).
 
@@ -207,6 +209,49 @@ def sign_app(app, work, mode='sealed'):
     run('codesign', '--verify', '--deep', '--strict', app)
 
 
+# CMakeLists.txt blocks the player's build never enters (tools/fable2_game_build.py configures a Release, macOS,
+# FABLE2_BUILD_TIME_TESTS=OFF build): files referenced only inside them need not be in the kit.
+PLAYER_DEAD_BLOCK = re.compile(r'^\s*(else)?if\s*\((WIN32\b|APPLE AND FABLE2_BUILD_(INPUT|TIME)_TESTS\)|'
+                               r'CMAKE_BUILD_TYPE STREQUAL "Debug"\))')
+# Referenced outside those blocks but never used by the player's build (path or prefix: why).
+PLAYER_UNUSED = {'thirdparty/rexglue-sdk': 'default SDK paths; the player build passes -DREXGLUE_SDK_ROOT',
+                 'tools/package_macos_app.py': 'fable_2_app target; the player build makes only fable_2'}
+CMAKE_REFERENCE = re.compile(r'(?:\$\{CMAKE_CURRENT_SOURCE_DIR\}/|(?<![\w${}/.-]))'
+                             r'((?:src|tests|tools|config|thirdparty)/[\w./+-]*\w)')
+
+
+def cmake_references(cmake_text):
+    """Source-tree paths CMakeLists.txt references outside PLAYER_DEAD_BLOCK blocks (comments ignored)."""
+    found, stack = set(), []  # stack: per open if(), whether the current branch is dead for the player build
+    for line in cmake_text.splitlines():
+        code = line.split('#', 1)[0]
+        stripped = code.strip()
+        if re.match(r'^if\s*\(', stripped):
+            stack.append(bool(PLAYER_DEAD_BLOCK.match(stripped)))
+            continue
+        if re.match(r'^elseif\s*\(', stripped) and stack:
+            stack[-1] = bool(PLAYER_DEAD_BLOCK.match(stripped))
+            continue
+        if re.match(r'^else\s*\(', stripped) and stack:
+            # else() of a dead if(WIN32 ...) is the macOS branch; else() of a dead option block stays dead
+            stack[-1] = False if stack[-1] else stack[-1]
+            continue
+        if re.match(r'^endif\s*\(', stripped) and stack:
+            stack.pop()
+            continue
+        if any(stack): continue
+        for match in CMAKE_REFERENCE.finditer(code):
+            found.add(match.group(1).rstrip('/'))
+    return sorted(found)
+
+
+def missing_cmake_references(game_src):
+    """Paths the kit's CMakeLists.txt uses in the player's build that are not in the kit's game-src."""
+    unused = lambda p: any(p == u or p.startswith(u + '/') for u in PLAYER_UNUSED)
+    return [p for p in cmake_references((game_src / 'CMakeLists.txt').read_text())
+            if not unused(p) and not (game_src / p).exists()]
+
+
 def check_release(app):
     """Release-only checks on top of fable2_portable.check_package."""
     problems = []
@@ -225,6 +270,9 @@ def check_release(app):
             if dependency.startswith(('/usr/lib/', '/System/Library/')): continue
             if not dependency.startswith('@rpath/') or not (runtime / Path(dependency).name).is_file():
                 problems.append('%s: unbundled dependency %s' % (library.name, dependency))
+    if (kit / 'game-src/CMakeLists.txt').is_file():
+        for path in missing_cmake_references(kit / 'game-src'):
+            problems.append('kit game-src lacks a file CMakeLists.txt uses: ' + path)
     try:
         record = json.loads((kit / 'kit.json').read_text())
         if not re.fullmatch(r'[0-9a-f]{64}', record.get('xex_sha256', '')): problems.append('kit.json: no xex hash')
@@ -258,7 +306,8 @@ def write_shader_recipe(resources):
                 bytes=(resources / 'shader-recipe.json').stat().st_size)
 
 
-def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False, signing='sealed'):
+def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False, signing='sealed', verify=True, game_data=ROOT,
+          update_from=None):
     started = time.monotonic()
     if rebuild: portable.ensure_release_build()
     portable.RUNTIME = portable.RELEASE_RUNTIME
@@ -317,8 +366,10 @@ def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False, signing='seal
     if zip_it:
         if zip_path.exists(): zip_path.unlink()
         zip_app(final, zip_path)
+    # The full player build from the package, as a player's Mac runs it (docs/release-app.md "Release checks").
+    verified = verify_build(zip_path if zip_it else final, game_data, update_from) if verify else None
     files = manifest(final)
-    result = dict(app=str(final), zip=str(zip_path) if zip_it else None,
+    result = dict(verified=verified, app=str(final), zip=str(zip_path) if zip_it else None,
                   app_bytes=sum(f['bytes'] for f in files.values()),
                   zip_bytes=zip_path.stat().st_size if zip_it else None,
                   zip_sha256=sha256(zip_path) if zip_it else None, version=version['string'],
@@ -331,6 +382,72 @@ def build(out_dir, rebuild=True, zip_it=True, shader_recipe=False, signing='seal
 def zip_app(app, zip_path):
     """The release zip (fable2_portable.zip_bundle: no __MACOSX/._* entries, which made macOS call it "damaged")."""
     portable.zip_bundle(app, zip_path)
+
+
+# Lines of a build log that say what failed (the same rule as the Player's Copy Details).
+ERROR_LINE = re.compile(r'error:|\*\*\* |No rule to make|fatal|Error \d|\[error\]|CMake Error|FAILED')
+
+
+def error_lines(text, context=2, limit=60):
+    """The failure lines of a build log with `context` lines before each, at most `limit` lines."""
+    lines, keep = text.splitlines(), []
+    for index, line in enumerate(lines):
+        if ERROR_LINE.search(line):
+            keep.extend(range(max(0, index - context), index + 1))
+    keep = sorted(set(keep))
+    return [lines[i] for i in keep[:limit]]
+
+
+def unpacked_app(target, into):
+    """The app of a release zip (unpacked into `into`) or the app itself."""
+    target = Path(target)
+    if target.suffix != '.zip': return target
+    into.mkdir(parents=True, exist_ok=True)
+    run('ditto', '-x', '-k', target, into)
+    return into / APP_NAME
+
+
+def player_build(app, state, game_data, log_path, extra=()):
+    """Runs the app's kit build driver as the Player does; raises with the log's error lines on failure."""
+    kit = app / 'Contents/Resources/kit'
+    started = time.monotonic()
+    with open(log_path, 'w') as log:
+        code = subprocess.run(['/usr/bin/python3', '-I', '-B', '-u', str(kit / 'game-src/tools/fable2_game_build.py'),
+                               'build', '--kit', str(kit), '--state', str(state), '--game-data', str(game_data),
+                               *extra], stdout=log, stderr=subprocess.STDOUT).returncode
+    seconds = round(time.monotonic() - started, 1)
+    status = game_build.status(kit, state)
+    if code or not status['ready']:
+        text = Path(log_path).read_text(errors='replace')
+        raise RuntimeError('player build of %s failed (exit %d, log %s):\n  %s' % (
+            json.loads((kit / 'kit.json').read_text())['version'], code, log_path,
+            '\n  '.join(error_lines(text) or text.splitlines()[-20:])))
+    return seconds
+
+
+def verify_build(target, game_data=ROOT, update_from=None, work=None, keep=False):
+    """The full player build from a packaged app or zip in a scratch folder: a fresh build, and with `update_from`
+    (an older release app or zip) that one first and then this one over its build tree, as an update does.
+    `game_data` holds default.xex and data/ (default: this checkout). Nothing outside `work` is written."""
+    game_data = Path(game_data)
+    if not (game_data / 'default.xex').is_file() or not (game_data / 'data').is_dir():
+        raise RuntimeError('verify-build needs game files (default.xex and data/) in %s; pass --game-data' % game_data)
+    work = Path(work or (ROOT / 'out/release-verify')) / time.strftime('%Y%m%d-%H%M%S')
+    work.mkdir(parents=True)
+    result = dict(work=str(work))
+    try:
+        app = unpacked_app(target, work / 'new')
+        result['fresh_seconds'] = player_build(app, work / 'state-fresh', game_data, work / 'fresh.log')
+        if update_from:
+            old = unpacked_app(update_from, work / 'old')
+            result['old_seconds'] = player_build(old, work / 'state-update', game_data, work / 'update-old.log')
+            result['update_seconds'] = player_build(app, work / 'state-update', game_data, work / 'update.log')
+    except Exception:
+        keep = True  # the logs and build trees stay for a look
+        raise
+    finally:
+        if not keep: shutil.rmtree(work, ignore_errors=True)
+    return result
 
 
 def check(target):
@@ -360,6 +477,14 @@ def main():
     b.add_argument('--signing', choices=SIGNING_MODES, default='sealed',
                    help='sealed (default): ad-hoc, bundle sealed; runtime: the same with the hardened runtime '
                         '(docs/release-app.md "Gatekeeper")')
+    b.add_argument('--no-verify-build', action='store_true', help='skip the full player build from the package')
+    v = sub.add_parser('verify-build')
+    for parser in (b, v):
+        parser.add_argument('--game-data', type=Path, default=ROOT, help='folder with default.xex and data/')
+        parser.add_argument('--update-from', type=Path, help='an older release zip or app: build it first, then '
+                                                             'this one over its build tree')
+    v.add_argument('target')
+    v.add_argument('--keep', action='store_true', help='keep the scratch folder (out/release-verify/<time>)')
     c = sub.add_parser('check')
     c.add_argument('target')
     args = ap.parse_args()
@@ -368,7 +493,12 @@ def main():
             check(args.target)
             print(json.dumps({'ok': True}))
             return 0
-        result = build(args.out, not args.no_rebuild, not args.no_zip, args.shader_recipe, args.signing)
+        if args.cmd == 'verify-build':
+            print(json.dumps({'ok': True, 'result': verify_build(args.target, args.game_data, args.update_from,
+                                                                  keep=args.keep)}, indent=2))
+            return 0
+        result = build(args.out, not args.no_rebuild, not args.no_zip, args.shader_recipe, args.signing,
+                       not args.no_verify_build, args.game_data, args.update_from)
     except Exception as error:
         print(json.dumps({'ok': False, 'error': str(error)}))
         return 1
