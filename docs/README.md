@@ -7,9 +7,9 @@ what was decided, the rest is the evidence. Finished, superseded investigations 
 
 | Doc | What |
 |---|---|
-| [setup-app.md](setup-app.md) | First-run setup (`Install.command`) |
-| [player-app.md](player-app.md) | The app's launcher window (Play and Settings) |
-| [release-app.md](release-app.md) | The public release: one `Fable II.app` that builds the game on the player's Mac (packager, first-launch build, Start Fresh, measurements) |
+| [setup-app.md](setup-app.md) | First-run setup from source (`Install.command`) |
+| [player-app.md](player-app.md) | The launcher (front page, Settings, Dev Options), shared by the release app and the repo's `Fable II Launcher.app` |
+| [release-app.md](release-app.md) | The public release: one `Fable II.app` that builds the game on the player's Mac (packager, first-launch build, Gatekeeper, Import Saves, Start Fresh, measurements) |
 | [portable-build.md](portable-build.md) | Zippable app for another Mac (no-converter release build; asks for the disc image on first launch) |
 | [turbo.md](turbo.md) | Turbo mode (F7) |
 | [character-editor.md](character-editor.md) | Character Editor mod (opt-in, F6 menu): morality, purity, gold, renown, body morph through the game's own API; save backed up first |
@@ -55,7 +55,7 @@ what was decided, the rest is the evidence. Finished, superseded investigations 
 | [shader-precompile-20261015.md](shader-precompile-20261015.md) | First-play shader hitches: the install prep compiles the disc's own shader bank (`FABLE2_SHADER_PREP_BANK`); measurements, M3 estimate, what still compiles at first use |
 | [prologue-stutter-20261014.md](prologue-stutter-20261014.md) | New-game stutter: native geometry pipelines persisted (`FABLE2_NATIVE_GEOM_PERSIST`); per-slot bundle ids for agent games |
 | [area-load-profile-20261015.md](area-load-profile-20261015.md) | Area-transition load profile (Cullis Gate → Bower Lake, 4.39 s) and proposed fixes A–F |
-| [load-fixes-20261016.md](load-fixes-20261016.md) | Area-load fixes: native save-compressor search (`FABLE2_NATIVE_SAVE_COMPRESS`, default on), hold tracing, opt-in shorter load fades (`FABLE2_LOAD_FADE_FRAMES`) |
+| [load-fixes-20261016.md](load-fixes-20261016.md) | Area-load fixes: native save-compressor search (`FABLE2_NATIVE_SAVE_COMPRESS`), native inflate (`FABLE2_NATIVE_INFLATE`), both default on; hold tracing; opt-in Skip cosmetic waits (`FABLE2_FAST_PACING`) |
 | [engine-options-20261011.md](engine-options-20261011.md) | Engine options for 3× at 60 FPS and base Macs |
 | [weak-mac-perf-20261008.md](weak-mac-perf-20261008.md) | Performance on smaller Macs (M3 Pro target) |
 | [benchmark-kit.md](benchmark-kit.md) | Benchmark kit for other Macs |

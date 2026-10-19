@@ -551,7 +551,7 @@ struct ControlsTabContent: View {
         Spacer()
         Button("Restore Defaults") { capture.stop(); model.settings.controls.keyboardMap = KeyboardMap.defaultMap }
           .disabled(controls.keyboardMap == KeyboardMap.defaultMap)
-          .help("The built-in layout: WASD to move, E/X/Z/C for A/B/X/Y, Q/Tab triggers, Escape pause, M select, arrows for the d-pad.")
+          .help("The built-in layout: WASD to move, E/X/Z/C for A/B/X/Y, Q/Tab triggers, Escape pause, M select, arrows camera, I/J/K/L d-pad.")
       }
     }
     .alert(item: $conflict) { pending in

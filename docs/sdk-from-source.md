@@ -83,7 +83,7 @@ script fails if the patch stops touching them. The executable, the runtime and t
 - Switching recompiles the game, because the include paths change. `build_macos.sh` drops the game's `CMakeCache.txt`
   and `build_macos_metal.py` drops the Metal backend's when the SDK root differs. Their caches pin `rexglue_DIR`,
   `SDL3_DIR` and the like to the first SDK they found; before this fix the backend kept linking against the old one.
-- It is a build-environment switch, not a runtime setting, so it has no Dev Launcher control.
+- It is a build-environment switch, not a runtime setting, so it has no Fable II Launcher control.
 - **Patch changes rebuild automatically (2026-10-09).** When `sdk-metal.patch` or `dxilconv-build.patch` no longer
   matches a tree's `.fable-patch-sha256` marker, `build_macos_metal.py` logs one `[metal-deps] ... changed` line,
   deletes that tree (only inside `out/metal-build/dependencies/`), re-extracts it from the cached archive, re-applies

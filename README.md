@@ -11,9 +11,9 @@ A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, wit
 
 ## Features beyond the original game
 
-- **Turbo mode:** F7 runs the whole game 2-4× faster (CPU intensive).
-- **Quick save / quick load:** Launcher boots straight into any save
-  and keeps a timestamped library of every save.
+- **Turbo mode:** F7 runs the whole game up to 4× faster (CPU intensive).
+- **Quick save:** F5 saves anywhere.
+- **Load any save from the launcher:** one click into your newest save.
 - **Faster loading**
 - **60 FPS or uncapped**
 - **Higher internal resolution** (2× or 3× original resolution)
@@ -39,32 +39,34 @@ your Mac.
    Open **System Settings → Privacy & Security**, click **Open Anyway** next to "Fable II", and confirm.
    No Terminal needed. This is needed once per downloaded version.
 3. Choose your disc image. The game files are copied into `~/Library/Application Support/Fable II for Mac`.
-4. If asked, install Apple's free **Command Line Tools** (macOS shows its own installer; Xcode is not
-   needed). The app downloads CMake by itself if it is missing.
-5. The app translates and compiles the game code once. "Show details" shows every command it runs. After
-   that it opens to the Play window (it does not start the game by itself), so you can check the settings
-   first. The first time you play, shaders are compiled as they are needed, so
-   expect a few short hitches once; they are remembered after that.
+4. If asked, install Apple's free **Command Line Tools** (macOS shows its own installer). Xcode is not
+   needed. The app downloads CMake by itself if it is missing.
+5. The app translates and compiles the game code once, then prepares shaders from your disc. "Show
+   details" shows every command it runs. After that it opens to the launcher (it does not start the game
+   by itself). The first time you see a new area or effect there can be a short hitch; it is remembered
+   after that.
 
 If macOS asked to let Fable II access a folder and you clicked **Don't Allow**, the window says what to do:
 choose the disc image again, or turn Fable II on under **System Settings → Privacy & Security → Files and
 Folders**, then click **Try Again**.
 
-First-launch build time (after the disc copy, which takes a few seconds to a few minutes):
+First-launch time (after the disc copy, which takes a few seconds to a few minutes):
 
-| Mac | Build |
-|---|---|
-| M5 Max, 64 GB, 18 cores | about 1.5 min |
-| M3 Pro, 16 GB, 10–12 cores | about 3 min |
+| Mac | Build | Shader prep |
+|---|---|---|
+| M5 Max, 18 cores | about 1 min | about 45 s |
+| M3 Pro, 11 cores | about 2.5 min | up to 2 min |
 
 
 ## Build from source
 
 ### Requirements
 
-- An Apple Silicon Mac. An M-series Max (24+ GPU cores) is recommended for 60 FPS; Auto picks 30 FPS on smaller GPUs.
-- Xcode (free, App Store) with its Metal Toolchain component. The setup app checks the rest
-  and can download CMake and the Metal Toolchain for you.
+- An Apple Silicon Mac. Auto picks the resolution and frame rate for your GPU (an M3 Pro runs 2×
+  uncapped; base chips run 1× at 30 FPS).
+- Xcode (free, App Store) with its Metal Toolchain component. Building from source needs Xcode;
+  playing the downloaded app does not. The setup app checks the rest and can download CMake and the
+  Metal Toolchain for you.
 - About 13 GB of free disk space.
 - **Your own copy of Fable II.** The port is tested only with the Platinum Hits disc image, whose
   `default.xex` the build checks by hash. No game content is included or will be accepted in this repo.
@@ -82,7 +84,7 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
 Manual alternative: extract `default.xex`, `data/`, `$SystemUpdate/` and `nxeart` from your
 disc image into the repo root, then run `python3 tools/build_macos_metal.py`.
 
-Another Mac (no Xcode needed): `python3 tools/fable2_portable.py build` makes a zippable app that
+To run on a Mac without Xcode, `python3 tools/fable2_portable.py build` makes a zippable app that
 asks for the disc image on first launch ([Portable build](docs/portable-build.md)).
 
 Details ([all docs](docs/README.md)): [Setup app](docs/setup-app.md) · [macOS build](docs/macos.md) · [Metal renderer](docs/macos-metal.md) ·

@@ -10,7 +10,7 @@ Finds the white terrain flashes seen on the M3 Pro while the camera moves ([nati
 | Camera plan | `src/core/fable2_benchmark.h` (`FABLE2_BENCHMARK_PLAN=flash`) | turns both ways, then walking with and without turning (~12 s) |
 | Orchestrator | `tools/macos/Benchmark/main.swift` (flash mode: `--flash` or Info.plist `Fable2FlashKit`) | the arms, the report |
 | Kit packager | `tools/fable2_flash_kit.py` (uses `tools/fable2_benchmark_kit.py`) | `out/flash-kit/Fable II Flash Kit.zip` |
-| This Mac | `tools/fable2_benchmark.py run --flash [--arms …] [--reps N]`, Dev Launcher Tools > "Run Flash Kit…" | same runs on a build here; the menu opens the packaged kit |
+| This Mac | `tools/fable2_benchmark.py run --flash [--arms …] [--reps N]`, Fable II Launcher (Dev Options) Tools > "Run Flash Kit…" | same runs on a build here; the menu opens the packaged kit |
 
 ## Arms
 

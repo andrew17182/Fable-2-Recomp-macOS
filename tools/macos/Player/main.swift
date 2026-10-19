@@ -1427,9 +1427,10 @@ final class PlayerModel: SettingsModel {
     // No windows and no Dock icon: keep macOS from ending the app (automatic/sudden termination) while it waits.
     ProcessInfo.processInfo.disableAutomaticTermination("Fable II is running")
     ProcessInfo.processInfo.disableSuddenTermination()
-    let background = Paths.environment["FABLE2_TEST_BACKGROUND"] == "1"
-    if !background, let id = Bundle.main.bundleIdentifier {
-      NSApp.yieldActivation(toApplicationWithBundleIdentifier: id)  // the game has the same bundle id
+    // Front + keyboard focus for the game (Shared/GameActivation.swift): a yield by bundle id went nowhere (the game
+    // shares this app's id and does not exist yet), so the game came up in the background.
+    if Paths.environment["FABLE2_TEST_BACKGROUND"] != "1" {
+      GameActivation.handOff(to: process.processIdentifier) { appendLog(Paths.logs + "/player.log", $0) }
     }
     hiddenWindows = NSApp.windows.filter { $0.isVisible }
     hiddenWindows.forEach { $0.orderOut(nil) }

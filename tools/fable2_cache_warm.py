@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Warm the player's shader cache once, in the background (docs/setup-app.md, "Shader warm-up").
+"""Warm the player's shader cache once, in the background (docs/setup-app.md, "Shaders").
 
   python3 tools/fable2_cache_warm.py --headless [--state-root DIR] [--scales 1,2,3] [--no-bank] [--json]
   python3 tools/fable2_cache_warm.py [--state-root DIR] [--new-game] [--scales 1,2,3] [--dwell S] [--game-dwell S]

@@ -3,7 +3,7 @@
 An opt-in mod that edits the hero in a running game through the game's own Lua stat API. It is off by
 default. When it is off, the F6 menu and the game are unchanged.
 
-- **Turn it on:** Launcher → Settings → General → Mods → "Character Editor (F6 menu)", or
+- **Turn it on:** Launcher → Settings → Mods → "Character Editor (F6 menu)", or
   `FABLE2_CHARACTER_EDITOR=1` (`tools/fable2_dev_session.py launch ... --env FABLE2_CHARACTER_EDITOR=1`).
 - **Use it:** in gameplay, press F6 (or 6) and pick "Character Editor". It is a game menu box, so it works
   with a controller: A selects, B goes back. It has two pages; "More..." flips between them.
@@ -41,7 +41,7 @@ stay below that.
 2. **Backup first.** Each time the editor opens, it calls `RunScript("scripts/recomp/character_editor_backup.lua")`,
    a no-op file. The host's RunScript probe (`LuaBind_RunScript_82806168` in `src/core/fable2_f5_lua.h`) sees
    the path and copies every save title folder (`saves/<profile>/4D5307F1`: hero slots and headers) to:
-   - `$FABLE2_CHARACTER_EDITOR_BACKUP_DIR/<timestamp>/`, when that variable is set. Dev Launcher play
+   - `$FABLE2_CHARACTER_EDITOR_BACKUP_DIR/<timestamp>/`, when that variable is set. Fable II Launcher play
      sessions set it to `out/save-backups/character-editor`, which outlives the pruned session folders.
    - Otherwise `<state dir>/character-editor-backups/<timestamp>/`. The player app's state dir is in
      Application Support. Test sessions keep their backups inside the session.

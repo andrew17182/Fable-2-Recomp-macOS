@@ -1,7 +1,9 @@
 # Player app: the portable app's launcher window (2026-10-13)
 
 The release app (`docs/release-app.md`) is this same app with a first-launch build step: after the game files it
-builds the game on the player's Mac, and Settings > Advanced has Start Fresh and Archives.
+builds the game on the player's Mac, and Settings > General > Logs and data has Import Saves, Start Fresh and
+Archives. The current front page, Settings page and Dev Options are described in "Launcher page, Settings page and
+Dev Options (2026-10-19)" below; the dated sections before it are kept as records.
 
 The portable `Fable II.app` (`tools/fable2_portable.py`, `docs/portable-build.md`) opens a launcher window before the
 game. It is one app with standard macOS windows and needs no Terminal. Nothing is hidden: the extraction log is one
@@ -37,45 +39,44 @@ click away, and every setting is in Settings.
   run of the game per resolution scale (`FABLE2_SHADER_PREP`, no window; Skip goes on), then the Play window
   (`docs/offline-shader-seed.md` §4).
 
-**Play** (every launch):
+**Play** (every launch; the launcher's front page, details in the 2026-10-19 section below):
 
-- Header: the title on the standard window background (2026-10-14: the key-art backdrop read from the player's
-  `nxeart` was removed; the windows use native materials and follow light and dark mode).
-- **Start:** Continue or Title screen, with the latest save (header display name · quest · level · date, read only
-  from `saves/*/4D5307F1/00000001/HeroNNN`).
-  - Continue sets `FABLE2_BOOT_SAVE=1`. It skips the title and main menu and loads the latest save shown in
-    the window. With one hero save the game's own Continue item loads it. With several, the app also sets
-    `FABLE2_BOOT_SAVE_HERO=HeroNNN` (the newest `mainsave.bin`), and boot-save loads that entry from the
-    menu's own save list with the same call the game makes for a single save (`src/core/fable2_boot_save.h`).
-    If that save is not in the list, the game's slot cards appear. To pick another save, use Title screen.
-    No save library is involved: the game's saves stay where they are.
-  - With no saves, "New game (no saves yet)" is shown.
+- Header: the title on the standard window background (native materials, light and dark mode).
+- **Start at Title Screen** and **Load Saved Game** (the default button), then the save menu: every hero save in the
+  state folder, newest first ("Name · Place · date", read only from `saves/*/4D5307F1/00000001/HeroNNN`).
+  - Load Saved Game sets `FABLE2_BOOT_SAVE=1`. It skips the title and main menu and loads the save picked in the
+    menu. With one hero save the game's own Continue item loads it. With several, the app also sets
+    `FABLE2_BOOT_SAVE_HERO=HeroNNN`, and boot-save loads that entry from the menu's own save list with the same
+    call the game makes for a single save (`src/core/fable2_boot_save.h`). If that save is not in the list, the
+    game's slot cards appear. No save library is involved: the game's saves stay where they are.
+  - With no saves, Load Saved Game is disabled and Start at Title Screen is the default.
 - **Resolution:** the shared `InternalResolution` list, including "Auto (N× on this Mac)" from the shared
   `AutoResolution` table (`tests/res_auto_sync_tests.py`).
-- **Frame rate**, **Display** (Windowed / Fullscreen), **Settings…** and **Play**.
+- **Frame rate**, **Skip intro movies**, **Turbo speed**, **Turbo audio**, **Display** (Windowed / Fullscreen).
+- The **Settings** button (bottom-left, same spot on both pages; ⌘,) switches to the Settings page.
 
-**Settings (⌘,):** the launcher's tabs, from the same views:
+**Settings** (a page of the same window): the launcher's tabs, from the same views:
 
-- General, Display, Controls (keyboard map, mouse, hotkeys, controllers; docs/reference.md), Performance, Fixes;
-- Advanced, which is the launcher's Diagnostics tab under another name.
+- General, Display, Controls (keyboard map, mouse, hotkeys, controllers; docs/reference.md), Mods;
+- Performance, Fixes and Diagnostics only with **Dev Options** on (switch at the bottom-right of the page).
 
-Player-only additions:
+Player-only additions, all in General:
 
-- General:
-  - "Skip launcher, play directly";
-  - Game files: the folder, Show in Finder, Choose Disc Image….
-- Advanced: Open Logs Folder, Open Data Folder, Reset All Settings… (with confirmation).
+- "Skip launcher, play directly";
+- Game files: the folder, Show in Finder, Choose Disc Image…;
+- Logs and data: Open Logs Folder, Open Data Folder, Import Saves… (release app), Reset All Settings… (with
+  confirmation), Start Fresh…, Archives….
 
-These stay in the repo launcher (and developer mode) only: the playtest/latest build choice, save picks and write-back slots, test options,
-benchmark, export, and the dev-session footers and CLI hints.
+These stay in the repo launcher (and Dev Options) only: the playtest/latest build choice, the save library and
+write-back slots, test options, benchmark, export, and the dev-session footers and CLI hints.
 
 A setting added to `LaunchSettings` (a `Flag` with a tab, or a picker in `SettingsTabView`) appears in both apps
 without further work.
 
 **Menus:**
 
-- File: Choose Disc Image…, Open Logs Folder, Open Data Folder.
-- Fable II > Settings….
+- File: Choose Disc Image…, Open Logs Folder, Open Data Folder, Import Saves… (release app), Start Fresh….
+- Fable II > Settings… (⌘,).
 
 ## Launching the game
 
@@ -86,7 +87,7 @@ Play does the following:
      items for Auto;
    - `FABLE2_SKIP_INTRO_MOVIES=1/0`. This is explicit, because the portable launcher otherwise skips by default;
    - every `--env` item the launcher passes (`settingsEnvironment`, the single copy of that mapping).
-2. Adds `FABLE2_BOOT_SAVE=1` for Continue (plus `FABLE2_BOOT_SAVE_HERO` with several saves), and
+2. Adds `FABLE2_BOOT_SAVE=1` for Load Saved Game (plus `FABLE2_BOOT_SAVE_HERO` with several saves), and
    `FABLE2_PLAYER_LAUNCH=1`.
 3. Runs `Contents/MacOS/FableIILauncher`: as a child process from the Play button, or with `exec` in the same
    process for "Skip launcher" and `--play` (below).
@@ -137,10 +138,10 @@ There is no separate Launcher program any more: the launcher is a role of this a
 
 - **Player role** (the release and portable `Fable II.app`): **Dev Options** (Settings, was Settings > Advanced >
   Developer mode; off by default, stored in `player-settings.plist`). When on:
-  - **Window > Fable II Launcher** (⌥⌘D) opens the launcher's main window: build choice (playtest / latest),
-    save picker with stars and titles, boot and write-back options, Launch, Close Game, Update Playtest Build;
+  - **Window > Fable II Launcher** (⌥⌘D) opens the repo launcher's window: its front page (2026-10-19
+    section below) with the build choice (playtest / latest), write-back options and Close Game;
   - **Window > Developer** has every Tools item: Run Benchmark, Run Flash Kit, Export Portable Build, Update
-    Playtest Build, Close Game, Choose Save, Refresh, and the logs / save library / sessions / benchmark report
+    Playtest Build, Close Game, Save Library…, Refresh Saves and Status, and the logs / save library / sessions / benchmark report
     folders;
   - Settings shows the launcher's wording and CLI hints, and the **Source checkout** row.
 - **Source checkout.** Everything that runs repository tools (`tools/fable2_dev_session.py`, the playtest and latest
@@ -191,7 +192,7 @@ Everything lives in the app's state folder, `~/Library/Application Support/Fable
 | `--iso IMAGE` | on the Welcome window, extract IMAGE at once (as if chosen in the panel) |
 | `--reuse` | on the Welcome window, use the offered sibling files at once |
 | `--show-launcher` | as holding Option |
-| `--snapshot PATH.png [--window play\|welcome\|progress\|general\|display\|controls\|mods\|performance\|fixes\|diagnostics] [--dev-options on\|off]` | show that window or Settings tab without taking focus, save it as PNG and quit (nothing is stored); `progress` needs `--iso` |
+| `--snapshot PATH.png [--window play\|ready\|welcome\|progress\|denied\|general\|display\|controls\|mods\|performance\|fixes\|diagnostics\|advanced\|devlauncher] [--dev-options on\|off]` | show that window or Settings tab without taking focus, save it as PNG and quit (nothing is stored); `progress` needs `--iso` |
 
 Other arguments are passed to the game. The environment overrides of the portable build still apply:
 
@@ -270,7 +271,7 @@ played the logos, the save library stayed empty, and the launcher's name said "D
   a later deliberate Playtest pick is kept. Without a playtest copy the Playtest item is disabled with a note
   ("Update Playtest Build creates one"), and a Playtest launch falls back to Latest with a note (Swift and
   `fable2_dev_session.py launch`). Tests: `tests/unified_launcher_tests.py`.
-- **Continue from Last Save** on the front page, in every role. Repo launcher: the newest save by save time among
+- **Continue from Last Save** on the front page, in every role (replaced on 2026-10-19 by Load Saved Game, below). Repo launcher: the newest save by save time among
   the live slots and the library's play saves (agent test saves skipped; a tie goes to the live slot); it launches
   that pick with boot on through the usual session path (`FABLE2_BOOT_SAVE`), writing back to the live slot it
   came from (library saves: the slot they were written back to, else library only). Player: the Continue button

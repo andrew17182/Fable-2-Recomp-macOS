@@ -1,4 +1,4 @@
-"""Readable save-library entries for the Dev Launcher's save picker (runs under /usr/bin/python3 3.9).
+"""Readable save-library entries for the Fable II Launcher's save library (runs under /usr/bin/python3 3.9).
 
 `tools/fable2_dev_session.py list` passes every library entry through annotate(), which adds:
   place, quest      friendly names for LevelName / QuestName (table below, else the code de-camel-cased)

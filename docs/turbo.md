@@ -100,7 +100,7 @@ Diagnostics (SDK cvars, pass with `--game-arg=` in test sessions):
 
 ## On-screen notice
 
-`FABLE2_TURBO_NOTICE=overlay|game` (Dev Launcher "Turbo notice"; default `overlay`).
+`FABLE2_TURBO_NOTICE=overlay|game` (Fable II Launcher "Turbo notice"; default `overlay`).
 
 - **overlay** (Fable style, `src/core/fable2_turbo_notice.h`): cream text in the game's own
   UI font with a soft shadow, on a feathered dark band with a thin gold rule, fading in/out

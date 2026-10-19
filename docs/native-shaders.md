@@ -378,7 +378,7 @@ The remaining costs are one-off and invisible:
 - about 5 s of plain-speed rendering on the first launch with new shaders;
 - about 20 s of utility-QoS CPU, once.
 
-It is an internal default-on improvement, so it gets no Dev Launcher toggle (`FABLE2_NATIVE_SHADERS=0`
+It is an internal default-on improvement, so it gets no Fable II Launcher toggle (`FABLE2_NATIVE_SHADERS=0`
 disables it).
 
 ### Part 2 (build-time pre-optimization): deferred
@@ -636,7 +636,7 @@ bits, else the normal (`-O2`, or plain for the keep-plain list) pipeline.
   `<title>.ns2-learn.<gen>.txt` (generation 0 is `<title>.ns2-learn.txt`); startup reads the highest generation and
   deletes older ones in its own cache. Checked by publishing 8 chained session caches (1×→2×→3×→…, including a forced
   compaction with `FABLE2_NS_LEARN_COMPACT_KB=50`) one over the other in scratch copies: every publish succeeded
-  (`docs/frame-pacing-20261012.md`). Dev Launcher: "Keep learned shader data across sessions".
+  (`docs/frame-pacing-20261012.md`). Fable II Launcher: "Keep learned shader data across sessions".
 - Cost: see Results ("Auto-learn").
 
 **Scale-independent use.** A variant of plain library *L* is made from *L*'s own converged record merged with the
@@ -851,7 +851,7 @@ otherwise:
   `FABLE2_MSC_MIN_TARGET`.
 - `FABLE2_MSC_MIN_TARGET` wins over the config: `portable`, `native`, or `<family>:<macOS>` (families
   `apple6`–`apple10`, `metal3`). An unparsable value logs a warning and uses the default.
-- Dev Launcher: "Portable shader cache (survives macOS updates; off = tied to this Mac)", on by default (passes
+- Fable II Launcher: "Portable shader cache (survives macOS updates; off = tied to this Mac)", on by default (passes
   `portable` / `native`).
 - Log: `Metal shader converter: minimum target pinned to apple7 macOS 15.0 (default; native would be family 1010 macOS
   27.0.1)`, or `minimum target native, …`.
@@ -922,7 +922,7 @@ what a launch with an empty macOS Metal cache (`$(getconf DARWIN_USER_CACHE_DIR)
 Every create of the backend's own pipelines, and every install of a cached game-shader library, is a driver
 compile there (10–500 ms). Warm, the same work takes milliseconds.
 
-Changes (all default on, Dev Launcher toggles in Performance > Startup and CPU):
+Changes (all default on, Fable II Launcher toggles in Performance > Startup and CPU):
 
 | Switch | What |
 |---|---|
@@ -1000,7 +1000,7 @@ are not in the prologue-based warm-up, at any scale.
 | `FABLE2_NS_TOOL_DIR=<dir>` | unset | Take `metal-opt`/`metallib` from `<dir>` instead of `xcrun` (testing: `/nonexistent` = toolchain missing) |
 | `FABLE2_NS_ASSUME_NO_XCODE=1` | off | Testing: behave as on a Mac without Xcode or the command-line tools. The lookup never spawns `/usr/bin/xcrun` when no developer directory exists, because the stub would open Apple's install dialog (`docs/portable-build.md`) |
 | `FABLE2_NS_CACHE_TOOLCHAIN=<16 hex>` | unset | Without tools: use cached optimized libraries of that toolchain (cache-only, nothing optimized). Set by the portable build's launcher |
-| `FABLE2_MSC_MIN_TARGET=portable\|native\|<family>:<macOS>` | `apple7:15.0` (2026-10-12) | Metal Shader Converter's minimum target. Pinned by default so translated and optimized shader cache keys survive macOS updates and match across Macs; `native` = this Mac's GPU family and exact OS version (before 2026-10-12). Overrides `[graphics] shader_cache_target`; Dev Launcher "Portable shader cache". Free on the M5 Max at 1×/2×/3× ("Converter target pinned by default") |
+| `FABLE2_MSC_MIN_TARGET=portable\|native\|<family>:<macOS>` | `apple7:15.0` (2026-10-12) | Metal Shader Converter's minimum target. Pinned by default so translated and optimized shader cache keys survive macOS updates and match across Macs; `native` = this Mac's GPU family and exact OS version (before 2026-10-12). Overrides `[graphics] shader_cache_target`; Fable II Launcher "Portable shader cache". Free on the M5 Max at 1×/2×/3× ("Converter target pinned by default") |
 | `FABLE2_SHADER_LABELS=1` | off | Trace-only: pipeline/library labels with guest shader hashes |
 | `MTL_CAPTURE_ENABLED=1 FABLE2_GPU_CAPTURE_PATH=… FABLE2_GPU_CAPTURE_AT_S=… [FABLE2_GPU_CAPTURE_FRAMES=n]` | off | Trace-only: in-process GPU trace for `gpudebug` |
 | `FABLE2_NS_DUMP_DIR=…`, `FABLE2_NS_OVERRIDE_DIR=…` | off | Trace-only: dump / replace a shader's metallib by `<vs|ps>_<hash>_<mod>.metallib` |
@@ -1010,7 +1010,7 @@ are not in the prologue-based warm-up, at any scale.
 | `FABLE2_NS_LOG_CONSTS=<PS hash>[,…]`, `FABLE2_NS_LOG_CONSTS_N` | off | Diagnostic: log system, bool/loop and fetch constants per draw (all pipeline kinds) |
 | `FABLE2_NS_SPECIALIZE` | on | Hot-shader specialization: specialized variants of the listed hot pixel shaders, generated in the background from learn data, bound per draw only when the guard matches. Needs `FABLE2_NATIVE_SHADERS`. `=0` off |
 | `FABLE2_NS_SPECIALIZE_LEARN=1` | off | Learn session: record per-bit constant invariance per pixel shader into the cache's `.ns2-learn.txt` |
-| `FABLE2_NS_SPECIALIZE_AUTOLEARN` | on | Auto-learn during play: sample 1 in N draws of listed shaders without a variant until the statistics converge, then specialize in the background. `=0` off. Dev Launcher: "Learn hot shaders while playing" |
+| `FABLE2_NS_SPECIALIZE_AUTOLEARN` | on | Auto-learn during play: sample 1 in N draws of listed shaders without a variant until the statistics converge, then specialize in the background. `=0` off. Fable II Launcher: "Learn hot shaders while playing" |
 | `FABLE2_NS_LEARN_APPEND` | on | Learn file as an append-only journal with generation files, so the launcher's cache write-back keeps working. `=0` rewrites it in place (blocks the write-back from the second session on). `FABLE2_NS_LEARN_COMPACT_KB=<n>` (testing) compacts past n KB |
 | `FABLE2_NS_SPECIALIZE_AUTOLEARN_SAMPLE=N` | 4 | Auto-learn samples every Nth draw of a shader |
 | `FABLE2_NS_SPECIALIZE_AUTOLEARN_MIN_SAMPLES=N` | 64 | Samples needed before a shader can converge (testing: a huge value keeps it sampling all session) |
@@ -1021,7 +1021,7 @@ are not in the prologue-based warm-up, at any scale.
 | `FABLE2_NS_SPECIALIZE_FLOATS=0` | on | Bake only `i32` loads (A/B for float constant folding) |
 | `FABLE2_NS_SPECIALIZE_VERIFY=1` | off | Re-check every guard hit against the guest registers (misbind counter) |
 | `FABLE2_NS_SPECIALIZE_LOG_MISSES=N` | 1 | Log the first N guard misses per variant with the differing dwords |
-| `FABLE2_NS2_ARCHIVE` | on | Save the `.ns2` archive set (specialized pipelines) 10 s after the last add, and every dirty archive set at window close (at most 500 ms), so the next launch loads them instead of compiling them. `=0`: periodic saves only, as before. Dev Launcher: "Save specialized shader pipelines for the next launch". `FABLE2_NS2_ARCHIVE_SETTLE_MS`, `FABLE2_NS2_ARCHIVE_QUIT_MS` tune it |
+| `FABLE2_NS2_ARCHIVE` | on | Save the `.ns2` archive set (specialized pipelines) 10 s after the last add, and every dirty archive set at window close (at most 500 ms), so the next launch loads them instead of compiling them. `=0`: periodic saves only, as before. Fable II Launcher: "Save specialized shader pipelines for the next launch". `FABLE2_NS2_ARCHIVE_SETTLE_MS`, `FABLE2_NS2_ARCHIVE_QUIT_MS` tune it |
 | `FABLE2_PASS_TRACE_PS=1` | off | Trace-only (with `FABLE2_GPU_TIME_TRACE=1`): each pass-trace row lists its pixel shaders (`ps:` hash high halves) |
 
 ## Next steps (not done)

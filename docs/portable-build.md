@@ -6,7 +6,7 @@ That Mac does not need the repo, Xcode or extracted game files.
 ## Make the package (build Mac)
 
 ```sh
-python3 tools/fable2_portable.py build            # or Dev Launcher > Tools > "Export Portable Build…"
+python3 tools/fable2_portable.py build            # or Fable II Launcher (Dev Options) > Tools > "Export Portable Build…"
 ```
 
 The package is the **no-converter release build** (release decision D3, 2026-10-14,
@@ -88,8 +88,8 @@ package, which lives in ignored `out/`. Never commit it or copy it into a tracke
    The zip has no `__MACOSX/._*` entries (`fable2_portable.zip_bundle`; with them macOS 27 called the app "damaged",
    `docs/release-app.md` "Gatekeeper").
 Since 2026-10-13 the app opens a launcher window first (`docs/player-app.md`): a Welcome window on first launch
-(reuse offer or disc image, extraction progress with "Show details" and Cancel), then the Play window on every
-launch (Continue, resolution, frame rate, display, Play; Settings with ⌘,). The steps below describe what happens
+(reuse offer or disc image, extraction progress with "Show details" and Cancel), then the launcher's front page on
+every launch (Start at Title Screen, Load Saved Game, the save menu, resolution, frame rate; Settings with ⌘,). The steps below describe what happens
 underneath; the reuse and extraction now run from that window (`FableIIPlayer`), with the same checks and log lines.
 
 3. First launch, when the app's own `GameData` folder does not exist yet: it reuses a finished extraction from a
@@ -119,7 +119,7 @@ underneath; the reuse and extraction now run from that window (`FableIIPlayer`),
 
    The launcher remembers the folder in `launcher.plist`. With "Continue Anyway" it also stores
    `AllowXexMismatch`, and later launches then set `FABLE2_XEX_MISMATCH_OK=1`.
-4. Later launches show the Play window (or go straight to the game with "Skip launcher, play directly"). Every launch
+4. Later launches show the launcher (or go straight to the game with "Skip launcher, play directly"). Every launch
    runs `FableIIPrepare --stage`, which is fast and idempotent.
 5. To choose the image again: File > Choose Disc Image… (or Settings > General). Holding **Option** while opening
    the app now shows the launcher window when "Skip launcher" is on.
@@ -222,7 +222,7 @@ Every difference is within run-to-run noise: **pinning is free on this Mac**. Th
 for the real GPU. The cold first launch was the first launch after the rebuild that added the switch. A 3× `headings8`
 A/B on 2026-10-12 (two pairs) agreed: 15.31 vs 15.17 ms GPU, inside run-to-run noise (`docs/native-shaders.md`). The pin
 became the default for all builds then. Shaders are still never shipped with a normal install (they are game-derived);
-the setup app warms the player's own cache on their Mac instead (`docs/setup-app.md`, "Shader warm-up").
+the setup app prepares the player's own cache on their Mac instead (`docs/setup-app.md`, "Shaders").
 
 **Package-time warm-up** (`warm_up_shaders` in `tools/fable2_portable.py`; since 2026-10-14 the last resort after the
 remembered sources and the offline prep, `docs/offline-shader-seed.md`):

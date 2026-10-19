@@ -427,6 +427,11 @@ final class LauncherModel: SettingsModel {
           let session = info?["session"] as? String
           if testControl { self.ownTestPid = info?["pid"] as? Int }
           Backend.log("launched: pid \(info?["pid"] as? Int ?? 0) session \(session ?? "none")")
+          // Play games get the front and keyboard focus (Shared/GameActivation.swift); test sessions stay behind.
+          if !testControl, DevSnapshot.request == nil,
+             ProcessInfo.processInfo.environment["FABLE2_TEST_BACKGROUND"] != "1", let pid = info?["pid"] as? Int {
+            GameActivation.handOff(to: pid_t(pid)) { Backend.log($0) }
+          }
           self.sessionState = session.map { $0 + "/test-state" }
           self.message = (session.map { "Running session \(URL(fileURLWithPath: $0).lastPathComponent)" }
             ?? "Running.")

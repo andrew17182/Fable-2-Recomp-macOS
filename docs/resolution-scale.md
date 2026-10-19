@@ -2124,7 +2124,7 @@ is kept). It was 1 / Native until then; 1 is still the console's own resolution 
 `gpu-core-count`, shared with fps-auto `fable2::fps::QueryGpu`), RAM (`hw.memsize`) and the frame target
 (`fable2::fps::Use60()`). `fable2_graphics_config.h ApplyResolutionScale` resolves `auto` and exports the number as
 `FABLE2_RES_SCALE`, so the Metal plugin, the FPS counter and the logs only ever see 1/2/3. The launcher
-(`AutoResolution` in `tools/macos/DevLauncher/main.swift`) mirrors the tables for its label;
+(`AutoResolution`, now in `tools/macos/Shared/LaunchSettings.swift`) mirrors the tables for its label;
 `tests/res_auto_sync_tests.py` fails if the two copies drift.
 
 **Log** (one line, e.g. this M5 Max):

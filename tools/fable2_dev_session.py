@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dev sessions: boot straight into a save, and write game saves back.
 
-Used by the Fable II Dev Launcher app (tools/macos/DevLauncher) and usable from the CLI.
+Used by the Fable II Launcher app (tools/macos/DevLauncher) and usable from the CLI.
 
   list                       live slots + save-library entries (+ running game) as JSON
   launch [--build playtest|latest] ...   which app: the frozen playtest copy (out/playtest, see
@@ -13,7 +13,7 @@ Used by the Fable II Dev Launcher app (tools/macos/DevLauncher) and usable from 
          [--game-arg=--metal_pipeline_creation_threads=4 ...] [--cache-from DIR]   (test sessions only)
   status                     the launcher's current game / last write-back / all running instances
   close SESSION              close the game of one session and wait for its process to exit
-  close --current            close the Dev Launcher's current (normal play) game
+  close --current            close the launcher's current (normal play) game
                              (only ever the one game; other instances are never touched)
   watch SESSION              (internal) save watcher, started detached by `launch`
 
@@ -1278,7 +1278,7 @@ def main():
     sub.add_parser('status')
     q = sub.add_parser('close')
     q.add_argument('session', nargs='?', help='session folder whose game to close')
-    q.add_argument('--current', action='store_true', help="the Dev Launcher's current normal-play game")
+    q.add_argument('--current', action='store_true', help="the launcher's current normal-play game")
     q = sub.add_parser('watch'); q.add_argument('session', type=Path)
     q = sub.add_parser('watch-live'); q.add_argument('--pid', type=int, required=True); q.add_argument('--state', type=Path, required=True)
     q = sub.add_parser('prune', help='delete old session folders now (also runs on every launch)')

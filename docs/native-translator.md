@@ -4,7 +4,7 @@ Engine-options rank 4 (`docs/engine-options-20261011.md` §4.1c). Goal (maintain
 port as possible … emulating as little as possible". Translate Xenos ucode straight to structured MSL, with a
 per-shader fallback to today's DXBC → DXIL → Metal Shader Converter (MSC) → `metal-opt` path. Pixel shaders first.
 
-Status (2026-10-13): **default on** (`FABLE2_NATIVE_XLATE=0` restores the converter path; Dev Launcher toggle
+Status (2026-10-13): **default on** (`FABLE2_NATIVE_XLATE=0` restores the converter path; Fable II Launcher toggle
 "Native shader translator", plus "Native translator: vertex shaders too" for `FABLE2_NATIVE_XLATE_VS`). Pixel and
 vertex shaders are native; in game 254/254 with 0 fallbacks. The playtest recheck (2026-10-13) was clean, with
 no lag and the dog fur fine. The install warm-up, portable seed and benchmark kit launch the game with its defaults, so
@@ -442,7 +442,7 @@ with their own modification.
     terrain goes native, as measured before. `=2` takes blended draws too.
   - **Decision (maintainer, 2026-10-14): accept the tessellator's triangle order for the blended layers.** Under forced
     depth ties the hardware path differs from the emulation in 2 of 38,298 pixels. `FABLE2_NATIVE_TESS_BLENDED`
-    (default on; Dev Launcher "Native tessellation: blended terrain layers") sends blended draws whose factors are
+    (default on; Fable II Launcher "Native tessellation: blended terrain layers") sends blended draws whose factors are
     uniform and half-exact to Metal's tessellator in modes 1 and 3. That is every continuous layer in play.
     Non-uniform blended draws stay emulated, because the reference order was not accepted. `=0` restores the
     emulation for all blended draws.
@@ -488,7 +488,7 @@ with their own modification.
     clamped maximum.
   - Bower 2× headings8-long: 7.67 → 7.45 ms (main pass 1.84 → 1.75) against today's default.
   - No cracks were visible in the Bower camp spin. The overlook where the cracks were seen still needs a look in play.
-  - Switch: `FABLE2_TERRAIN_ADAPTIVE=1` (Dev Launcher "Adaptive terrain tessellation (fixes cracks natively)", default
+  - Switch: `FABLE2_TERRAIN_ADAPTIVE=1` (Fable II Launcher "Adaptive terrain tessellation (fixes cracks natively)", default
     off) drops the clamp and sends opaque adaptive draws to the tessellator whatever the factors.
   - Metal's tessellator differs from the reference only in how it stitches transition regions. The reference
     pattern path (option 4) would make that exact as well.
@@ -577,7 +577,7 @@ with their own modification.
    Report the coverage rate.
 2. Backend hook: after the MSC install, translate, compile with `newLibraryWithSource` on the native-shader pool, and
    publish through the `optimized_function()` swap (standard and emulation pipelines). Behind `FABLE2_NATIVE_XLATE`
-   (default off) with a Dev Launcher toggle; per-shader fallback.
+   (default off) with a Fable II Launcher toggle; per-shader fallback.
 3. Parity: live spin5 captures, on vs off (no gputrace replays without heavy-mode approval).
 4. Perf: headings8 at 1×/2×/3× under the perf lock; per-pass share for the M3 Pro projection; cold compile cost and
    cold-launch delta (baseline: cold 1× launch 10.5 s).

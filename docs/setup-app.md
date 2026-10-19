@@ -1,7 +1,8 @@
 # First-run setup (Install.command)
 
 `Install.command` (project root) turns a fresh copy of this project plus your own Fable II
-disc image into a playable build, without the command line.
+disc image into a playable build, without the command line. If macOS blocks the double-click, run
+`bash Install.command` in Terminal.
 
 1. It checks for Apple Silicon and the Xcode command-line tools (offering
    `xcode-select --install` if they are missing), compiles the setup app from
@@ -52,8 +53,9 @@ disc image into a playable build, without the command line.
      `tools/fable2_dev_session.py` and the test tools keep using them.
    - **Shaders** (optional, on by default; checkbox on the disc page, `--no-warm-shaders`): a headless shader
      prep, no window and no game. See "Shaders" below.
-   - **Done:** **Open Launcher** (the launcher is the way to play). Nothing is copied to /Applications or outside
-     the project folder.
+   - **Done:** **Open Launcher** (the way to play; no separate game button) opens the launcher and quits Setup.
+     **Rebuild** and **Show Log** sit beside it.
+     Nothing is copied to /Applications or outside the project folder.
 3. Running it again skips finished steps (`out/setup/state.json`); **Rebuild** forces the build
    and launcher steps. Every run refreshes the project-folder copies when they are missing or
    older than the builds in `out/`. The normal dev commands (`python3 tools/build_macos_metal.py`,

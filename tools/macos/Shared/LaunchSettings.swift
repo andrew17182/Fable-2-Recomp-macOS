@@ -415,11 +415,12 @@ enum BuildChoice: String, CaseIterable, Identifiable {
   }
 }
 
-/// "NAME=VALUE NAME2=VALUE2" from the Extra env field; entries that are not NAME=VALUE are skipped.
+/// "NAME=VALUE NAME2=VALUE2" from the Extra env field; entries that are not NAME=VALUE are skipped, and so is
+/// FABLE2_TEST_BACKGROUND (test tools only: a saved value would start every Play game in the background).
 func parseExtraEnv(_ text: String) -> [String] {
   text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init).filter { item in
     guard let eq = item.firstIndex(of: "="), eq != item.startIndex else { return false }
-    return item[..<eq].allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+    return item[..<eq] != "FABLE2_TEST_BACKGROUND" && item[..<eq].allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
   }
 }
 

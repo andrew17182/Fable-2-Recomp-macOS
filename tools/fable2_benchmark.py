@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Built-in benchmark on this Mac (docs/benchmark-kit.md); the Dev Launcher's "Run Benchmark…" calls it.
+"""Built-in benchmark on this Mac (docs/benchmark-kit.md); the Fable II Launcher's "Run Benchmark…" calls it.
 
   python3 tools/fable2_benchmark.py run [--build latest|playtest] [--save NAME|live:HeroNNN]
                                         [--arms cold,1u,1c,2u,2u-ssm,2c,3u,census1x,census2x-ssm,census2x] [--out DIR] [--warm-cache DIR|none]
@@ -19,7 +19,7 @@ headings8 camera plan, quit) and writes report.json + report.txt.
   (--warm-cache none: the warm arms continue from the cold arm's cache). From an agent slot the default is
   --warm-cache agent: a read-only seed from the agent shader cache of the build's shader-code key
   (tools/fable2_agent_cache.py; FABLE2_AGENT_CACHE=KEY@GEN|PIN pins a snapshot), recorded as result agent_cache.
-  The main checkout (the Dev Launcher's "Run Benchmark…") keeps live.
+  The main checkout (the Fable II Launcher's "Run Benchmark…") keeps live.
 - Window: the game window opens at the remembered test-window position (tools/fable2_test_windows.py; position
   only, at the game's default size, so every run measures the same window size) and a move is remembered for the
   next test window. FABLE2_TEST_WINDOW_MEMORY=0 leaves the state folder's own fable2_window.toml as before.

@@ -1,5 +1,7 @@
 # Hot-function overrides (strong-symbol copies of recompiled guest code)
 
+Note: the generator named below, `tools/make_hotfunc_overrides.py`, comes from upstream and is not in this repo.
+
 ## Mechanism
 
 Recompiled guest functions (`generated/default/fable_2_recomp.*.cpp`) are emitted

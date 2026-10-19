@@ -143,6 +143,23 @@ class LauncherEnvSyncTests(unittest.TestCase):
                 self.assertNotIn('FABLE2_LOAD_FADE_FRAMES', player)
                 self.assertNotIn('FABLE2_SAVE_NOTICE_MS', player)
 
+    def test_extra_env_never_makes_play_background(self):
+        # A saved FABLE2_TEST_BACKGROUND in Extra environment must not start Play games in the background (note 21).
+        extra = 'FABLE2_TEST_BACKGROUND=1 FABLE2_SYNC_TEST=1'
+        dev = self.dev_env(['--extra-env', extra])
+        player, _ = self.player_run({'extraEnv': extra}, ['--play'], 'extra-bg')
+        for env in (dev, player):
+            self.assertNotIn('FABLE2_TEST_BACKGROUND', env)
+            self.assertEqual(env['FABLE2_SYNC_TEST'], '1')
+
+    def test_play_hands_activation_to_the_game(self):
+        # Both roles' Play activate the started game by pid (not by bundle id), except in background test mode.
+        player = (ROOT / 'tools/macos/Player/main.swift').read_text()
+        dev = (ROOT / 'tools/macos/DevLauncher/DevLauncher.swift').read_text()
+        self.assertNotIn('yieldActivation(toApplicationWithBundleIdentifier', player)
+        self.assertIn('GameActivation.handOff(to: process.processIdentifier)', player)
+        self.assertIn('GameActivation.handOff(to: pid_t(pid))', dev)
+
     def test_skip_launcher_plays_directly(self):
         player, _ = self.player_run({'skipLauncher': True, 'resolutionScale': '2'}, [], 'skip')
         self.assertEqual(player['FABLE2_RES_SCALE'], '2')

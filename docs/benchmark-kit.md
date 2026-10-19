@@ -8,7 +8,7 @@ Measures the Metal port on any Apple Silicon Mac, including Macs with no Xcode, 
 | In-game benchmark mode | `src/core/fable2_benchmark.h`, `fable2_benchmark_pad.h`, hook in `fable2_session_telemetry.h` | `FABLE2_BENCHMARK=<result.json>`: boot save → gameplay → headings8 → result → quit |
 | Orchestrator | `tools/macos/Benchmark/main.swift` (`FableIIBenchmark`) | Runs the arms, computes the statistics, writes the report |
 | Kit packager | `tools/fable2_benchmark_kit.py` | Portable app + orchestrator + save → `Fable II Benchmark Kit.zip` |
-| This Mac | `tools/fable2_benchmark.py`, Launcher "Run Benchmark…" | Same benchmark on the Playtest or Latest build |
+| This Mac | `tools/fable2_benchmark.py`, Fable II Launcher (Dev Options) Tools > "Run Benchmark…" | Same benchmark on the Playtest or Latest build |
 
 ## In-game mode (`FABLE2_BENCHMARK`)
 

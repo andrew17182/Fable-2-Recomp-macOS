@@ -10,7 +10,7 @@ Tools, never Xcode.
 |---|---|
 | Packager | `tools/fable2_release.py build` → `out/release/Fable II.app`, `Fable II.zip`, `manifest.json` |
 | Build driver (runs on the player's Mac, `/usr/bin/python3` 3.9, standard library only) | `tools/fable2_game_build.py` |
-| First-launch windows (welcome, extraction, build, shader prep, Play) | `tools/macos/Player/main.swift` |
+| First-launch windows (welcome, extraction, build, shader prep) and the launcher | `tools/macos/Player/main.swift` |
 | Start Fresh / Restore / Delete archive | `tools/macos/Shared/StartFresh.swift` |
 | Engine launcher (finds the built game) | `tools/macos/AppLauncher.m` |
 
@@ -124,8 +124,8 @@ built and signed locally, so it carries no quarantine attribute and Gatekeeper d
 5. **Preparing shaders** (as in the portable app: one headless run per scale, Skip allowed). On a first install
    (no lists remembered yet) it now runs too: the first scale compiles the disc's shader bank
    (`docs/shader-precompile-20261015.md`).
-6. **Play window**, with "The game is built and ready" (or "updated and ready" after an update). A build never
-   starts the game by itself, so the player can review Settings, Controls and resolution first. Only the test flag
+6. **The launcher** (its front page, `docs/player-app.md`), with "The game is built and ready" (or "updated and
+   ready" after an update). A build never starts the game by itself, so the player can review Settings, Controls and resolution first. Only the test flag
    `--play` (used by the end-to-end harness) plays as soon as the game is ready.
 
 ## Protected folders
@@ -243,7 +243,7 @@ are not built there (0.1.0 (91cfcdb) failed every player build: one of them runs
 
 ## Start Fresh
 
-Settings → Advanced → **Start Fresh…** (also File menu) moves everything the app owns into
+Settings → General → Logs and data → **Start Fresh…** (also File menu) moves everything the app owns into
 `Archive/<yyyy-MM-dd_HH-mm-ss>/` and relaunches into the welcome window, so a first launch can be tested again
 without a new macOS user. The sheet lists exactly what moves:
 
@@ -378,7 +378,7 @@ were not run) and a real 8 GB Mac. Gatekeeper on a downloaded zip was tested by 
 ## Import saves (2026-10-15)
 
 The release app keeps its own state folder, so on a Mac that already ran the portable or dev build it started with
-no saves (maintainer, M3). **Import Saves…** (File menu, and Settings > Advanced) copies hero saves from another
+no saves (maintainer, M3). **Import Saves…** (File menu, and Settings > General > Logs and data) copies hero saves from another
 install on this Mac (`~/Library/Application Support/Fable II Recomp/saves`) or from a chosen folder (a `saves`
 folder or the data folder holding one) into this app's `saves/`:
 
@@ -387,6 +387,6 @@ folder or the data folder holding one) into this app's `saves/`:
   `saves-backup-<stamp>` next to `saves/` first;
 - the result lists what was imported, replaced and kept (also in `logs/player.log`).
 
-At the first Play window with no saves of its own, the app offers the import once, and only when another install's
+On the first launcher front page with no saves of its own, the app offers the import once, and only when another install's
 saves are found. `--import-saves FOLDER [--replace]` runs the same code without the window
 (`tests/import_saves_tests.py`, stand-in folders; `FABLE2_IMPORT_SAVES_FROM` stands in for the other install).
