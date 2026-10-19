@@ -32,14 +32,18 @@ config_version = 1
 # Host keyboard -> guest gamepad map: "Key:Button,Key:Button,..." (one line;
 # do not add spaces or newlines inside the string). Key = Windows virtual-key
 # name (see README.md, Keyboard controls); Button = A/B/X/Y, LB/RB, LT/RT,
-# Up/Down/Left/Right, Pause, Select, L3/R3, StickUp/StickDown/StickLeft/
-# StickRight. Empty string disables the keyboard gamepad.
+# Up/Down/Left/Right (d-pad), Pause, Select, L3/R3, StickUp/StickDown/
+# StickLeft/StickRight (left stick), RStickUp/RStickDown/RStickLeft/
+# RStickRight (right stick, adds to mouse look). Empty string disables the
+# keyboard gamepad. A map equal to the pre-2026-10-19 default (arrows = d-pad)
+# is replaced by the new default at startup.
 # --keyboard_gamepad_map, REX_* environment variables and fable_2.toml still
 # take priority over this value; the Backtick console can change it live.
 # Default: the built-in layout
 #   E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,
-#   Escape:Pause,M:Select,Q:LT,Tab:RT,Up:Up,Down:Down,Left:Left,Right:Right
-keyboard_gamepad_map = "E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,Escape:Pause,M:Select,Q:LT,Tab:RT,Up:Up,Down:Down,Left:Left,Right:Right"
+#   Escape:Pause,M:Select,Q:LT,Tab:RT,I:Up,K:Down,J:Left,L:Right,
+#   Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight
+keyboard_gamepad_map = "E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,Escape:Pause,M:Select,Q:LT,Tab:RT,I:Up,K:Down,J:Left,L:Right,Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight"
 
 # Map mouse movement to the guest right stick (camera look): sweep to look,
 # stop to stop. Enabling this captures/hides the cursor while playing.

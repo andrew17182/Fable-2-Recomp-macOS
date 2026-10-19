@@ -23,6 +23,17 @@ inline constexpr std::string_view kDefaultKeyboardGamepadMap =
     "E:A,X:B,Z:X,C:Y,"
     "W:StickUp,S:StickDown,A:StickLeft,D:StickRight,"
     "Escape:Pause,M:Select,Q:LT,Tab:RT,"
+    "I:Up,K:Down,J:Left,L:Right,"
+    "Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight";
+
+// The default before 2026-10-19 (arrow keys = d-pad, no right-stick keys).
+// fable_2.toml saves every cvar, so this string sits in users' config files;
+// a map still equal to it was never customised and gets the new default
+// (src/input/keyboard_gamepad.h, RefreshBindings).
+inline constexpr std::string_view kOldDefaultKeyboardGamepadMap =
+    "E:A,X:B,Z:X,C:Y,"
+    "W:StickUp,S:StickDown,A:StickLeft,D:StickRight,"
+    "Escape:Pause,M:Select,Q:LT,Tab:RT,"
     "Up:Up,Down:Down,Left:Left,Right:Right";
 
 // Parsed values from fable2_config.toml. To add a setting:

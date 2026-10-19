@@ -60,7 +60,8 @@ REXCVAR_DEFINE_STRING(
     "Input",
     "Map host keyboard keys to guest gamepad input "
     "(Key:Button,...; targets: A/B/X/Y, LB/RB, LT/RT, Up/Down/Left/Right, "
-    "Pause, Select, L3/R3, StickUp/StickDown/StickLeft/StickRight). "
+    "Pause, Select, L3/R3, StickUp/StickDown/StickLeft/StickRight, "
+    "RStickUp/RStickDown/RStickLeft/RStickRight). "
     "Default comes from fable2_config.toml [input] keyboard_gamepad_map.");
 
 // Mouse -> right stick (camera look). See src/input/keyboard_gamepad.h.

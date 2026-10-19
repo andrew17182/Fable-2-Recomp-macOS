@@ -108,8 +108,10 @@ The mapping is the `keyboard_gamepad_map` cvar, format `Key:Button,Key:Button,..
   (`E`, `Space`, `LeftShift`, `F1`, ...).
 - **Button** — a guest gamepad input: `A`, `B`, `X`, `Y`, `LB`/`RB` (shoulders),
   `LT`/`RT` (triggers), `Up`/`Down`/`Left`/`Right` (dpad), `Pause` (Start),
-  `Select` (Back), `L3`/`R3` (thumb clicks), and `StickUp`/`StickDown`/
-  `StickLeft`/`StickRight` (left thumbstick, full deflection while held).
+  `Select` (Back), `L3`/`R3` (thumb clicks), `StickUp`/`StickDown`/
+  `StickLeft`/`StickRight` (left thumbstick, full deflection while held), and
+  `RStickUp`/`RStickDown`/`RStickLeft`/`RStickRight` (right thumbstick, the
+  camera; full deflection while held, added to mouse look and clamped).
 
 The default layout is:
 
@@ -120,7 +122,16 @@ The default layout is:
 | `Escape` | Pause (Start) |
 | `M` | Select (Back) |
 | `Q` / `Tab` | Left / Right trigger |
-| Arrow keys | Dpad up / down / left / right |
+| `I` `J` `K` `L` | Dpad (up / left / down / right) |
+| Arrow keys | Right stick (camera) |
+
+**Migration (2026-10-19).** Before this, the arrow keys were the dpad and no key reached the right stick.
+A map equal to that old default (saved in `fable_2.toml` or an old `fable2_config.toml`) is replaced by the
+new default when the game starts (logged as `[input] keyboard_gamepad_map: old default replaced`);
+environment and command-line maps are kept. The launchers migrate their stored map once
+(`keyboardMapVersion` = 2): a map that binds the arrows to the dpad exactly as the old default did gets the
+arrows on the right stick and `I`/`J`/`K`/`L` on the dpad, and keeps the rest of its bindings. None of the new
+keys is a hotkey.
 
 Remap at launch without recompiling, e.g.
 
@@ -144,7 +155,7 @@ environment route (below).
 `tools/macos/Shared/ControlsView.swift`, shared by both launchers (tests: `tests/controls_tab_tests.py`).
 
 - **Keyboard → controller:** one row per guest input (A/B/X/Y, LB/RB, LT/RT, d-pad, Start, Back, L3/R3,
-  left stick ×4). Click a row and press a key to rebind it; **+** adds another key, a mouse button or any key
+  left stick ×4, right stick ×4). Click a row and press a key to rebind it; **+** adds another key, a mouse button or any key
   the game reads (also ones a Mac keyboard lacks); ✕ removes one; **Restore Defaults**. A key already bound
   to another input asks: **Swap** (the other input gets this row's old key) or **Replace** (the other input
   loses it). A warning mark shows keys that are also a hotkey or bound twice. ⌘ shortcuts still work while a
@@ -155,7 +166,7 @@ environment route (below).
   settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
   overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 8); **None** unbinds. Fixed in code
   and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F9 FPS counter, ⌃⌘F full screen
-  (SDL's window menu), ⌘Q quit, controller Share (quick save) and View (screenshot).
+  (SDL's window menu), ⌘Q quit, controller View (screenshot).
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
@@ -164,7 +175,7 @@ environment route (below).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
-settings key). Stored keys: `keyboardMap`, `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`
+settings key). Stored keys: `keyboardMap` (+ `keyboardMapVersion`), `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
 `--view-button-to-game`.
@@ -229,17 +240,13 @@ Implementation: key handling in `src/input/window_keyboard_mouse.h` (macOS) and
 `MainRenderLoop` hook in `src/diagnostics/fps_meter.h`, and the
 string-build + `RunScript` call in `src/core/fable2_f5_lua.h`.
 
-### Controller: Share = quick save, View = screenshot
+### Controller: View = screenshot
 
-On a controller, **Share** (Xbox Series; SDL `MISC1`) makes the same quick save as F5, and
-**View** (the 360 **Back**) saves the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png`
+On a controller, **View** (the 360 **Back**) saves the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png`
 in the game data root (override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). View no longer
 reaches the game as Back (`FABLE2_VIEW_BUTTON_TO_GAME=1` restores it; keyboard `M` = Select still
-works). The log shows `[pad-hotkeys] controller ... Share/MISC1 reported: yes|no` for each pad.
-On macOS, Share is also read straight from the GameController framework (SDL may not deliver
-it); a press logs `GameController Share down` and/or `SDL gamepad button misc1 ... down`.
-`FABLE2_PAD_DEBUG=1` logs every pad button.
-Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> share|view`.
+works). `FABLE2_PAD_DEBUG=1` logs every pad button.
+Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view`.
 
 ### Frame pacing (macOS)
 

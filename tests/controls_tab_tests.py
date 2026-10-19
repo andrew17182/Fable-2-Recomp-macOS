@@ -62,7 +62,7 @@ class ControlsSourceTests(unittest.TestCase):
         header = (ROOT / 'src/input/keyboard_gamepad.h').read_text()
         accepted = set(re.findall(r'u == "([A-Z0-9]+)"', header))
         inputs = re.findall(r'GuestInput\(name: "([^"]+)"', block('guest-inputs'))
-        self.assertEqual(len(inputs), 20)
+        self.assertEqual(len(inputs), 24)
         for name in inputs: self.assertIn(name.upper(), accepted)
         aliases = dict(re.findall(r'"([A-Z0-9]+)": "([A-Za-z0-9]+)"',
                                   SWIFT[SWIFT.index('static let aliases'):SWIFT.index('static let builtInDefault')]))
@@ -72,13 +72,28 @@ class ControlsSourceTests(unittest.TestCase):
 
     def test_default_layout_matches_game(self):
         swift = ''.join(re.findall(r'"([^"]*)"', SWIFT[SWIFT.index('static let builtInDefault'):
-                                                         SWIFT.index('static func canonicalTarget')]))
+                                                         SWIFT.index('/// Map format version')]))
         config_h = (ROOT / 'src/core/fable2_config.h').read_text()
         cpp = ''.join(re.findall(r'"([^"]*)"', config_h[config_h.index('kDefaultKeyboardGamepadMap ='):
                                                        config_h.index(';', config_h.index('kDefaultKeyboardGamepadMap ='))]))
         toml = re.search(r'^keyboard_gamepad_map = "([^"]*)"', (ROOT / 'config/fable2_config.toml').read_text(), re.M)
         self.assertEqual(swift, cpp)
         self.assertEqual(swift, toml.group(1))
+
+    def test_default_keys_are_parse_virtual_key_names(self):
+        # Every key in the built-in layout must be a name ParseVirtualKey accepts (else the game skips it), and
+        # none may be a fixed or default overlay hotkey.
+        swift = ''.join(re.findall(r'"([^"]*)"', SWIFT[SWIFT.index('static let builtInDefault'):
+                                                         SWIFT.index('/// Map format version')]))
+        keys = [entry.split(':')[0] for entry in swift.split(',')]
+        names = set(swift_strings(block('sdk-key-names')))
+        sdk = sdk_key_names()
+        hotkeys = set(re.findall(r'Hotkey\(title: "[^"]+", keys: "([^"]+)"', SWIFT)) | {'F5', 'F6', 'F7', 'F9', '5', '6', '7'}
+        for key in keys:
+            self.assertIn(key, names)
+            if sdk is not None: self.assertIn(key, sdk)
+            self.assertNotIn(key, hotkeys)
+        for key in ('I', 'J', 'K', 'L', 'Up', 'Down', 'Left', 'Right'): self.assertIn(key, keys)
 
     def test_hotkey_defaults_match_code(self):
         rebindable = dict(re.findall(r'keys: "([^"]+)",\s*detail: "[^"]*",\s*cvar: "(\w+)"', SWIFT))
@@ -111,6 +126,21 @@ out["replace"] = KeyboardMap.serialize(KeyboardMap.bind("X", to: "A", add: false
 out["swap"] = KeyboardMap.serialize(KeyboardMap.bind("X", to: "A", add: false, swap: true, in: base))
 out["add"] = KeyboardMap.serialize(KeyboardMap.bind("Space", to: "A", add: true, swap: false, in: base))
 out["move"] = KeyboardMap.serialize(KeyboardMap.bind("X", to: "A", add: true, swap: true, in: base))
+let oldDefault = "E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,Escape:Pause,M:Select,Q:LT,Tab:RT,"
+  + "Up:Up,Down:Down,Left:Left,Right:Right"
+out["migrateOld"] = KeyboardMap.migrated(oldDefault)
+out["migrateOldTable"] = KeyboardMap.migrated(KeyboardMap.serialize(KeyboardMap.parse(oldDefault).bindings))
+out["migrateCustom"] = KeyboardMap.migrated("Space:A,I:B,Up:Up,Down:Down,Left:Left,Right:Right")
+out["migrateOther"] = KeyboardMap.migrated("E:A,Up:Up,Down:Down,Left:Left,Right:Y")
+out["migrateNew"] = KeyboardMap.migrated(KeyboardMap.defaultMap)
+let mstore = PlistSettingsStore(path: CommandLine.arguments[1] + ".migrate")
+mstore.set(oldDefault, forKey: "keyboardMap")
+out["loadOld"] = ControlSettings.load(from: mstore).keyboardMap
+out["loadOldStored"] = mstore.string(forKey: "keyboardMap") ?? ""
+mstore.set("Up:Up,Down:Down,Left:Left,Right:Right", forKey: "keyboardMap")  // chosen after migrating: kept
+out["loadChosen"] = ControlSettings.load(from: mstore).keyboardMap
+let fresh = PlistSettingsStore(path: CommandLine.arguments[1] + ".fresh")
+out["loadFresh"] = ControlSettings.load(from: fresh).keyboardMap
 out["envDefault"] = LaunchSettings().settingsEnvironment.filter { $0.hasPrefix("REX_") || $0.hasPrefix("FABLE2_VIEW") }
 var c = ControlSettings()
 var results: [String] = []
@@ -160,8 +190,23 @@ class ControlsHarnessTests(unittest.TestCase):
         self.assertEqual(parse['invalid'], ['Bogus:A', 'E:Nope', 'X'])
 
     def test_default_in_table_order(self):
-        self.assertEqual(self.out['defaultMap'], 'E:A,X:B,Z:X,C:Y,Q:LT,Tab:RT,Up:Up,Down:Down,Left:Left,Right:Right,'
-                                                 'Escape:Pause,M:Select,W:StickUp,S:StickDown,A:StickLeft,D:StickRight')
+        self.assertEqual(self.out['defaultMap'], 'E:A,X:B,Z:X,C:Y,Q:LT,Tab:RT,I:Up,K:Down,J:Left,L:Right,'
+                                                 'Escape:Pause,M:Select,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,'
+                                                 'Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight')
+
+    def test_migration(self):
+        new = self.out['defaultMap']
+        self.assertEqual(self.out['migrateOld'], new)
+        self.assertEqual(self.out['migrateOldTable'], new)
+        self.assertEqual(self.out['migrateNew'], new)
+        # Custom map with the old arrows: arrows -> right stick, I/J/K/L -> d-pad (I leaves B), rest kept.
+        self.assertEqual(self.out['migrateCustom'], 'Space:A,I:Up,K:Down,J:Left,L:Right,'
+                                                    'Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight')
+        self.assertEqual(self.out['migrateOther'], 'E:A,Up:Up,Down:Down,Left:Left,Right:Y')
+        self.assertEqual(self.out['loadOld'], new)
+        self.assertEqual(self.out['loadOldStored'], new)
+        self.assertEqual(self.out['loadChosen'], 'Up:Up,Down:Down,Left:Left,Right:Right')
+        self.assertEqual(self.out['loadFresh'], new)
 
     def test_conflicts(self):
         # Replace: X leaves B (B unbound). Swap: B gets A's old key E. Add: A keeps E. Add never swaps.

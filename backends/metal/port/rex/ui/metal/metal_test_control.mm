@@ -44,6 +44,8 @@ SDL_Scancode Key(const std::string& name) {
     {"return", SDL_SCANCODE_RETURN}, {"up", SDL_SCANCODE_UP},
     {"down", SDL_SCANCODE_DOWN}, {"left", SDL_SCANCODE_LEFT},
     {"right", SDL_SCANCODE_RIGHT}, {"m", SDL_SCANCODE_M},
+    {"i", SDL_SCANCODE_I}, {"j", SDL_SCANCODE_J},
+    {"k", SDL_SCANCODE_K}, {"l", SDL_SCANCODE_L},
     {"5", SDL_SCANCODE_5}, {"6", SDL_SCANCODE_6},
     {"7", SDL_SCANCODE_7}, {"8", SDL_SCANCODE_8},
     {"f5", SDL_SCANCODE_F5}, {"f6", SDL_SCANCODE_F6}, {"f7", SDL_SCANCODE_F7},

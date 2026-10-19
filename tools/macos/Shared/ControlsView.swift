@@ -138,6 +138,10 @@ enum KeyboardMap {
     GuestInput(name: "StickDown", title: "Left stick down (back)"),
     GuestInput(name: "StickLeft", title: "Left stick left"),
     GuestInput(name: "StickRight", title: "Left stick right"),
+    GuestInput(name: "RStickUp", title: "Right stick up"),
+    GuestInput(name: "RStickDown", title: "Right stick down"),
+    GuestInput(name: "RStickLeft", title: "Right stick left"),
+    GuestInput(name: "RStickRight", title: "Right stick right"),
   ]
   // END guest-inputs
 
@@ -151,7 +155,28 @@ enum KeyboardMap {
   /// The game's built-in layout (fable2::config::kDefaultKeyboardGamepadMap, src/core/fable2_config.h).
   static let builtInDefault =
     "E:A,X:B,Z:X,C:Y,W:StickUp,S:StickDown,A:StickLeft,D:StickRight,Escape:Pause,M:Select,Q:LT,Tab:RT,"
-    + "Up:Up,Down:Down,Left:Left,Right:Right"
+    + "I:Up,K:Down,J:Left,L:Right,Up:RStickUp,Down:RStickDown,Left:RStickLeft,Right:RStickRight"
+
+  /// Map format version stored as "keyboardMapVersion". 2 (2026-10-19): arrows = right stick, I/J/K/L = d-pad.
+  static let version = 2
+
+  /// A stored map from before version 2 that binds the arrows to the d-pad exactly as the old default did
+  /// (each d-pad input has only its arrow; the arrows have nothing else) gets the new arrows and I/J/K/L; the
+  /// rest of the map is kept (I/J/K/L leave any other input). Other maps are returned unchanged.
+  static func migrated(_ text: String) -> String {
+    var b = parse(text).bindings
+    let pairs = [("Up", "I", "RStickUp"), ("Down", "K", "RStickDown"), ("Left", "J", "RStickLeft"),
+                 ("Right", "L", "RStickRight")]
+    for (arrow, _, _) in pairs {
+      guard b[arrow] == [arrow], owners(of: arrow, except: arrow, in: b).isEmpty else { return text }
+    }
+    for (arrow, key, stick) in pairs {
+      for owner in owners(of: key, except: arrow, in: b) { b[owner] = b[owner]?.filter { $0 != key } }
+      b[arrow] = [key]
+      b[stick, default: []].append(arrow)
+    }
+    return serialize(b)
+  }
 
   static func canonicalTarget(_ name: String) -> String? {
     let u = name.trimmingCharacters(in: .whitespaces).uppercased()
@@ -229,7 +254,6 @@ enum Hotkeys {
     Hotkey(title: "FPS counter", keys: "F9", detail: "Shows or hides the frame-rate counter."),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
     Hotkey(title: "Quit", keys: "⌘Q", detail: "Closes the game (it does not save)."),
-    Hotkey(title: "Controller: quick save", keys: "Share", detail: "Xbox Series controllers."),
     Hotkey(title: "Controller: screenshot", keys: "View", detail: "Saves a PNG in the Screenshots folder."),
   ]
   /// Keys the game also uses as fixed hotkeys (number keys only while no overlay is open).
@@ -259,6 +283,11 @@ struct ControlSettings: Equatable {
   static func load(from store: SettingsStore) -> ControlSettings {
     var c = ControlSettings()
     if let map = store.string(forKey: "keyboardMap") { c.keyboardMap = map }
+    if (store.object(forKey: "keyboardMapVersion") as? Int ?? 1) < KeyboardMap.version {
+      let map = KeyboardMap.migrated(c.keyboardMap)
+      if map != c.keyboardMap { c.keyboardMap = map; store.set(map, forKey: "keyboardMap") }
+      store.set(KeyboardMap.version, forKey: "keyboardMapVersion")
+    }
     if let on = store.object(forKey: "mouseLook") as? Bool { c.mouseLook = on }
     if let scale = store.object(forKey: "mouseLookScale") as? Int { c.mouseLookScale = scale }
     if let binds = store.object(forKey: "hotkeyBinds") as? [String: String] { c.binds = binds }

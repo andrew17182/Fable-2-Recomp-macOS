@@ -16,7 +16,8 @@
 // (defined in main.cpp): "Key:Button,Key:Button,..." where Key is a host key
 // name understood by rex::ui::ParseVirtualKey ("E", "Space", "Shift", ...)
 // and Button is a guest gamepad button name (A/B/X/Y/LB/RB/LT/RT/Up/Down/
-// Left/Right/Start/Back/L3/R3/StickUp/StickDown/StickLeft/StickRight).
+// Left/Right/Start/Back/L3/R3/StickUp/StickDown/StickLeft/StickRight/
+// RStickUp/RStickDown/RStickLeft/RStickRight).
 // The cvar's default is seeded from fable2_config.toml [input] at startup
 // (src/core/fable2_config.{h,cpp} + Fable2App::OnPostInitLogging), so remapping
 // can be done in the config file without a rebuild or CLI arg.
@@ -25,7 +26,8 @@
 // and `mouse_look_scale` cvars (defaults seeded from fable2_config.toml
 // [input] at startup, same as the keyboard map above). Windows recenters the
 // cursor each poll; macOS consumes relative SDL window motion. Both allow
-// continuous camera rotation without hitting the edge of the screen.
+// continuous camera rotation without hitting the edge of the screen. Keys
+// bound to RStick* add to the mouse deflection (sum, then clamp).
 
 #pragma once
 
@@ -45,6 +47,8 @@
 #include <rex/runtime.h>
 #include <rex/ui/virtual_key.h>
 #include <rex/ui/keybinds.h>
+
+#include "fable2_config.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -100,7 +104,7 @@ struct Mapping {
   uint16_t vk = 0;       // host virtual-key code (0 == invalid)
   uint16_t button = 0;   // guest X_INPUT_GAMEPAD_* button mask
   char trigger = 0;      // 0 = not a trigger, 'L' = left, 'R' = right
-  int8_t axis = 0;       // 0 = not an axis, 1 = left-stick X, 2 = left-stick Y
+  int8_t axis = 0;       // 0 = not an axis, 1/2 = left-stick X/Y, 3/4 = right-stick X/Y
   int8_t axis_sign = 0;  // +1 / -1 deflection direction for the axis
   bool valid() const { return button != 0 || trigger != 0 || axis != 0; }
 };
@@ -161,6 +165,16 @@ inline void FillGuestTarget(Mapping& m, std::string_view name) {
     m.axis = 1; m.axis_sign = -1;
   } else if (u == "STICKRIGHT" || u == "LR") {
     m.axis = 1; m.axis_sign = 1;
+  // Right stick (camera), same signs as a physical stick and as mouse look
+  // (up = +ry = look up).
+  } else if (u == "RSTICKUP") {
+    m.axis = 4; m.axis_sign = 1;
+  } else if (u == "RSTICKDOWN") {
+    m.axis = 4; m.axis_sign = -1;
+  } else if (u == "RSTICKLEFT") {
+    m.axis = 3; m.axis_sign = -1;
+  } else if (u == "RSTICKRIGHT") {
+    m.axis = 3; m.axis_sign = 1;
   } else {
     m = Mapping{};  // unknown -> invalid
   }
@@ -266,6 +280,8 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
     int32_t ly = 0;
     int32_t rx = 0;
     int32_t ry = 0;
+    int32_t key_rx = 0;  // RStick* keys; added to the mouse deflection below
+    int32_t key_ry = 0;
 #ifdef _WIN32
     rex::ui::Window* win = GameWindow();
     HWND hwnd = win ? reinterpret_cast<HWND>(win->GetNativeWindowHandle()) : nullptr;
@@ -307,6 +323,10 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
           lx += m.axis_sign * input_detail::kStickMax;
         } else if (m.axis == 2) {
           ly += m.axis_sign * input_detail::kStickMax;
+        } else if (m.axis == 3) {
+          key_rx += m.axis_sign * input_detail::kStickMax;
+        } else if (m.axis == 4) {
+          key_ry += m.axis_sign * input_detail::kStickMax;
         }
       }
     }
@@ -370,6 +390,8 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
       else if (m.trigger == 'R') right_trigger = 0xFF;
       else if (m.axis == 1) lx += m.axis_sign * input_detail::kStickMax;
       else if (m.axis == 2) ly += m.axis_sign * input_detail::kStickMax;
+      else if (m.axis == 3) key_rx += m.axis_sign * input_detail::kStickMax;
+      else if (m.axis == 4) key_ry += m.axis_sign * input_detail::kStickMax;
     }
     lx = input_detail::ClampStick(lx);
     ly = input_detail::ClampStick(ly);
@@ -383,6 +405,9 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
       ry = mouse_axis(-host.dy, REXCVAR_GET(mouse_look_scale));
     }
 #endif
+    // Right stick: keys and mouse combine (sum, then clamp), neither overrides.
+    rx = input_detail::ClampStick(rx + input_detail::ClampStick(key_rx));
+    ry = input_detail::ClampStick(ry + input_detail::ClampStick(key_ry));
 
     out_state->packet_number.set(packet_number_++);
     out_state->gamepad.buttons.set(buttons);
@@ -422,6 +447,19 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
   // Re-parse the cvar only when its text changed (cheap for a short string),
   // so the mapping is hot-reloadable from the console without a rebuild.
   void RefreshBindings() {
+    // Once per run: a map still equal to the old built-in default (saved by fable_2.toml or an old
+    // fable2_config.toml) moves to the new one. Environment (launcher) and command-line maps are kept;
+    // the launcher migrates its own stored map.
+    if (!old_default_checked_) {
+      old_default_checked_ = true;
+      const auto src = rex::cvar::GetFlagSource("keyboard_gamepad_map");
+      if (src != rex::cvar::Source::kEnvironment && src != rex::cvar::Source::kCommandLine &&
+          REXCVAR_GET(keyboard_gamepad_map) == config::kOldDefaultKeyboardGamepadMap) {
+        rex::cvar::SetFlagByName("keyboard_gamepad_map", config::kDefaultKeyboardGamepadMap);
+        REXLOG_INFO("[input] keyboard_gamepad_map: old default replaced by the new default "
+                    "(arrows = right stick, I/J/K/L = d-pad)");
+      }
+    }
     std::string text = REXCVAR_GET(keyboard_gamepad_map);
     if (text == cached_text_) return;
     cached_text_ = std::move(text);
@@ -454,6 +492,7 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
   bool cursor_hidden_ = false;   // set while the SDK window cursor is hidden
   bool console_open_ = false;    // debug menu open -> mouse lock released
   bool unlock_down_prev_ = false;  // prev-poll state of the unlock key
+  bool old_default_checked_ = false;  // RefreshBindings' one-time old-default migration
 #ifdef __APPLE__
   std::shared_ptr<input_detail::WindowKeyboardMouse> mac_input_;
 #endif

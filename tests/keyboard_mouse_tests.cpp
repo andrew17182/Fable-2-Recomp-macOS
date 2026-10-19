@@ -5,12 +5,16 @@
 
 namespace fable2::f5lua {
 inline int requests = 0;
-inline void request_run() { ++requests; }
+inline void request_run(int) { ++requests; }
 }
 #include "keyboard_gamepad.h"
 #include "fable2_config.h"
 #include "recomp_hotkeys.h"
 #include <rex/ui/sdl_virtual_key.h>
+
+// Link stubs for headers pulled in by keyboard_gamepad.h (turbo, flight recorder).
+namespace fable2::fr { void SetTag(Tag, int64_t, const char*) {} }
+namespace fable2::config { const Values& Get() { static Values values; return values; } }
 
 REXCVAR_DEFINE_STRING(keyboard_gamepad_map, "", "Input", "Test map");
 REXCVAR_DEFINE_BOOL(mouse_look, true, "Input", "Test mouse");
@@ -84,7 +88,7 @@ int main() {
   CHECK(rex::ui::ProcessKeyEvent(number_event) && debug_requests == 1);
   rex::ui::KeyEvent settings_event(&window, K::k4, 1, false, false, false, false, false);
   CHECK(rex::ui::ProcessKeyEvent(settings_event) && settings_requests == 1);
-  rex::ui::KeyEvent achievement_event(&window, K::k7, 1, false, false, false, false, false);
+  rex::ui::KeyEvent achievement_event(&window, K::k8, 1, false, false, false, false, false);
   CHECK(rex::ui::ProcessKeyEvent(achievement_event) && achievement_requests == 1);
   rex::ui::KeyEvent old_event(&window, K::kF3, 1, false, false, false, false, false);
   CHECK(!rex::ui::ProcessKeyEvent(old_event));
@@ -94,12 +98,14 @@ int main() {
   CHECK(rex::ui::ProcessKeyEvent(custom_event) && debug_requests == 2);
   for (auto name : {"bind_debug_overlay", "bind_settings", "bind_achievements"})
     rex::ui::UnregisterBind(name);
-  REXCVAR_SET(keyboard_gamepad_map, std::string(fable2::config::kDefaultKeyboardGamepadMap));
+  // A saved old default (fable_2.toml) moves to the new default on the first refresh.
+  REXCVAR_SET(keyboard_gamepad_map, std::string(fable2::config::kOldDefaultKeyboardGamepadMap));
   {
     fable2::KeyboardGamepadDriver driver(nullptr, 0);
     driver.OnWindowAvailable(&window);
     std::vector<rex::input::DeviceInfo> devices;
     driver.EnumerateDevices(devices);
+    CHECK(REXCVAR_GET(keyboard_gamepad_map) == fable2::config::kDefaultKeyboardGamepadMap);
     CHECK(devices.size() == 1 && devices[0].synthetic);
     auto poll = [&] {
       rex::input::X_INPUT_STATE state{};
@@ -112,15 +118,15 @@ int main() {
     for (const auto& binding : {std::pair{K::kZ, B::X_INPUT_GAMEPAD_X},
                                 std::pair{K::kX, B::X_INPUT_GAMEPAD_B},
                                 std::pair{K::kC, B::X_INPUT_GAMEPAD_Y},
-                                std::pair{K::kUp, B::X_INPUT_GAMEPAD_DPAD_UP},
-                                std::pair{K::kDown, B::X_INPUT_GAMEPAD_DPAD_DOWN},
-                                std::pair{K::kLeft, B::X_INPUT_GAMEPAD_DPAD_LEFT},
-                                std::pair{K::kRight, B::X_INPUT_GAMEPAD_DPAD_RIGHT}}) {
+                                std::pair{K::kI, B::X_INPUT_GAMEPAD_DPAD_UP},
+                                std::pair{K::kK, B::X_INPUT_GAMEPAD_DPAD_DOWN},
+                                std::pair{K::kJ, B::X_INPUT_GAMEPAD_DPAD_LEFT},
+                                std::pair{K::kL, B::X_INPUT_GAMEPAD_DPAD_RIGHT}}) {
       window.Key(binding.first, true);
       CHECK(poll().gamepad.buttons == binding.second);
       window.Key(binding.first, false);
     }
-    for (auto key : {K::k1, K::k2, K::k3, K::k7, K::kF1, K::kF3, K::kF5}) {
+    for (auto key : {K::k1, K::k2, K::k3, K::kF1, K::kF3}) {  // 5/7/F5/F7: hotkeys
       window.Key(key, true);
       CHECK(poll().gamepad.buttons == 0);
       window.Key(key, false);
@@ -145,6 +151,24 @@ int main() {
     state = poll();
     CHECK(state.gamepad.thumb_rx == 256 && state.gamepad.thumb_ry == 256);
     CHECK(poll().gamepad.thumb_rx == 0 && poll().gamepad.thumb_ry == 0);
+    // Arrow keys: right stick, full deflection, no buttons; the mouse adds to them.
+    window.Key(K::kUp, true);
+    window.Key(K::kLeft, true);
+    state = poll();
+    CHECK(state.gamepad.buttons == 0 && state.gamepad.thumb_lx == 0 && state.gamepad.thumb_ly == 0);
+    CHECK(state.gamepad.thumb_rx == -32767 && state.gamepad.thumb_ry == 32767);
+    window.Motion(1.0f, 1.0f);
+    state = poll();
+    CHECK(state.gamepad.thumb_rx == -32767 + 256 && state.gamepad.thumb_ry == 32767 - 256);
+    window.Motion(-1e8f, -1e8f);
+    state = poll();
+    CHECK(state.gamepad.thumb_rx == -32767 && state.gamepad.thumb_ry == 32767);
+    window.Key(K::kRight, true);
+    window.Key(K::kDown, true);
+    state = poll();
+    CHECK(state.gamepad.thumb_rx == 0 && state.gamepad.thumb_ry == 0);
+    for (auto key : {K::kUp, K::kLeft, K::kRight, K::kDown}) window.Key(key, false);
+    CHECK(poll().gamepad.thumb_rx == 0);
     window.Motion(1e8f, 1e8f);
     state = poll();
     CHECK(state.gamepad.thumb_rx == 32767 && state.gamepad.thumb_ry == -32767);
@@ -210,7 +234,7 @@ int main() {
   using Input = fable2::input_detail::WindowKeyboardMouse;
   Input::Options options{true, false, uint16_t(K::k4)};
   int overlay_lua_requests = 0;
-  auto input = std::make_shared<Input>([&] { return options; }, [&] { ++overlay_lua_requests; });
+  auto input = std::make_shared<Input>([&] { return options; }, [&](int) { ++overlay_lua_requests; });
   input->Attach(&window);
   CHECK(window.relative);
   window.Key(K::kE, true);
@@ -250,7 +274,7 @@ int main() {
   context.ExecutePendingFunctionsFromUIThread();
   CHECK(!window.relative);
   CHECK(!fable2::config::Values{}.mouse_look);
-  auto free_cursor = std::make_shared<Input>([] { return Input::Options{}; }, [] {});
+  auto free_cursor = std::make_shared<Input>([] { return Input::Options{}; }, [](int) {});
   free_cursor->Attach(&window);
   window.Focused(true);
   CHECK(!window.relative);

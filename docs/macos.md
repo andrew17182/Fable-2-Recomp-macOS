@@ -131,7 +131,8 @@ input. Closing the window releases mouse capture.
 | Z / X / C | X / B / Y |
 | Q / Tab | Left / right trigger |
 | Escape / M | Start / Back |
-| Arrow keys | D-pad |
+| Arrow keys | Camera (right stick; adds to mouse-look) |
+| I / J / K / L | D-pad up / left / down / right |
 | 3 | Debug overlay |
 | 7 | Achievements |
 | 4 | Settings / release mouse capture; excluded from gamepad input |

@@ -18,7 +18,7 @@ import fable2_common as common  # noqa: E402  (main checkout vs agent slot paths
 ROOT = common.ROOT
 APP = ROOT / 'out/build/mac-arm64-metal-release/Fable II.app'
 WINDOW_POSITION = 'fable2_window.toml'
-KEYS = ('e', 'x', 'z', 'c', 'w', 'a', 's', 'd', 'q', 'tab', 'escape', 'return', 'up', 'down', 'left', 'right', 'm', '5', '6', '7', '8', 'f5', 'f6', 'f7', 'f9', 'share', 'view')  # share/view: controller buttons via a virtual pad
+KEYS = ('e', 'x', 'z', 'c', 'w', 'a', 's', 'd', 'q', 'tab', 'escape', 'return', 'up', 'down', 'left', 'right', 'm', 'i', 'j', 'k', 'l', '5', '6', '7', '8', 'f5', 'f6', 'f7', 'f9', 'share', 'view')  # share/view: controller buttons via a virtual pad
 
 # Saves written by this checkout's sessions. In an agent slot this is the slot's own library; the main library
 # in the main checkout (SHARED_SAVE_LIBRARY) is read-only there (local agent docs).
