@@ -340,6 +340,12 @@ struct FailedView: View {
 
 struct FinishedView: View {
   @ObservedObject var model: SetupModel
+
+  func openLauncher() {
+    NSWorkspace.shared.openApplication(at: model.paths.rootLauncherApp, configuration: .init()) { app, _ in
+      if app != nil { DispatchQueue.main.async { NSApp.terminate(nil) } }
+    }
+  }
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack { StatusIcon(status: .ok); Text("Fable II is ready.").font(.headline) }
@@ -350,8 +356,9 @@ struct FinishedView: View {
         Button("Rebuild") { model.rebuild() }
         Button("Show Log") { model.revealLog() }.disabled(model.logURL == nil)
         Spacer()
-        // The launcher is the way to play (2026-10-19): settings, saves, the save library.
-        Button("Open Launcher") { NSWorkspace.shared.open(model.paths.rootLauncherApp) }.keyboardShortcut(.defaultAction)
+        // The launcher is the way to play (2026-10-19): settings, saves, the save library. Setup quits once it
+        // has opened (Setup starts nothing else).
+        Button("Open Launcher") { openLauncher() }.keyboardShortcut(.defaultAction)
       }
     }
   }
