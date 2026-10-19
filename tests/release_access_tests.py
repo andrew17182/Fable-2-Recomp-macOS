@@ -1,19 +1,20 @@
-"""macOS privacy folders, App Translocation and Move to Applications in the release app
-(tools/macos/Shared/AppAccess.swift, tools/macos/Player/main.swift; docs/release-app.md "Protected folders and Move to
-Applications").
+"""macOS privacy folders and App Translocation in the release app (tools/macos/Shared/AppAccess.swift,
+tools/macos/Player/main.swift; docs/release-app.md "Protected folders").
 
 Builds the player and the extractor with swiftc into a stand-in release .app (Fable2BuildsGame, a stand-in build kit)
 in a scratch folder and drives:
   - the pure classification (--access-classify: protected folders, errno and helper output, translocation by path);
   - --access-check / --bundle-location on real scratch paths;
-  - the Move to Applications copy (--move-to-applications; scratch Applications and Trash folders, never the real ones);
+  - no prompt-prone calls in the app sources (Trash, Apple events, moving the app's own bundle);
   - the extractor reading an image handed over as an open file (--iso-fd) from a folder it cannot open;
   - the build driver reporting a refused read as "[denied] <errno> <path>";
   - the real windows in background test mode: a disc image and a build kit in a chmod-ed stand-in "Downloads"
     folder show the refused-access state, Try Again checks again (still refused), and after the folder is readable
-    Try Again goes on (extraction starts; the build runs the kit copied out of the app).
+    Try Again goes on (extraction starts; the build runs the kit copied out of the app);
+  - an app in the stand-in Downloads runs in place: no offer, its bundle is never moved, copied or trashed.
 A real macOS privacy prompt cannot be produced in automation (manual check in docs/release-app.md). Runs under
 /usr/bin/python3 (3.9). Never touches the real Application Support, Applications, Trash or Downloads."""
+import re
 import json
 import os
 from pathlib import Path
@@ -130,8 +131,7 @@ class ReleaseAccessTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if not k.startswith(('FABLE2_', 'REX_'))}
         env.update(FABLE2_APP_STATE_ROOT=str(self.state), FABLE2_PORTABLE_REUSE_FROM='',
                    FABLE2_TEST_PROTECTED_DIRS=str(self.downloads), FABLE2_TEST_BACKGROUND='1',
-                   FABLE2_PLAYER_SHADER_PREP='0', FABLE2_TEST_APPLICATIONS_DIR=str(self.case / 'Applications'),
-                   FABLE2_TEST_TRASH_DIR=str(self.case / 'Trash'))
+                   FABLE2_PLAYER_SHADER_PREP='0')
         env.update(extra)
         return env
 
@@ -184,19 +184,26 @@ class ReleaseAccessTests(unittest.TestCase):
         self.assertEqual(rows[2]['outputProblem'], dict(kind='permissions', folder=None, path='/opt/x/kit.json'))
         self.assertIsNone(rows[3]['outputProblem'])
 
-    def test_translocation_and_move_offer(self):
+    def test_translocation(self):
         home = '/Users/Shared/tester-home'
         rows = self.classify([
             dict(path='/private/var/folders/ab/xyz/T/AppTranslocation/0A1B2C3D/d/Fable II.app', home=home),
             dict(path=home + '/Downloads/Fable II.app', home=home),
-            dict(path='/Volumes/Fable II/Fable II.app', home=home, readOnly=True),
             dict(path='/Applications/Fable II.app', home=home),
-            dict(path='/Users/Shared/tester-home/Games/Fable II.app', home=home),
         ])
-        self.assertEqual([r['translocated'] for r in rows], [True, False, False, False, False])
-        self.assertEqual([r['shouldOfferMove'] for r in rows], [True, True, True, False, False])
-        self.assertIn('temporary copy', rows[0]['reason'])
-        self.assertIn('Downloads folder', rows[1]['reason'])
+        self.assertEqual([r['translocated'] for r in rows], [True, False, False])
+        self.assertTrue(all('shouldOfferMove' not in r for r in rows))
+
+    def test_no_prompt_prone_calls(self):
+        """Rule (2026-10-19): the apps never trigger a macOS privacy prompt. Trashing or moving files (the old Move to
+        Applications trashed the original in ~/Downloads), Apple events and AppleScript are out."""
+        sources = sorted((ROOT / 'tools/macos').rglob('*.swift')) + sorted((ROOT / 'tools/macos').glob('*.m'))
+        banned = re.compile(r'trashItem|recycle\(|NSAppleScript|osascript|NSAppleEventDescriptor|AESend|'
+                            r'moveToApplications|SMJobBless|AuthorizationCreate')
+        hits = ['%s:%d: %s' % (src.relative_to(ROOT), n, line.strip())
+                for src in sources for n, line in enumerate(src.read_text().splitlines(), 1)
+                if banned.search(line) and not line.strip().startswith('//')]
+        self.assertEqual(hits, [])
 
     # --- Real paths ----------------------------------------------------------------------------------------
 
@@ -222,34 +229,9 @@ class ReleaseAccessTests(unittest.TestCase):
         self.assertEqual(location['bundlePath'], str(app))
         self.assertFalse(location['translocated'])
         self.assertEqual(location['folder'], 'Downloads')
-        self.assertTrue(location['shouldOfferMove'])
+        self.assertNotIn('shouldOfferMove', location)
         elsewhere = self.make_app(self.case / 'Games')
-        self.assertFalse(self.cli('--bundle-location', binary=elsewhere / 'Contents/MacOS/FableIIPlayer')['shouldOfferMove'])
-
-    def test_move_to_applications(self):
-        app = self.make_app(self.downloads)
-        # A quarantined data file stands in for the download quarantine (never on the executable or the bundle: running
-        # a quarantined binary would make macOS show its Gatekeeper alert).
-        note = app / 'Contents/Resources/note.txt'
-        note.write_text('x')
-        subprocess.run(['xattr', '-w', 'com.apple.quarantine', '0083;00000000;Safari;', str(note)], check=True)
-        result = self.cli('--move-to-applications', binary=app / 'Contents/MacOS/FableIIPlayer')
-        moved = self.case / 'Applications/Fable II.app'
-        self.assertTrue(result['ok'], result)
-        self.assertEqual(result['destination'], str(moved))
-        self.assertTrue(result['trashedOriginal'])
-        self.assertFalse(app.exists())
-        self.assertTrue((self.case / 'Trash/Fable II.app').is_dir())
-        self.assertTrue((moved / 'Contents/MacOS/FableIIPlayer').is_file())
-        xattrs = subprocess.run(['xattr', '-r', str(moved)], capture_output=True, text=True).stdout
-        self.assertNotIn('com.apple.quarantine', xattrs)
-        # From Applications nothing is offered; moving again over an older copy puts that one in the Trash.
-        self.assertFalse(self.cli('--bundle-location', binary=moved / 'Contents/MacOS/FableIIPlayer',
-                                  FABLE2_TEST_APPLICATIONS_DIR='')['shouldOfferMove'])
-        shutil.rmtree(str(self.case / 'Trash'))
-        again = self.make_app(self.downloads)
-        result = self.cli('--move-to-applications', binary=again / 'Contents/MacOS/FableIIPlayer')
-        self.assertTrue(result['ok'] and result['replacedExisting'], result)
+        self.assertIsNone(self.cli('--bundle-location', binary=elsewhere / 'Contents/MacOS/FableIIPlayer')['folder'])
 
     # --- Extractor and build driver --------------------------------------------------------------------
 
@@ -325,9 +307,7 @@ class ReleaseAccessTests(unittest.TestCase):
         (game / '.fable2-portable.json').write_text(json.dumps({'complete': True}))
         tools_ready = self.case / 'clt-installed'
         tools_ready.touch()
-        # "Don't ask again" was chosen on the Move offer: the build starts in place.
-        self.state.mkdir(exist_ok=True)
-        (self.state / 'player-settings.plist').write_bytes(plistlib.dumps({'moveOfferDeclined': True}))
+        # No offer to move: the build starts in place.
         self.lock(kit)
         retry = self.case / 'retry'
         denied_path = str(self.downloads / 'elsewhere/thing.json')
@@ -375,21 +355,35 @@ print('[stage] done built')
         self.assertNotIn('] play', self.log_text('player.log'))  # no game was started ("play: …" lines)
         self.assertFalse((self.state / 'Build/kit').exists())  # the staged kit is removed after a good build
 
-    def test_move_offer_comes_first(self):
+    def test_runs_in_place_from_downloads(self):
+        """No Move to Applications (removed 2026-10-19): an app in "Downloads" goes straight to the build and its own
+        bundle is never moved, copied or trashed."""
         app = self.make_app(self.downloads)
+        driver = app / 'Contents/Resources/kit/game-src/tools/fable2_game_build.py'
+        driver.write_text(r'''import json, os, sys
+state = sys.argv[sys.argv.index('--state') + 1]
+engine = os.path.join(state, 'Game/Fable II.bundle/Contents/MacOS/fable_2')
+os.makedirs(os.path.dirname(engine), exist_ok=True)
+open(engine, 'w').write('#!/bin/sh\nexit 0\n')
+os.chmod(engine, 0o755)
+os.makedirs(os.path.join(state, 'Build'), exist_ok=True)
+json.dump(dict(ok=True, kit_id='%s'), open(os.path.join(state, 'Build/build-state.json'), 'w'))
+''' % KIT_ID)
+        before = sorted(str(p.relative_to(self.case)) for p in self.case.rglob('*') if 'state' not in p.parts)
         game = self.state / 'GameData'
         (game / 'data').mkdir(parents=True)
         (game / 'default.xex').write_text('xex')
         (game / '.fable2-portable.json').write_text(json.dumps({'complete': True}))
-        proc = self.launch(app / 'Contents/MacOS/FableIIPlayer', FABLE2_TEST_AUTO_MOVE='1',
-                           FABLE2_TEST_MOVE_NO_RELAUNCH='1')
-        self.assertEqual(proc.wait(timeout=60), 0)
-        self.assertIn('[move] copied to %s' % (self.case / 'Applications/Fable II.app'), self.log_text('player.log'))
-        self.assertTrue((self.case / 'Applications/Fable II.app/Contents/Resources/kit/kit.json').is_file())
-        self.assertFalse(app.exists())
-        # Nothing read the build kit before the offer: no staged kit, no build log.
-        self.assertFalse((self.state / 'Build/kit').exists())
-        self.assertEqual(self.log_text('build.log'), '')
+        tools_ready = self.case / 'clt-installed'
+        tools_ready.touch()
+        proc = self.launch(app / 'Contents/MacOS/FableIIPlayer', FABLE2_SIMULATE_NO_CLT=str(tools_ready))
+        wait_for(lambda: 'the Play window waits for the player' in self.log_text('player.log'), 60, 'the built game',
+                 logs=self.state / 'logs')
+        self.assertIsNone(proc.poll())
+        self.assertNotIn('[move]', self.log_text('player.log'))
+        after = sorted(str(p.relative_to(self.case)) for p in self.case.rglob('*')
+                       if 'state' not in p.parts and p.name not in ('clt-installed', 'player-stdout.log'))
+        self.assertEqual(after, before)  # the bundle in "Downloads" is untouched; nothing new beside it
 
 
 if __name__ == '__main__':

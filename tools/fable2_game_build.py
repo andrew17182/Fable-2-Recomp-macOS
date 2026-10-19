@@ -713,7 +713,7 @@ def main():
         return 1
     except PermissionError as error:
         # macOS privacy (Downloads, Desktop, Documents, iCloud Drive, other volumes) or file permissions: the app
-        # explains it and offers Move to Applications / Privacy Settings / Try Again (docs/release-app.md).
+        # explains it and offers Privacy Settings / Try Again (docs/release-app.md).
         say('[denied] %d %s' % (error.errno or 1, error.filename or ''))
         say('[error] macOS did not allow reading %s (%s).' % (error.filename or 'a file', error.strerror))
         return 1
