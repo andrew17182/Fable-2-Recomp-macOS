@@ -256,7 +256,7 @@ Front-end audio preloading uses a 10 ms yield between banks instead of the origi
 
 ### Turbo (macOS)
 
-**F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed in Settings → General → **Turbo speed** (1.1×–4.0×, default 2.0×; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
+**F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** 1.1×–4.0×, default 2.0×; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
 
 ### FPS counter (macOS)
 
@@ -290,12 +290,13 @@ Normal launcher play retains in-game subtitles and audio preferences across laun
 `Fable II Launcher.app` (source `tools/macos/DevLauncher/*.swift` with the player app's entry point, build with
 `tools/macos/build_dev_launcher.sh [--install]`; named "Fable II Dev Launcher" before 2026-10-15) picks a save and
 boots straight into it. Opening `Fable II.app`, `fable_2` or `run_macos_*.command` directly still works (advanced).
-The front page (2026-10-19, docs/player-app.md): a save menu (newest first, then Title Screen) with **Load Save**
-(the default button, boots straight in), **Resolution** and **Frame rate**, **Skip intro movies**, then the running
+The front page (2026-10-19, docs/player-app.md): **Start at Title Screen** and **Load Saved Game** (the default
+button, boots straight in), the save menu (newest first), **Resolution** and **Frame rate**, **Skip intro movies**, **Turbo speed**
+and **Turbo audio**, then the running
 status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when
 shown). When a game ends the launcher comes back to the front; after a crash it shows a note with **Show Logs**.
-**Settings** is a page of the same window (the Settings / Launcher button, ⌘,), with these tabs: General (intro,
-extras, turbo notice, turbo speed, turbo audio), Display (resolution, upscaling, effects, window, frame rate, FPS
+**Settings** is a page of the same window (the Settings / Launcher button, bottom-left on both pages; ⌘,), with these
+tabs: General (intro, extras, turbo notice), Display (resolution, upscaling, effects, window, frame rate, FPS
 counter), Controls (keyboard map, mouse look, hotkeys, controllers; see **Settings > Controls** above), Mods
 (Character Editor), and with Dev Options on: Performance (shader cache and specialization switches), Fixes (the
 correctness switches, all on by default; **Reset All to Defaults**) and Diagnostics (trace preset, hitch trace,

@@ -14,7 +14,12 @@ what each role can reach, from the same data its windows and menus are built fro
   - the separate DevLauncher target is gone: build_dev_launcher.sh builds the player's entry point;
   - the build choice defaults to Latest; a saved "playtest" (the old default) becomes Latest once (version flag),
     a later deliberate Playtest is kept; with no playtest copy (a fresh clone) Playtest launches Latest with a note.
-    These run `--launch --print-args` against scratch checkout roots, with a throwaway defaults domain.
+    These run `--launch --print-args` against scratch checkout roots, with a throwaway defaults domain;
+  - the save menu (`--save-menu`) lists the live slots only (no Title Screen entry: Start at Title Screen is a
+    button beside Load Saved Game); library saves (starred, the newest)
+    only with Dev Options > "Show starred saves in save menu" (default off);
+  - one page button (Settings / Launcher) in the shared page bar, bottom-left on the front page and Settings in
+    both roles; Turbo speed and Turbo audio are on the front page, not in Settings > General.
 Scratch state folders only. Runs under /usr/bin/python3 (3.9)."""
 import json
 import os
@@ -140,7 +145,7 @@ class UnifiedLauncherTests(unittest.TestCase):
         self.assertNotIn('Button("Choose Save…")', sources)
         self.assertNotIn('Continue from Last Save', sources)
         self.assertIn('CommandGroup(replacing: .appSettings)', sources)
-        self.assertIn('"Load Save"', sources)
+        self.assertIn('"Load Saved Game"', sources)
         self.assertIn('"Upscaling (window scaling)"', sources)
 
     def test_without_checkout_tools_wait_for_one(self):
@@ -203,6 +208,122 @@ class UnifiedLauncherTests(unittest.TestCase):
         self.assertEqual(build, 'latest')
         self.assertIn('No playtest copy', note)
         self.assertEqual(self.launch_build(frozen, '--build', 'playtest'), ('playtest', ''))
+
+    # Save menu (2026-10-19): library saves only with Dev Options > "Show starred saves in save menu".
+    def save_menu(self, *extra):
+        folder = Path(tempfile.mkdtemp(dir=str(self.root)))
+        meta = folder / 'picker.json'
+        meta.write_text(json.dumps({'version': 1, 'entries': {'starred-old': {'starred': True},
+                                                              'starred-new': {'starred': True}}}))
+        listing = {'live': [{'folder': 'Hero000', 'saved_mtime': '2026-10-10 10:00:00'},
+                            {'folder': 'Hero001', 'saved_mtime': '2026-10-12 10:00:00'}],
+                   'library': [{'name': 'starred-old', 'folder': 'Hero000', 'saved_mtime': '2026-10-01 10:00:00'},
+                               {'name': 'starred-new', 'folder': 'Hero000', 'saved_mtime': '2026-10-11 10:00:00'},
+                               {'name': 'newest', 'folder': 'Hero000', 'saved_mtime': '2026-10-15 10:00:00'},
+                               {'name': 'other', 'folder': 'Hero000', 'saved_mtime': '2026-10-02 10:00:00'}],
+                   'picker_meta': str(meta)}
+        path = folder / 'list.json'
+        path.write_text(json.dumps({'ok': True, 'result': listing}))
+        out = subprocess.run([str(self.apps['dev']), '--save-menu', str(path), *extra], capture_output=True,
+                             text=True, timeout=60, check=True).stdout
+        return json.loads(out)
+
+    def test_save_menu_shows_live_slots_only_by_default(self):
+        self.assertEqual(self.save_menu(), ['live:Hero001', 'live:Hero000'])
+
+    def test_save_menu_starred_saves_with_the_dev_setting(self):
+        self.assertEqual(self.save_menu('--show-starred'),
+                         ['library:newest', 'live:Hero001', 'library:starred-new', 'live:Hero000',
+                          'library:starred-old'])
+
+    def test_save_library_pick_shows_while_picked(self):
+        self.assertEqual(self.save_menu('--pick', 'library:other'),
+                         ['live:Hero001', 'live:Hero000', 'library:other'])
+
+    def test_show_starred_saves_defaults_off(self):
+        sources = '\n'.join(p.read_text() for p in APP)
+        self.assertIn('showStarredSaves = store.object(forKey: "showStarredSaves") as? Bool ?? false', sources)
+        self.assertIn('Toggle("Show starred saves in save menu", isOn: $model.showStarredSaves)', sources)
+        self.assertIn('developerMode && showStarredSaves', sources)
+        self.assertIn('cli:save-menu', self.caps('dev')['capabilities'])
+
+    def test_one_page_button_in_the_page_bar(self):
+        """Settings / Launcher is one button at the bottom-left of the page bar, on both pages in both roles."""
+        sources = {p.name: p.read_text() for p in APP}
+        everything = '\n'.join(sources.values())
+        self.assertEqual(everything.count('PageButton(model: model)'), 1)  # only inside PageBar
+        pages = sources['LauncherPages.swift']
+        bar = pages[pages.index('struct PageBar'):]
+        self.assertLess(bar.index('PageButton(model: model)'), bar.index('        trailing\n'))  # first in the row
+        self.assertIn('PageBar(model: model)', pages[pages.index('struct SettingsPage'):])  # Settings page
+        self.assertIn('PageBar(model: model)', sources['DevLauncher.swift'])  # repo launcher front page
+        self.assertIn('PageBar(model: model)', sources['main.swift'])  # player front page
+        button = pages[pages.index('struct PageButton'):pages.index('struct PageBar')]
+        self.assertIn('"Launcher" : "Settings"', button)
+        self.assertIn('.cancelAction', button)  # Esc on the Settings page
+        self.assertIn('.keyboardShortcut(",")', pages)  # ⌘,
+
+    def test_tab_bar_fixed_width_tabs(self):
+        """Settings tabs: left-aligned, one fixed width each; Dev Options appends tabs at the right and nothing
+        rescales (the segmented control rescaled and once overflowed after Dev Options went off; snapshots:
+        out/validation/launcher-ui-20261019/dev-settings-tabs-*.png)."""
+        pages = (ROOT / 'tools/macos/Shared/LauncherPages.swift').read_text()
+        page = pages[pages.index('struct SettingsPage'):pages.index('struct SettingsPageCommand')]
+        self.assertIn('SettingsTabBar(model: model)', page)
+        self.assertNotIn('.segmented', page)
+        bar = pages[pages.index('struct SettingsTabBar'):pages.index('struct SettingsPage')]
+        self.assertIn('.frame(width: Self.tabWidth, height: Self.tabHeight)', bar)
+        self.assertIn('alignment: .leading', bar)
+        width = float(re.search(r'static let tabWidth: CGFloat = (\d+)', bar).group(1))
+        layout = float(re.search(r'static let width: CGFloat = (\d+)', pages).group(1))
+        self.assertLessEqual(7 * width + 4, layout - 40)  # seven tabs fit at the same width
+
+    def test_fixed_layout(self):
+        """Click targets never move with state (maintainer, 2026-10-19): one window size for both pages and roles,
+        fixed-width pop-up menus, the two start buttons fixed, status lines fixed height, Close Game always in place."""
+        sources = {p.name: p.read_text() for p in APP}
+        self.assertIn('.frame(width: Self.width, height: LauncherLayout.height)', sources['DevLauncher.swift'])
+        self.assertEqual(sources['main.swift'].count('.frame(width: LauncherLayout.width, height: LauncherLayout.height)'),
+                         2)  # player front page and Settings page
+        self.assertIsNone(re.search(r'(?<!Fixed)Picker\("', sources['SettingsViews.swift']))  # all FixedPicker
+        pages = sources['LauncherPages.swift']
+        self.assertIn('.frame(width: Self.menuWidth', pages)
+        self.assertIn('"Load Saved Game").fontWeight(.semibold).frame(width: Self.buttonWidth)', pages)
+        self.assertIn('Text("Start at Title Screen").frame(width: Self.buttonWidth)', pages)
+        dev = sources['DevLauncher.swift']
+        view = dev[dev.index('struct LauncherView'):dev.index('struct LauncherWindowContent')]
+        self.assertIn('.frame(height: Self.statusHeight', view)
+        self.assertNotIn('if model.running {\n          Button("Close Game")', view)
+        self.assertIn('.disabled(!model.running || model.busy)', view)
+        self.assertLess(view.index('FrontPageOptions(model: model)'), view.index('"Write saves back to"'))
+
+    def test_start_buttons_above_the_save_menu(self):
+        """[Start at Title Screen] [Load Saved Game], then the save menu (saves only). Load Saved Game is the
+        default unless there are no saves (then disabled, same size, and Start at Title Screen is the default)."""
+        sources = '\n'.join(p.read_text() for p in APP)
+        pages = (ROOT / 'tools/macos/Shared/LauncherPages.swift').read_text()
+        menu = pages[pages.index('struct SaveMenu'):pages.index('struct FrontPageOptions')]
+        self.assertLess(menu.index('"Start at Title Screen"'), menu.index('"Load Saved Game"'))
+        self.assertLess(menu.index('"Load Saved Game"'), menu.index('Picker("Save"'))
+        self.assertIn('.keyboardShortcut(hasSaves ? nil : .defaultAction)', menu)
+        self.assertIn('.keyboardShortcut(hasSaves ? .defaultAction : nil)', menu)
+        self.assertIn('.disabled(disabled || !hasSaves)', menu)
+        self.assertNotIn('SaveChoice.title)', sources)
+        self.assertNotIn('"Load Save"', sources)
+        self.assertIn('("--press-title", { model.startTitle() })', sources)
+
+    def test_turbo_speed_and_audio_on_the_front_page(self):
+        sources = {p.name: p.read_text() for p in APP}
+        pages = sources['LauncherPages.swift']
+        front = pages[pages.index('struct FrontPageOptions'):pages.index('struct TurboControls')]
+        self.assertLess(front.index('"Skip intro movies"'), front.index('TurboControls(model: model)'))
+        settings = sources['SettingsViews.swift']
+        self.assertNotIn('"Turbo speed"', settings)
+        self.assertNotIn('"Turbo audio"', settings)
+        self.assertIn('"Turbo notice"', settings)  # stays in General
+        everything = '\n'.join(sources.values())
+        self.assertEqual(everything.count('LabeledContent("Turbo speed")'), 1)
+        self.assertEqual(everything.count('Picker("Turbo audio"'), 1)
 
     def test_one_target(self):
         script = (ROOT / 'tools/macos/build_dev_launcher.sh').read_text()

@@ -9,13 +9,13 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   menus and gameplay, 7 is ignored while an overlay captures typing). The SDK
   achievements overlay moved from 7 to 8. Turbo is **off** at every start. A toggle shows "Turbo 2x on" /
   "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
-- Speed: Dev Launcher / Player **Settings → General → Turbo speed** (slider and stepper, 1.1× to 4.0×
+- Speed: launcher front page → **Turbo speed** (slider and stepper, 1.1× to 4.0×
   in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Without a launcher:
   `[patches] turbo_scale` in `fable2_config.toml` (state directory,
   `~/Library/Application Support/Fable II Recomp/` for the app). Default 2.0;
   1.1 to 4.0 in 0.1 steps (the SDK quantizes the clock scalar to tenths);
   1.0 disables F7. `FABLE2_TURBO_SPEED` overrides the TOML and does not start turbo on.
-- Audio: **Settings → General → Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`):
+- Audio: launcher front page → **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`):
   "Sped up, natural pitch" (`natural`, default), "Sped up, high pitch" (`high-pitch`) or
   "Normal speed" (`normal`, the old behaviour). See "Turbo audio" below.
 - Tests: `FABLE2_TURBO_SCALE=<x>` overrides the speed **and starts turbo on**.

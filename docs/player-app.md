@@ -186,7 +186,7 @@ Everything lives in the app's state folder, `~/Library/Application Support/Fable
 | Flag | What |
 |---|---|
 | `--play` | start the game as soon as the game files are ready (exec, as "Skip launcher"; the app ends with the game) |
-| `--press-play` | select the newest save and press Load Save: the game runs as a child and the launcher returns when it exits |
+| `--press-play` | select the newest save and press Load Saved Game: the game runs as a child and the launcher returns when it exits |
 | `--print-env` | print the environment items Play would set (JSON) and exit |
 | `--iso IMAGE` | on the Welcome window, extract IMAGE at once (as if chosen in the panel) |
 | `--reuse` | on the Welcome window, use the offered sibling files at once |
@@ -307,36 +307,54 @@ played the logos, the save library stayed empty, and the launcher's name said "D
 
 Maintainer notes from a playtest; the same shared views in both roles (`tools/macos/Shared/LauncherPages.swift`).
 
-- **Front page, top to bottom:** a save menu with **Load Save** beside it (the default button), then Resolution and
-  Frame rate, then Skip intro movies, then the rest (player: Display; repo launcher with Dev Options: Build, and for
-  a library save "Write saves back to"; Close Game while a game runs; the status lines). The menu lists the saves
-  newest first, labelled "Name · Place · date", then **Title Screen** (start at the title, for New Game). It starts
-  on the newest save. Player: every hero save in the state folder. Repo launcher: the live slots, starred library
-  saves, the newest library play save when it is newer than every live slot, and the current pick. Load Save
-  always boots the save (`FABLE2_BOOT_SAVE`); write-back as Continue did (live slot to itself; library save to the
-  slot it was written back to, else library only; with Dev Options the "Write saves back to" choice).
-  Removed: the Choose Save… button, Continue from Last Save, Launch and the separate Title Screen button.
+- **Front page, top to bottom:** two buttons of equal fixed width, **Start at Title Screen** (title screen, after
+  the intro movies unless Skip intro movies is on) and **Load Saved Game** (the accent default button, Return), then
+  the save menu below them (fixed width, saves only), then Resolution and Frame rate, Skip intro movies, Turbo speed
+  and Turbo audio (moved from Settings > General; Turbo notice stays there), then the rest (player: Display; repo
+  launcher with Dev Options: Build, and for a library save "Write saves back to"; the status lines; Close Game).
+  With no saves Load Saved Game is disabled (same size) and Start at Title Screen is the default. The menu lists the
+  saves newest first, labelled "Name · Place · date", and starts on the newest. Player: every hero save in the state
+  folder. Repo launcher: the live slots only. With Dev Options > Diagnostics > Developer > **Show starred saves in
+  save menu** (off by default) also the starred library saves and the newest library play save; a save chosen in the
+  Save Library window shows while it is the pick. Load Saved Game always boots the save (`FABLE2_BOOT_SAVE`);
+  write-back as Continue did (live slot to itself; library save to the slot it was written back to, else library
+  only; with Dev Options the "Write saves back to" choice). Removed: the Choose Save… button, Continue from Last Save,
+  Launch and the Title Screen menu entry.
+- **Fixed layout** (maintainer: click targets never move or resize with state, labels or toggles). One window size
+  for both pages and both roles (620 × 560 pt, `LauncherLayout`); a Settings tab taller than that scrolls (no scroll
+  bar, so rows never shift sideways). Every pop-up menu in a row has one fixed width (`FixedPicker`); the save menu
+  and the two start buttons are fixed; the status lines have a fixed height above the page bar; Close Game is always
+  there (disabled with no game); Show Logs and Update Playtest Build appear to its left without moving it; dev rows
+  (Build, Write saves back to) come last on the front page.
 - **Save library** (stars, renames, search, test saves): Tools > Save Library… (⌘O) with Dev Options. Starred saves
-  join the front page's menu.
-- **Settings is a page of the launcher window**, not a separate window. One button switches pages: "Settings" on
-  the front page, "Launcher" on Settings (Esc). ⌘, opens Settings.
+  join the front page's menu only with Show starred saves in save menu.
+- **Settings is a page of the launcher window**, not a separate window. One button switches pages, bottom-left on both
+  (the shared page bar, so it does not move): "Settings" with a gear on the front page, "Launcher" on Settings (Esc).
+  ⌘, opens Settings.
 - **Tabs:** General, Display, Controls, **Mods** (the Character Editor; future mods go here). Performance, Fixes and
-  Diagnostics only with **Dev Options** on.
-- **Dev Options** (a switch at the bottom of the Settings page) is the old Developer mode merged into one control:
+  Diagnostics only with **Dev Options** on. The tab bar is left-aligned and every tab has one fixed width; Dev Options
+  adds its three tabs at the right and nothing else moves or resizes (the segmented control it replaced rescaled its
+  segments, and once kept the seven-tab widths after going back to four and overflowed the window).
+- **Dev Options** (a switch at the bottom-right of the Settings page) is the old Developer mode merged into one control:
   the dev tabs, the build choice, the Tools menu's dev items (Save Library, benchmark, flash kit, export, Update
   Playtest Build, the out/ folders), and in the player role Window > Fable II Launcher / Developer. Off by default
   in both roles (the repo launcher defaulted it on before), stored as `developerMode`. The command-line modes
   (`--launch`, `--print-args`, `--picker-rows`) never read it. Settings > Diagnostics > Developer has the source
-  checkout and **Show Update Playtest Build**, which puts that button on the front page (off by default).
+  checkout, **Show Update Playtest Build** (puts that button on the front page) and **Show starred saves in save
+  menu** (both off by default).
 - **Player role:** the old Advanced tab's player items (logs and data folders, Import Saves, Reset All Settings,
   Start Fresh, Archives) moved to General > Logs and data.
 - **Upscaling** is "Upscaling (window scaling)": Bilinear (original) / MetalFX. It only changes how the image is
   scaled to the window, never the render resolution or its cost.
 - **UI text:** switch explanations are tooltips (no caption lines under switches); long sentences in the launcher
   and release app were cut to short labels.
-- **Testing:** the repo launcher takes `--press-load` (newest save, then Load Save; `--press-continue` is an alias)
-  and `--press-launch` (Load Save on the remembered pick). With `FABLE2_LAUNCHER_TEST_CONTROL=1` its launches are
+- **Testing:** the repo launcher takes `--press-load` (newest save, then Load Saved Game; the title screen without
+  saves; `--press-continue` is an alias), `--press-launch` (Load Saved Game on the remembered pick) and
+  `--press-title` (Start at Title Screen). With `FABLE2_LAUNCHER_TEST_CONTROL=1` its launches are
   test sessions (`--test-control`, input-isolated, no write-back), watched by pid so the return to the launcher
   works. Launches and game ends are logged to `out/dev-sessions/launcher.log`. Snapshots:
-  `out/validation/launcher-ui-20261019/`. Tests: `tests/unified_launcher_tests.py` (dev tabs hidden by default in
-  both roles, parity with Dev Options on, `--print-args` independent of Dev Options, no Settings window).
+  `out/validation/launcher-ui-20261019/` (`*-v2.png`: the fixed layout, start buttons, page bar and turbo; `dev-settings-tabs-*.png`:
+  tab bar off → on → off, `--dev-options-sequence on,off`). Tests: `tests/unified_launcher_tests.py` (dev tabs hidden by default in
+  both roles, parity with Dev Options on, `--print-args` independent of Dev Options, no Settings window; the save
+  menu via `--save-menu LIST.json [--show-starred] [--pick ID]`, the one page button in the page bar, turbo on the
+  front page, the start buttons, fixed tab widths and the fixed layout).
