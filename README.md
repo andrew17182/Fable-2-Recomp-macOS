@@ -11,16 +11,16 @@ A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, wit
 
 ## Features beyond the original game
 
-- **Turbo mode:** F7 runs the whole game 2× faster (configurable).
+- **Turbo mode:** F7 runs the whole game 2-4× faster (CPU intensive).
 - **Quick save / quick load:** Launcher boots straight into any save
   and keeps a timestamped library of every save.
 - **Faster loading**
-- **60 FPS or uncapped,** with an Auto mode that picks 30 or 60 FPS based on your Mac's GPU.
-- **Higher internal resolution** (2× or 3×, or `"auto"` to pick from the GPU, `[graphics] resolution_scale`), with bloom and glow kept at their original size (`effects_native_scale`).
-- **Windowed or fullscreen** (`[graphics] fullscreen`); the window reopens at its last size and position.
-- **Skip intros, fast title screen, shorter save notices.**
-- **Keyboard and mouse support,** plus an in-game Lua script menu (F6) for tinkering.
-- **FPS counter:** F9 shows frame rate and frame time in a corner (off by default).
+- **60 FPS or uncapped**
+- **Higher internal resolution** (2× or 3× original resolution)
+- **Windowed or fullscreen**
+- **Skip intros, fast title screen, shorter save notices**
+- **Keyboard and mouse support**
+- **FPS counter:** F9 shows frame rate and frame time in a corner.
 
 ## Play (download)
 
