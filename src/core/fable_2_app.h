@@ -49,6 +49,7 @@
 #include "fable2_window_title.h"
 #ifdef __APPLE__
 #include "fable2_window_position.h"
+#include "fable2_shader_prep_hide.h"
 #endif
 // #include "fable2_deadbeef_overlay.h"
 // 30fps-cap instrumentation (writes fps_probe.log next to the exe). Disabled
@@ -165,6 +166,8 @@ class Fable2App : public rex::ReXApp {
       window_position_.Arm(fable2::StateDirectory() / "fable2_window.toml", restore,
                            restore_window_size_, /*restore_on_show=*/!sdk_window_position_);
     }
+    // Headless shader prep: the window is hidden the moment it is shown (never drawn on screen).
+    fable2::shader_prep_hide::Arm();
     if (!rex::ReXApp::SetupPresentation()) return false;
     // The SDK titled the window "<name> <build stamp>"; with the window-placement
     // SDK patch OnPreOpenWindow already set ours before the window was created.

@@ -122,7 +122,8 @@ stamp, the player went straight to the shader step: 1× 20.6 s (984 pipelines co
 all, no game window; it then wrote the stamp and showed the Play window. A new build or seed (stamp mismatch) runs it
 again before Play; with "Skip launcher" or `--play` it runs first and then plays.
 
-`tools/fable2_cache_warm.py` (the Install.command new-game session); section 5 compares the two.
+`tools/fable2_cache_warm.py` (the Install.command new-game session until 2026-10-19; Setup now runs this headless
+prep too, `--headless`, `docs/setup-app.md` "Shaders"); section 5 compares the two.
 
 2026-10-15: with no lists at all (a first install of the release app) the prep still runs and compiles the disc's
 own shader bank (`FABLE2_SHADER_PREP_BANK`, `docs/shader-precompile-20261015.md`); the recipe below is not needed

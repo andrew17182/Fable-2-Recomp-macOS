@@ -286,7 +286,7 @@ played the logos, the save library stayed empty, and the launcher's name said "D
   (byte-identical to Prepare's trim); `fable2_dev_session.py launch`, `fable2_playtest.py update` and
   `build_macos_metal.py` call it. The game logs the decision: `[skip-intro] on: logo movies redirected … (3/3
   stand-ins)`, `[skip-intro] off …`, or a warning naming the missing stand-ins. `Fable II.app` opened directly
-  (Finder, Setup's Play Directly) follows the launcher's saved choice (`AppLauncher.m` reads `skipIntro` from
+  (Finder) follows the launcher's saved choice (`AppLauncher.m` reads `skipIntro` from
   `local.fable2recomp.devlauncher`). The M3 log showed none of the launcher's environment (for example
   `FABLE2_MEMEXPORT_PRESERVE=unset`, which every launcher launch sets), so that run was most likely a direct open; Setup's default button now opens the launcher.
 - **Save library on a fresh clone.** Only save-pick sessions copied saves into `out/save-library`; title-screen

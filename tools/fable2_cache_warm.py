@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """Warm the player's shader cache once, in the background (docs/setup-app.md, "Shader warm-up").
 
+  python3 tools/fable2_cache_warm.py --headless [--state-root DIR] [--scales 1,2,3] [--no-bank] [--json]
   python3 tools/fable2_cache_warm.py [--state-root DIR] [--new-game] [--scales 1,2,3] [--dwell S] [--game-dwell S]
                                     [--timeout S] [--json]
+
+--headless (the setup app's shader step since 2026-10-19): no game session at all. One headless shader prep per
+scale (FABLE2_SHADER_PREP, as the release app does; docs/offline-shader-seed.md section 2): the game binary starts
+only up to shader storage init, hides its window and Dock icon, never runs the game, and exits by itself. The first
+scale (the player's) also compiles the disc's shader bank (FABLE2_SHADER_PREP_BANK). Each run starts from the state
+root's cache and is published back with the same append-only write-back. Progress lines for the setup app:
+"[prep] NN% <text>" on stdout.
+
+The session modes below (title screen, --new-game) open a visible background game window; they stay for tests.
 
 Starts one background test session of the built game (out/build/...; muted, no window focus, physical
 input off, closed by its own session id) on a clone of the state root's saves, settings and shader
@@ -268,6 +278,71 @@ def prep_bank(scale, timeout=600, log_fn=print):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _prep_fraction(status, peak):
+    """Progress of one headless prep (0..1) from its status file, as the release app's ShaderPrepRunner.poll."""
+    if status.get('done'): return 1.0, peak
+    pending = sum(v for v in (status.get('pending') or {}).values() if isinstance(v, int))
+    bank = status.get('bank') or {}
+    bank_pending = bank.get('pending') if isinstance(bank.get('pending'), int) else 0
+    pending += bank_pending
+    peak = max(peak, pending, 1)
+    return max(0.0, min(1.0, 1.0 - pending / float(peak))), peak
+
+
+def prep(state_root=LIVE_STATE, scales=(1, 2, 3), bank=True, timeout=1800, log_fn=print, progress_fn=None):
+    """Headless shader prep into state_root's cache: one FABLE2_SHADER_PREP run per scale (the player's scale first,
+    with the disc shader bank), each from the state root's current cache, published with publish_cache. No game
+    session, no window, no title screen."""
+    import shutil
+    import tempfile
+    import fable2_shader_prep as shader_prep
+    state_root = Path(state_root).expanduser()
+    normal = [e for e in instances.instances() if not e.get('test_control')]
+    if normal and state_root.resolve() == Path(dev.LIVE_STATE).expanduser().resolve():
+        raise RuntimeError('A Fable II game is open (%s); close it first' % instances.describe(normal[0]))
+    (state_root / 'cache').mkdir(parents=True, exist_ok=True)
+    first = player_scale(state_root)
+    order = [first] + [s for s in scales if s != first]
+    use_bank = bank and bank_enabled()
+    started = time.monotonic()
+    result = dict(state_root=str(state_root), headless=True, bank=use_bank, scales=[])
+    work = Path(tempfile.mkdtemp(prefix='setup-prep-', dir=str(shader_prep.ROOT / 'out')))
+    saved = os.environ.get('FABLE2_SHADER_PREP_BANK')
+    try:
+        for index, scale in enumerate(order):
+            peak = [1]
+
+            def progress(_scale, status, index=index, scale=scale):
+                inner, peak[0] = _prep_fraction(status, peak[0])
+                if progress_fn:
+                    b = status.get('bank') or {}
+                    total, pending = b.get('translations'), b.get('pending')
+                    text = ('%s of %s from the disc' % (total - pending, total)
+                            if isinstance(total, int) and total > 0 and isinstance(pending, int) and pending > 0
+                            else '%s pipelines' % status.get('pipelines_compiled', 0))
+                    progress_fn((index + inner) / len(order), '%dx: %s' % (scale, text))
+
+            expected = dev.cache_signature(state_root)
+            os.environ['FABLE2_SHADER_PREP_BANK'] = '1' if use_bank and index == 0 else '0'
+            cache, status = shader_prep.prep_scale(state_root / 'cache', scale, work, timeout, log_fn, progress)
+            session_state = cache.parent
+            if not dev.clean_exit(session_state):
+                raise RuntimeError('the %dx shader prep did not exit cleanly; the cache was not published' % scale)
+            entry = dict(scale=scale, seconds=status.get('wall_seconds'), pipelines=status.get('pipelines_compiled'),
+                         native=status.get('native_xlate'), bank=status.get('bank'))
+            entry['publish'] = dev.publish_cache(session_state, state_root, expected)
+            result['scales'].append(entry)
+            log_fn('shader prep %dx: %.1f s, %s pipelines, disc bank %s' % (
+                scale, entry['seconds'] or 0, entry['pipelines'], (entry['bank'] or {}).get('translations', 0)))
+            if progress_fn: progress_fn((index + 1.0) / len(order), '%dx done' % scale)
+    finally:
+        if saved is None: os.environ.pop('FABLE2_SHADER_PREP_BANK', None)
+        else: os.environ['FABLE2_SHADER_PREP_BANK'] = saved
+        shutil.rmtree(work, ignore_errors=True)
+    result['seconds_total'] = round(time.monotonic() - started, 1)
+    return result
+
+
 def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=600, log_fn=print, scales=(1, 2, 3),
          bank=True):
     state_root = Path(state_root).expanduser()
@@ -336,6 +411,8 @@ def warm(state_root=LIVE_STATE, new_game=False, dwell=0, game_dwell=45, timeout=
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     p.add_argument('--state-root', default=str(LIVE_STATE), help='state folder whose cache/ is warmed')
+    p.add_argument('--headless', action='store_true',
+                   help='headless shader prep only (no game session, no window); the setup app uses this')
     p.add_argument('--new-game', action='store_true', help='also start a new game from the title screen')
     p.add_argument('--dwell', type=float, default=0,
                    help='extra seconds on the title screen after its first %d frames (default 0)' % TITLE_FRAMES)
@@ -347,6 +424,20 @@ def main():
     p.add_argument('--json', action='store_true')
     a = p.parse_args()
     scales = tuple(sorted({max(1, min(3, int(x))) for x in a.scales.split(',') if x.strip()}))
+    log_fn = (lambda s: print(s, file=sys.stderr)) if a.json else print
+    if a.headless:
+        last = [None]
+
+        def progress_fn(fraction, text):
+            line = '[prep] %d%% %s' % (int(fraction * 100), text)
+            if line != last[0]:
+                last[0] = line
+                print(line, flush=True)
+
+        result = prep(a.state_root, scales or (1,), not a.no_bank, a.timeout, log_fn, progress_fn)
+        print(json.dumps(result, indent=2) if a.json else 'shader prep done in %.0f s: %s' % (
+            result['seconds_total'], ', '.join('%dx %.0f s' % (r['scale'], r['seconds'] or 0) for r in result['scales'])))
+        return
     result = warm(a.state_root, a.new_game, a.dwell, a.game_dwell, a.timeout,
                   log_fn=(lambda s: print(s, file=sys.stderr)) if a.json else print, scales=scales,
                   bank=not a.no_bank)
