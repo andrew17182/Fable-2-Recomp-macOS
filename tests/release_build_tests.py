@@ -5,7 +5,8 @@
   build tree; the RAM-based job rule; status() against a kit;;
 - tools/apply_recomp_patches.py: the per-file passes give the same files and counts in worker processes as in one;
 - tools/fable2_release.py: check_release refuses game-derived files and build output in a package; the release zip
-  has no __MACOSX/._ (AppleDouble) entries, even when the files carry extended attributes; no unsealed signing.
+  has no __MACOSX/._ (AppleDouble) entries, even when the files carry extended attributes; no unsealed signing;
+  the kit holds every file CMakeLists.txt uses in the player's build; build-log error lines for Copy Details.
 Runs under /usr/bin/python3 (3.9)."""
 import json
 import os
@@ -132,6 +133,59 @@ class ReleaseCheckTests(unittest.TestCase):
         for rel in good:
             self.assertFalse(release.FORBIDDEN.search(rel.split('Contents/Resources/kit/', 1)[-1]), rel)
 
+
+class KitCompletenessTests(unittest.TestCase):
+    """0.1.0 (91cfcdb): the kit lacked tools/extract_guest_funcs.py, which a build-time test target that fable_2
+    depended on runs, so every player build failed ("No rule to make target ..."). The player build now skips the
+    build-time tests (FABLE2_BUILD_TIME_TESTS=OFF) and check_release refuses a kit missing a file CMake uses."""
+
+    def kit(self, root, cmake, files=()):
+        write(root / 'CMakeLists.txt', cmake)
+        for rel in files: write(root / rel, 'x')
+        return root
+
+    def test_missing_reference_is_found(self):
+        import fable2_release as release
+        cmake = ('if(APPLE)\n  add_custom_command(OUTPUT x COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_guest_funcs.py)\n'
+                 '  add_executable(t tests/a_tests.cpp)\nendif()\n')
+        with tempfile.TemporaryDirectory() as temporary:
+            kit = self.kit(Path(temporary), cmake, ['tests/a_tests.cpp'])
+            self.assertEqual(release.missing_cmake_references(kit), ['tools/extract_guest_funcs.py'])
+
+    def test_blocks_the_player_build_skips(self):
+        import fable2_release as release
+        cmake = ('if(APPLE AND FABLE2_BUILD_TIME_TESTS)\n  x(${CMAKE_CURRENT_SOURCE_DIR}/tools/dev_only.py)\n'
+                 '  if(APPLE)\n    y(tools/nested.py)\n  endif()\nendif()\n'
+                 'if(WIN32)\n  z(tools/win.cmd)\nelse()\n  w(src/mac.cpp) # tools/comment.py\nendif()\n'
+                 'if(CMAKE_BUILD_TYPE STREQUAL "Debug")\n  v(tools/fable2_control.py)\nendif()\n')
+        self.assertEqual(release.cmake_references(cmake), ['src/mac.cpp'])
+
+    def test_repo_cmake_is_complete_for_the_kit(self):
+        """Every file the player's build uses is in GAME_SRC_FILES / GAME_SRC_TREES."""
+        import fable2_release as release
+        shipped = set(release.game_src_files())
+        unused = lambda p: any(p == u or p.startswith(u + '/') for u in release.PLAYER_UNUSED)
+        for path in release.cmake_references((ROOT / 'CMakeLists.txt').read_text()):
+            if unused(path): continue
+            self.assertTrue(path in shipped or any(s.startswith(path + '/') for s in shipped), path)
+
+    def test_player_build_skips_build_time_tests(self):
+        self.assertIn("'-DFABLE2_BUILD_TIME_TESTS=OFF'", (ROOT / 'tools/fable2_game_build.py').read_text())
+        self.assertIn('if(APPLE AND FABLE2_BUILD_TIME_TESTS)', (ROOT / 'CMakeLists.txt').read_text())
+
+    def test_error_lines(self):
+        """Copy Details and verify-build show the failing lines even when they are far from the end of the log."""
+        import fable2_release as release
+        log = ['[ 90%] Built target fable_2_recomp', 'a', 'b',
+               "make[3]: *** No rule to make target `src/tools/extract_guest_funcs.py'.  Stop."] + \
+              ['[ 91%%] Building CXX object x%d.o' % i for i in range(300)] + ['make: *** [fable_2] Error 2']
+        lines = release.error_lines('\n'.join(log))
+        self.assertIn(log[3], lines)
+        self.assertIn('b', lines)
+        self.assertEqual(lines[-1], 'make: *** [fable_2] Error 2')
+        player = (ROOT / 'tools/macos/Player/main.swift').read_text()
+        swift = player.split('pattern: #"', 1)[1].split('"#', 1)[0]
+        self.assertEqual(swift, release.ERROR_LINE.pattern)  # the Player uses the same rule
 
 
 class ReleaseZipTests(unittest.TestCase):

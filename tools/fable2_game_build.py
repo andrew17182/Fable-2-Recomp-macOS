@@ -530,6 +530,8 @@ def build(args):
     configure = [cmake, '--preset', PRESET, '-G', 'Unix Makefiles', '-DCMAKE_PREFIX_PATH=' + str(sdk),
                  '-DREXGLUE_SDK_ROOT=' + str(sdk), '-DCMAKE_C_FLAGS=-mcpu=apple-m1', '-DCMAKE_CXX_FLAGS=-mcpu=apple-m1',
                  '-DFABLE2_GPU_PLUGIN_XENOS=OFF', '-DREXGLUE_RECOMP_DEBUG_INFO=' + args.debug_info,
+                 # No developer build-time checks on the player's Mac (time, and tools the kit does not ship).
+                 '-DFABLE2_BUILD_TIME_TESTS=OFF',
                  # The build's own Python steps (recomp patches, version header) run under the same /usr/bin/python3
                  # (Command Line Tools) as this script, never a Homebrew Python that happens to be next to CMake.
                  '-DPython3_EXECUTABLE=/usr/bin/python3']

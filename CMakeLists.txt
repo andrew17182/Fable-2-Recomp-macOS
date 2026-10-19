@@ -154,7 +154,11 @@ add_dependencies(fable_2 fable_2_version)
 # agree for every key, and a first launch must write the file byte-for-byte.
 # The check runs after it is built, and fable_2 depends on it, so drift fails
 # the normal build.
-if(APPLE)
+# FABLE2_BUILD_TIME_TESTS=OFF: the release app's player-side build
+# (tools/fable2_game_build.py) skips these developer checks: they cost build
+# time and some need tools the kit does not ship.
+option(FABLE2_BUILD_TIME_TESTS "Build and run the build-time checks that fable_2 depends on" ON)
+if(APPLE AND FABLE2_BUILD_TIME_TESTS)
     add_executable(fable_2_config_tests tests/config_defaults_tests.cpp src/core/fable2_config.cpp)
     target_compile_options(fable_2_config_tests PRIVATE -UNDEBUG)
     target_compile_definitions(fable_2_config_tests PRIVATE
