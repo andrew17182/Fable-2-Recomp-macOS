@@ -54,9 +54,8 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
 
 | Mac | Build |
 |---|---|
-| M5 Max, 18 cores (measured) | about 1.5 min |
-| 16 GB, 10–12 cores (estimate) | about 3 min |
-| M1, 8 GB (estimate) | about 5–6 min |
+| M5 Max, 64 GB, 18 cores | about 1.5 min |
+| M3 Pro, 16 GB, 10–12 cores | about 3 min |
 
 
 ## Build from source
