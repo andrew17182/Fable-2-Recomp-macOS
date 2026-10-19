@@ -40,7 +40,8 @@ struct SaveMenu: View {
       Button(action: load) {
         Text(busy ? "Working…" : "Load Save").fontWeight(.semibold).frame(minWidth: 90)
       }
-      .buttonStyle(.borderedProminent)
+      .buttonStyle(.borderedProminent)  // the accent-coloured default button (Return), every role
+      .tint(.accentColor)
       .controlSize(.large)
       .keyboardShortcut(.defaultAction)
       .disabled(disabled)

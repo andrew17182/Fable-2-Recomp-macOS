@@ -716,7 +716,7 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
     # failing (2026-10-15).
     build_note = None
     if build == 'playtest' and not playtest.app_for('playtest').is_dir():
-        build, build_note = 'latest', 'No playtest copy, so the latest build was used (Update Playtest Build creates one).'
+        build, build_note = 'latest', 'No playtest copy: used the latest build.'
     app, data_root = playtest.app_for(build), playtest.data_root_for(build)
     # Test-harness parameters (telemetry phase 1): extra game args/cvars and a cache seed. Only for
     # automated test sessions; normal play keeps its exact launch and cache write-back.

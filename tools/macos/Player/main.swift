@@ -1406,7 +1406,7 @@ final class PlayerModel: SettingsModel {
     if image == nil {
       let panel = NSOpenPanel()
       panel.title = "Choose your Fable II disc image"
-      panel.message = "Its game files are copied (about 7 GB). The image is only read."
+      panel.message = "Copies about 7 GB of game files."
       panel.prompt = "Use This Image"
       panel.canChooseFiles = true
       panel.canChooseDirectories = false
