@@ -74,8 +74,8 @@ First-launch build time (after the disc copy, which takes a few seconds to a few
 ### Getting started
 
 1. Double-click **`Install.command`**. It asks for your Fable II disc image and builds
-   everything (a few minutes; about 4 on an 18-core Mac). If macOS blocks it, right-click it
-   and choose Open.
+   everything (a few minutes; about 4 on an 18-core Mac).
+   If macOS blocks it, run `bash Install.command` in Terminal, or clone with git.
 2. Play: open **`Fable II Launcher.app`**, which setup places in this folder (or click **Open Launcher** in
    the setup window). **Continue from Last Save** boots straight into your newest save; **Launch** starts
    at the title screen or a save you choose. Saves also go to a save library you can pick from later.

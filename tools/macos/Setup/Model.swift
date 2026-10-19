@@ -29,12 +29,12 @@ struct Stage: Identifiable {
   static let all: [Stage] = [
     Stage(id: "deps", title: "Downloading dependencies"),
     Stage(id: "patch", title: "Patching dependencies"),
-    Stage(id: "sdksrc", title: "Building the ReXGlue SDK (first time only)"),
+    Stage(id: "sdksrc", title: "Building the SDK"),
     Stage(id: "sdk", title: "Code generation"),
     Stage(id: "game", title: "Building the game"),
-    Stage(id: "dxc", title: "Building the shader compiler (slow, first time only)"),
+    Stage(id: "dxc", title: "Building the shader compiler"),
     Stage(id: "renderer", title: "Building the Metal renderer"),
-    Stage(id: "package", title: "Packaging Fable II.app"),
+    Stage(id: "package", title: "Packaging"),
   ]
 }
 
@@ -79,6 +79,13 @@ final class SetupModel: ObservableObject {
     }
     return nil
   }
+
+  /// Every Python tool runs under macOS's own /usr/bin/python3 (3.9, from the command-line tools or Xcode), never a
+  /// Homebrew or other python3 on PATH: the tools are written and tested for it.
+  static let python = "/usr/bin/python3"
+
+  /// Set by prepareISO on the work queue: the chosen image is one of the known discs (install starts on its own).
+  private(set) var lastISOKnown = false
 
   private var logHandle: FileHandle?
   private var pendingLines: [String] = []
@@ -227,12 +234,12 @@ final class SetupModel: ObservableObject {
     }
     result.append(Check(id: "clt", title: "Xcode command-line tools",
                         status: cltInstalled || xcodePath != nil ? .ok : .failed,
-                        detail: cltInstalled ? selectedPath : "Not installed. Click Install, finish Apple's installer, then Check again.",
+                        detail: cltInstalled ? selectedPath : "Not installed",
                         action: cltInstalled || xcodePath != nil ? nil : .installCLT))
-    result.append(Check(id: "xcode", title: "Xcode (provides the Metal shader compiler)",
+    result.append(Check(id: "xcode", title: "Xcode",
                         status: xcodePath != nil ? .ok : .failed,
                         detail: xcodePath.map { ($0 as NSString).deletingLastPathComponent.replacingOccurrences(of: "/Contents", with: "") }
-                          ?? "Install Xcode from the App Store, open it once, then Check again.",
+                          ?? "Not installed",
                         action: xcodePath != nil ? nil : .getXcode))
     tools = ToolEnvironment.make(paths: paths, cleanEnv: options.cleanEnv, developerDir: developerDir)
 
@@ -240,9 +247,9 @@ final class SetupModel: ObservableObject {
       let shown = Run.capture("/usr/bin/xcodebuild", ["-showComponent", "MetalToolchain", "-json"],
                               env: tools.variables, timeout: 60)
       let installed = shown.status == 0 && shown.output.contains("\"installed\"")
-      result.append(Check(id: "metal", title: "Metal Toolchain (Xcode component)",
+      result.append(Check(id: "metal", title: "Metal Toolchain",
                           status: installed ? .ok : .failed,
-                          detail: installed ? "Installed" : "Not installed (about 700 MB download from Apple).",
+                          detail: installed ? "Installed" : "Not installed (700 MB)",
                           action: installed ? nil : .installMetal))
     }
 
@@ -254,30 +261,31 @@ final class SetupModel: ObservableObject {
       let ok = numbers.count >= 2 && (numbers[0] > 3 || (numbers[0] == 3 && numbers[1] >= 25))
       let version = numbers.map(String.init).joined(separator: ".")
       result.append(Check(id: "cmake", title: "CMake 3.25 or later", status: ok ? .ok : .failed,
-                          detail: ok ? "\(version) (\(cmake))" : "\(version) at \(cmake) is too old. Download a private copy for this project.",
+                          detail: ok ? "\(version) (\(cmake))" : "\(version) is too old",
                           action: ok ? nil : .downloadCMake))
     } else {
       result.append(Check(id: "cmake", title: "CMake 3.25 or later", status: .failed,
-                          detail: "Not found. Download a private copy into out/tools (about 80 MB, no admin needed).",
+                          detail: "Not found",
                           action: .downloadCMake))
     }
 
-    // Python 3 (Xcode's /usr/bin/python3 is fine).
-    if cltInstalled || xcodePath != nil, let python = tools.find("python3") {
+    // Python 3: macOS's /usr/bin/python3 (3.9), the one every tool is run with (SetupModel.python).
+    let python = Self.python
+    if cltInstalled || xcodePath != nil, fm.isExecutableFile(atPath: python) {
       let out = Run.capture(python, ["--version"], env: tools.variables, timeout: 60).output
         .trimmingCharacters(in: .whitespacesAndNewlines)
       let parts = out.replacingOccurrences(of: "Python ", with: "").split(separator: ".").compactMap { Int($0) }
       let ok = parts.count >= 2 && parts[0] == 3 && parts[1] >= 9
       result.append(Check(id: "python", title: "Python 3", status: ok ? .ok : .failed,
-                          detail: ok ? "\(out) (\(python))" : "Python 3.9 or later is needed (found: \(out)).", action: nil))
+                          detail: ok ? "\(out) (\(python))" : "Needs 3.9 or later (found \(out))", action: nil))
     } else {
       result.append(Check(id: "python", title: "Python 3", status: .failed,
-                          detail: "Comes with the Xcode command-line tools.", action: nil))
+                          detail: "Not found", action: nil))
     }
 
     let basics = ["curl", "ditto", "shasum", "patch", "tar"]
     let missing = basics.filter { !fm.isExecutableFile(atPath: "/usr/bin/" + $0) }
-    result.append(Check(id: "basics", title: "System tools (curl, ditto, shasum, patch, tar)",
+    result.append(Check(id: "basics", title: "System tools",
                         status: missing.isEmpty ? .ok : .failed,
                         detail: missing.isEmpty ? "Present" : "Missing: " + missing.joined(separator: ", "), action: nil))
 
@@ -288,11 +296,8 @@ final class SetupModel: ObservableObject {
     let buildBytes: UInt64 = fm.fileExists(atPath: paths.gameApp.path) ? 0 : Setup.buildBytes
     let needed = gameBytes + buildBytes
     let diskStatus: Status = free < needed ? .failed : free < needed + 3_000_000_000 ? .warning : .ok
-    result.append(Check(id: "disk", title: "Free disk space", status: diskStatus,
-                        detail: "\(formatBytes(free)) free; " + (needed == 0 ? "game files and build already present" :
-                          "needs about \(formatBytes(needed)) (" + [gameBytes > 0 ? "game files \(formatBytes(gameBytes))" : nil,
-                                    buildBytes > 0 ? "first build \(formatBytes(buildBytes))" : nil]
-                            .compactMap { $0 }.joined(separator: ", ") + ")"),
+    result.append(Check(id: "disk", title: "Disk space", status: diskStatus,
+                        detail: "\(formatBytes(free)) free" + (needed == 0 ? "" : ", needs \(formatBytes(needed))"),
                         action: nil))
 
     for check in result where check.status != .ok {
@@ -307,6 +312,21 @@ final class SetupModel: ObservableObject {
 
   var checksPassed: Bool { checksDone && !checks.contains { $0.status == .failed } }
 
+  /// Window start and "Check Again": run the checks and go straight to the disc step when nothing failed (a failed
+  /// check stays on screen with its button).
+  func checkAndContinue() {
+    runChecks()
+    onMain { if self.checksPassed && self.phase == .checks { self.phase = .disc } }
+  }
+
+  /// The disc image the user picked: check it, then go on to extraction and the build with no further click when it
+  /// is a known disc. An unknown disc waits for "Continue Anyway".
+  func chooseISO(_ path: String) {
+    work {
+      if self.prepareISO(path) && self.lastISOKnown { self.install() }
+    }
+  }
+
   func perform(_ action: CheckAction) {
     switch action {
     case .getXcode:
@@ -316,7 +336,7 @@ final class SetupModel: ObservableObject {
     case .installMetal:
       work {
         self.openLog()
-        self.onMain { self.activity = "Downloading the Metal Toolchain from Apple…"; self.progress = nil }
+        self.onMain { self.activity = "Downloading Metal Toolchain…"; self.progress = nil }
         let status = self.stream("/usr/bin/xcodebuild", ["-downloadComponent", "MetalToolchain"])
         self.say(status == 0 ? "Metal Toolchain installed." : "Metal Toolchain download failed (\(status)).")
         self.onMain { self.activity = "" }
@@ -380,6 +400,7 @@ final class SetupModel: ObservableObject {
   /// Check the image, then hash it (cached in out/setup/state.json by path, size and date).
   @discardableResult
   func prepareISO(_ path: String) -> Bool {
+    lastISOKnown = false
     onMain {
       self.isoPath = path; self.isoHash = nil; self.discWarning = nil
       self.discSummary = "Reading…"; self.hashProgress = 0; self.useExistingFiles = false
@@ -392,7 +413,7 @@ final class SetupModel: ObservableObject {
       let missing = Setup.requiredDiscEntries.subtracting(names)
       if !missing.isEmpty {
         throw NSError(domain: "setup", code: 1, userInfo: [NSLocalizedDescriptionKey:
-          "This disc image has no \(missing.sorted().joined(separator: " or ")); it does not look like Fable II."])
+          "Not a Fable II disc image (no \(missing.sorted().joined(separator: " or ")))."])
       }
       let selected = root.filter { Setup.discEntries.contains($0.name) }
       let summary = selected.map { e in
@@ -431,12 +452,13 @@ final class SetupModel: ObservableObject {
       state.save(paths)
     }
     let knownName = digest.flatMap { Setup.knownISOs[$0] }
+    lastISOKnown = knownName != nil
     say(knownName.map { "Known disc image: \($0)" } ?? "Warning: unknown disc image (not one of the tested ones); it may still work.")
     onMain {
       self.isoHash = digest
       self.hashProgress = nil
       self.knownDisc = knownName
-      self.discWarning = knownName != nil ? nil : "This image's SHA-256 does not match a tested Fable II disc image. It may still work; continue if you like."
+      self.discWarning = knownName != nil ? nil : "Not a tested Fable II image. It may still work."
     }
     return true
   }
@@ -464,12 +486,12 @@ final class SetupModel: ObservableObject {
     // Extract
     if let iso = chosenISO, !useExisting {
       onMain { self.extractStatus = .running }
-      if !extract(iso) { return fail("Extracting the game files failed.") }
+      if !extract(iso) { return fail("Extraction failed.") }
     } else if gameFilesPresent {
       say("Using the game files already in the project folder.")
       onMain { self.extractStatus = .skipped }
     } else {
-      return fail("No game files: choose your Fable II disc image first.")
+      return fail("Choose a disc image first.")
     }
     if options.extractOnly { return finish(started) }
 
@@ -479,7 +501,7 @@ final class SetupModel: ObservableObject {
       onMain { self.buildStatus = .skipped }
     } else {
       onMain { self.buildStatus = .running }
-      if !build() { return fail("The build failed.") }
+      if !build() { return fail("Build failed.") }
     }
 
     // Launcher (built into out/dev-launcher; copied to the project folder below)
@@ -493,7 +515,7 @@ final class SetupModel: ObservableObject {
       let status = stream("/bin/zsh", [paths.launcherScript.path], env: launcherEnv)
       guard status == 0 else {
         onMain { self.launcherStatus = .failed }
-        return fail("Building the launcher failed.")
+        return fail("Launcher build failed.")
       }
       state.launcherBuilt = true
       state.save(paths)
@@ -503,7 +525,7 @@ final class SetupModel: ObservableObject {
     // Copies of both apps in the project folder, next to Install.command (gitignored).
     // The builds in out/ stay where they are for the dev and test tools.
     for (source, target) in [(paths.gameApp, paths.rootGameApp), (paths.launcherApp, paths.rootLauncherApp)] {
-      if !placeCopy(source, at: target) { return fail("Could not copy \(target.lastPathComponent) to the project folder.") }
+      if !placeCopy(source, at: target) { return fail("Could not copy \(target.lastPathComponent).") }
     }
     try? FileManager.default.removeItem(at: paths.oldRootLauncherApp)  // renamed "Fable II Launcher.app" 2026-10-15
 
@@ -519,24 +541,34 @@ final class SetupModel: ObservableObject {
     return finish(started)
   }
 
-  /// Run tools/fable2_cache_warm.py --new-game: the game boots in a background window (muted, no
-  /// focus, no keyboard or controller input, pipelines compiled before drawing), starts a new game for about 45 s and closes; the shaders
-  /// it compiled go into the player's shader cache (~/Library/Application Support/Fable II Recomp/cache).
-  /// About 2 minutes. A failure only means the first play compiles them instead.
+  /// Headless shader prep (tools/fable2_cache_warm.py --headless; docs/setup-app.md "Shaders"): the game binary in
+  /// FABLE2_SHADER_PREP mode, as the release app runs it: no window, no Dock icon, the game never starts. The player's
+  /// scale first, with the disc's shader bank (FABLE2_SHADER_PREP_BANK), then the other scales; each result goes into
+  /// the player's shader cache (~/Library/Application Support/Fable II Recomp/cache) with the launcher's append-only
+  /// write-back. A failure only means the first play compiles them instead.
   private func warmShaderCache() {
-    guard let python = tools.find("python3") else { say("python3 not found; skipping the shader warm-up"); return }
-    onMain { self.warmStatus = .running; self.activity = "Preparing shaders: the game compiles the shaders from your disc, then runs muted in a background window for about 2 minutes and closes itself…"; self.progress = nil }
-    say("Preparing shaders: \(python) tools/fable2_cache_warm.py --new-game")
-    var args = [paths.warmScript.path, "--new-game"]
+    let python = Self.python
+    onMain { self.warmStatus = .running; self.activity = "Preparing shaders…"; self.progress = 0 }
+    say("Preparing shaders: \(python) tools/fable2_cache_warm.py --headless")
+    var args = [paths.warmScript.path, "--headless"]
     if let root = options.warmStateRoot { args += ["--state-root", root] }
     var env = tools.variables
     env["PYTHONUNBUFFERED"] = "1"
-    let status = stream(python, args, env: env)
+    var lastPrinted = -1
+    let status = stream(python, args, env: env) { line in
+      // "[prep] NN% <text>" progress lines.
+      guard line.hasPrefix("[prep] "), let cut = line.firstIndex(of: "%"),
+            let percent = Int(line[line.index(line.startIndex, offsetBy: 7)..<cut]) else { return }
+      let text = line[line.index(after: cut)...].trimmingCharacters(in: .whitespaces)
+      self.onMain { self.progress = Double(percent) / 100; self.activity = "Preparing shaders… \(text)" }
+      if self.options.auto && percent / 25 != lastPrinted / 25 { lastPrinted = percent; print("[setup]   shaders \(percent)%"); fflush(stdout) }
+    }
+    onMain { self.progress = nil }
     if status == 0 {
       if options.warmStateRoot == nil { state.shadersWarmed = true; state.save(paths) }
       onMain { self.warmStatus = .ok }
     } else {
-      say("The shader warm-up did not finish (exit \(status)); the game prepares them while you play instead.")
+      say("Shader prep did not finish (exit \(status)); the game prepares them while you play instead.")
       onMain { self.warmStatus = .warning }
     }
   }
@@ -665,7 +697,7 @@ final class SetupModel: ObservableObject {
             lastUpdate = Date()
             let fraction = Double(done) / Double(max(total, 1))
             let rate = Double(done) / max(Date().timeIntervalSince(started), 0.1)
-            let text = "Extracting \(file.path) — \(formatBytes(done)) of \(formatBytes(total)) (\(formatBytes(UInt64(rate)))/s)"
+            let text = "Extracting… \(formatBytes(done)) of \(formatBytes(total)) (\(formatBytes(UInt64(rate)))/s)"
             self.onMain { self.activity = text; self.progress = fraction }
             let tenth = Int(fraction * 10)
             if self.options.auto && tenth != lastPrinted { lastPrinted = tenth; print("[setup] extract \(tenth * 10)%"); fflush(stdout) }
@@ -685,7 +717,7 @@ final class SetupModel: ObservableObject {
   }
 
   private func build() -> Bool {
-    guard let python = tools.find("python3") else { say("python3 not found"); return false }
+    let python = Self.python
     var env = tools.variables
     let jobs = ProcessInfo.processInfo.activeProcessorCount
     env["FABLE2_BUILD_JOBS"] = String(jobs)
@@ -807,5 +839,54 @@ final class SetupModel: ObservableObject {
     logHandle?.synchronizeFile()
     if options.stay { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { exit(code) }
+  }
+}
+
+// MARK: - Sample state for --snapshot (tests; nothing runs, nothing is written)
+
+extension SetupModel {
+  func sample(_ screen: String) {
+    let hash = "2cdaafead95680e2c6fe8886a89f1ae3d5e41549857c7fc125a12aab1cb99ad9"
+    func ok(_ id: String, _ title: String, _ detail: String) -> Check { Check(id: id, title: title, status: .ok, detail: detail) }
+    checks = [ok("clt", "Xcode command-line tools", "/Applications/Xcode.app/Contents/Developer"),
+              ok("xcode", "Xcode", "/Applications/Xcode.app"), ok("metal", "Metal Toolchain", "Installed"),
+              ok("cmake", "CMake 3.25 or later", "4.1.2 (/opt/homebrew/bin/cmake)"),
+              ok("python", "Python 3", "Python 3.9.6 (/usr/bin/python3)"), ok("basics", "System tools", "Present"),
+              Check(id: "disk", title: "Disk space", status: .ok, detail: "412 GB free, needs 13 GB")]
+    checksDone = true
+    let summary = "default.xex, data/ (2,415 files), $SystemUpdate/ (3 files), nxeart — 6.8 GB"
+    switch screen {
+    case "checks":
+      phase = .checks
+    case "disc":
+      phase = .disc; useExistingFiles = false
+    case "disc-files":
+      phase = .disc; useExistingFiles = true
+    case "disc-unknown":
+      phase = .disc; isoPath = "~/Downloads/Fable II.iso"; discSummary = summary; isoHash = String(repeating: "0", count: 64)
+      knownDisc = nil; discWarning = "Not a tested Fable II image. It may still work."
+    case "working", "shaders":
+      phase = .working; isoPath = "~/Downloads/Fable II.iso"; isoHash = hash
+      extractStatus = .ok; buildStatus = .ok; launcherStatus = .ok
+      stages = Stage.all.map { var s = $0; s.status = .ok; s.start = Date(); s.end = Date().addingTimeInterval(20); return s }
+      if screen == "working" {
+        buildStatus = .running; launcherStatus = .pending
+        stages[4].status = .running; stages[4].end = nil
+        for i in 5..<stages.count { stages[i].status = .pending; stages[i].start = nil; stages[i].end = nil }
+        activity = "Building the game"; progress = 0.42
+        logLines = ["[fable2-build] stage=game: Building the game", "[ 41%] Building CXX object CMakeFiles/fable_2.dir/generated/fable_2_recomp.120.cpp.o",
+                    "[ 42%] Building CXX object CMakeFiles/fable_2.dir/generated/fable_2_recomp.121.cpp.o"]
+      } else {
+        warmStatus = .running; activity = "Preparing shaders… 1x: 812 of 1,312 from the disc"; progress = 0.21
+        logLines = ["[setup] Preparing shaders: /usr/bin/python3 tools/fable2_cache_warm.py --headless",
+                    "shader prep 1x: session 20261019-130102-1a2b3c4d (pid 4242)", "[prep] 21% 1x: 812 of 1312 from the disc"]
+      }
+    case "failed":
+      phase = .failed; errorTitle = "Build failed."
+      errorLines = ["CMake Error at CMakeLists.txt:12 (project): No CMAKE_CXX_COMPILER could be found."]
+    default:  // finished
+      phase = .finished; extractStatus = .ok; buildStatus = .ok; launcherStatus = .ok; warmStatus = .ok
+      totalTime = 287
+    }
   }
 }

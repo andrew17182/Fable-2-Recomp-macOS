@@ -3,13 +3,16 @@
 //
 // Steps: check prerequisites -> choose the disc image (SHA-256) -> extract the game files
 // (built-in Xbox 360 disc reader, GDFX.swift) -> run tools/build_macos_metal.py -> build the
-// Dev Launcher (tools/macos/build_dev_launcher.sh, not installed) -> Play.
+// launcher (tools/macos/build_dev_launcher.sh, not installed) -> headless shader prep -> Open Launcher.
+// Passing checks and a known disc image go on by themselves; only a decision needs a click.
 // Everything is written inside the project folder (game files in the root, builds in out/).
 //
 // Unattended / test runs (same code as the buttons):
 //   "Fable II Setup.app/Contents/MacOS/FableIISetup" --iso <image> --auto
 //       [--extract-only] [--rebuild] [--clean-env] [--stay] [--root <project>]
 //   ... --list <image>     print the disc's file tree and exit
+//   ... --snapshot <png> --screen checks|disc|disc-unknown|disc-files|working|shaders|finished|failed
+//       render one screen with sample state (nothing runs, nothing is written), save the window, quit
 import AppKit
 import SwiftUI
 
@@ -36,6 +39,11 @@ struct SetupMain {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   static var model: SetupModel?
+  /// --auto starts here, not from the window: SwiftUI may not create the window while the app is in the background
+  /// (seen 2026-10-19 with a full-screen game in front), and the unattended run must not depend on it.
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    if let model = Self.model, model.options.auto, SetupSnapshot.request == nil { model.runAutomatically() }
+  }
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
   func applicationWillTerminate(_ notification: Notification) { Self.model?.cancel() }
 }
@@ -51,7 +59,7 @@ struct SetupApp: App {
       } else {
         VStack(spacing: 12) {
           Text("Fable II Setup").font(.title2.bold())
-          Text("Could not find the project folder. Keep this app inside the project's out/setup folder, or run Install.command again.")
+          Text("Project folder not found. Run Install.command again.")
         }.padding(30).frame(width: 520)
       }
     }
@@ -96,7 +104,7 @@ struct SetupView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       Text("Fable II Setup").font(.title2.bold())
-      Text("Builds the macOS version of Fable II from your own disc image. Everything stays in this project folder.")
+      Text("Builds Fable II from your own disc image.")
         .foregroundStyle(.secondary)
       StepBar(model: model)
       Divider()
@@ -113,7 +121,8 @@ struct SetupView: View {
     }
     .padding(20)
     .onAppear {
-      if model.options.auto { model.runAutomatically() } else { model.work { model.runChecks() } }
+      if let snapshot = SetupSnapshot.request { SetupSnapshot.start(snapshot, model: model); return }
+      if !model.options.auto { model.work { model.checkAndContinue() } }
     }
   }
 }
@@ -130,7 +139,7 @@ struct StepBar: View {
       item("Build", model.buildStatus)
       item("Launcher", model.launcherStatus)
       item("Shaders", model.warmStatus)
-      item("Play", model.phase == .finished ? .ok : .pending)
+      item("Done", model.phase == .finished ? .ok : .pending)
     }
   }
   func item(_ title: String, _ status: Status) -> some View {
@@ -142,7 +151,7 @@ struct ChecksView: View {
   @ObservedObject var model: SetupModel
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("1. Prerequisites").font(.headline)
+      Text("Requirements").font(.headline)
       if model.checks.isEmpty { ProgressView("Checking…") }
       ForEach(model.checks) { check in
         HStack(alignment: .top, spacing: 8) {
@@ -162,7 +171,7 @@ struct ChecksView: View {
       }
       Spacer()
       HStack {
-        Button("Check again") { model.work { model.runChecks() } }.disabled(model.busy)
+        Button("Check Again") { model.work { model.checkAndContinue() } }.disabled(model.busy)
         Spacer()
         Button("Continue") { model.phase = .disc }
           .keyboardShortcut(.defaultAction)
@@ -184,29 +193,27 @@ struct DiscView: View {
   @ObservedObject var model: SetupModel
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("2. Your Fable II disc image").font(.headline)
-      Text("Choose an .iso of your own Fable II disc (the Game of the Year edition was used for development). default.xex, data/, $SystemUpdate/ and nxeart are copied into the project folder; nothing is sent anywhere.")
-        .fixedSize(horizontal: false, vertical: true)
+      Text("Disc Image").font(.headline)
+      Text("Choose an .iso of your Fable II disc.")
       if model.gameFilesPresent && model.isoPath == nil {
         HStack {
           Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-          Text("Game files are already in the project folder.")
-          Toggle("Use them (skip the disc image)", isOn: $model.useExistingFiles)
+          Text("Game files found.")
         }
       }
       HStack {
-        Button("Choose disc image…") { choose() }.disabled(model.busy || model.hashProgress != nil)
+        Button("Choose Disc Image…") { choose() }.disabled(model.busy || model.hashProgress != nil)
         if let path = model.isoPath { Text(path).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary) }
       }
       if !model.discSummary.isEmpty { Text(model.discSummary).font(.callout) }
       if let progress = model.hashProgress {
-        ProgressView("Computing SHA-256…", value: progress)
+        ProgressView("Checking disc image…", value: progress)
       }
       if let hash = model.isoHash {
         HStack(alignment: .top) {
           StatusIcon(status: model.discWarning == nil ? .ok : .warning)
           VStack(alignment: .leading) {
-            Text(model.knownDisc.map { "Known disc image: \($0)" } ?? "Unknown disc image")
+            Text(model.knownDisc ?? "Unknown disc image")
             Text("SHA-256 \(hash)").font(.caption.monospaced()).textSelection(.enabled).foregroundStyle(.secondary)
           }
         }
@@ -215,32 +222,43 @@ struct DiscView: View {
         Text(warning).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
       }
       Spacer()
-      Toggle("Prepare shaders after the build (about 2 minutes: the game runs muted in a background window and closes itself; fewer stutters the first time you play)",
-             isOn: $model.warmShaders)
-      Text("The first build downloads about 200 MB of sources and takes a few minutes (about 3 minutes on an 18-core Mac; longer on smaller Macs). Later builds are faster.")
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+      Toggle("Prepare shaders after the build", isOn: $model.warmShaders)
+      Text("The first build takes a few minutes.").font(.caption).foregroundStyle(.secondary)
       HStack {
         Button("Back") { model.phase = .checks }
         Spacer()
-        Button("Extract and build") { model.work { model.install() } }
+        // A known disc starts on its own once checked (SetupModel.chooseISO); a button is left only for a choice:
+        // an unknown disc, game files already in the folder, or a return here after a cancel or failure.
+        if let title = primaryTitle {
+          Button(title) {
+            if model.isoHash == nil { model.useExistingFiles = true }
+            model.work { model.install() }
+          }
           .keyboardShortcut(.defaultAction)
           .disabled(!ready)
+        }
       }
     }
   }
 
+  var primaryTitle: String? {
+    if model.isoHash != nil { return model.knownDisc == nil ? "Continue Anyway" : "Continue" }
+    if model.isoPath == nil && model.gameFilesPresent { return "Use These Files" }
+    return nil
+  }
+
   var ready: Bool {
     if model.busy || model.hashProgress != nil { return false }
-    return model.isoHash != nil || (model.useExistingFiles && model.gameFilesPresent)
+    return model.isoHash != nil || (model.isoPath == nil && model.gameFilesPresent)
   }
 
   func choose() {
     let panel = NSOpenPanel()
-    panel.title = "Choose your Fable II disc image"
+    panel.title = "Choose Disc Image"
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = false
     if panel.runModal() == .OK, let url = panel.url {
-      model.work { model.prepareISO(url.path) }
+      model.chooseISO(url.path)
     }
   }
 }
@@ -286,7 +304,7 @@ struct WorkingView: View {
       }
       LogView(lines: model.logLines)
       HStack {
-        Button("Reveal log") { model.revealLog() }.disabled(model.logURL == nil)
+        Button("Show Log") { model.revealLog() }.disabled(model.logURL == nil)
         Spacer()
         Button("Cancel") { model.cancel() }
       }
@@ -299,7 +317,7 @@ struct FailedView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack { StatusIcon(status: .failed); Text(model.errorTitle).font(.headline) }
-      Text("Last error lines:").font(.callout)
+      Text("Log").font(.callout)
       ScrollView {
         Text(model.errorLines.joined(separator: "\n"))
           .font(.system(size: 11, design: .monospaced))
@@ -309,15 +327,12 @@ struct FailedView: View {
       }
       .background(Color(nsColor: .textBackgroundColor))
       .border(Color.secondary.opacity(0.3))
-      if let url = model.logURL {
-        Text("Full log: \(url.path)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-      }
       HStack {
-        Button("Copy log") { model.copyLog() }
-        Button("Reveal log") { model.revealLog() }
+        Button("Copy Log") { model.copyLog() }
+        Button("Show Log") { model.revealLog() }
         Spacer()
         Button("Back") { model.phase = .disc }
-        Button("Try again") { model.work { model.install() } }.keyboardShortcut(.defaultAction)
+        Button("Try Again") { model.work { model.install() } }.keyboardShortcut(.defaultAction)
       }
     }
   }
@@ -328,35 +343,48 @@ struct FinishedView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack { StatusIcon(status: .ok); Text("Fable II is ready.").font(.headline) }
-      if let version = model.gameVersion { Text("Fable II Recomp \(version)").foregroundStyle(.secondary).textSelection(.enabled) }
+      if let version = model.gameVersion { Text("Version \(version)").foregroundStyle(.secondary).textSelection(.enabled) }
       if let total = model.totalTime { Text("Finished in \(formatDuration(total)).").foregroundStyle(.secondary) }
-      appRow("Game (direct start, advanced)", model.paths.rootGameApp)
-      appRow("Fable II Launcher (the way to play: pick a save and boot straight into it)", model.paths.rootLauncherApp)
-      Text("Both apps are in the project folder, next to Install.command; you can drag them to the Dock. Saves and settings go to ~/Library/Application Support/Fable II Recomp.")
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
       Spacer()
       HStack {
         Button("Rebuild") { model.rebuild() }
-        Button("Reveal log") { model.revealLog() }.disabled(model.logURL == nil)
+        Button("Show Log") { model.revealLog() }.disabled(model.logURL == nil)
         Spacer()
-        // The launcher is the way to play (settings, saves, Continue, the save library); the game app directly is
-        // the advanced path (2026-10-15).
-        Button("Play Directly") { NSWorkspace.shared.open(model.paths.rootGameApp) }
-          .help("Opens Fable II.app without the launcher (the launcher's skip-intro choice still applies).")
+        // The launcher is the way to play (2026-10-19): settings, saves, the save library.
         Button("Open Launcher") { NSWorkspace.shared.open(model.paths.rootLauncherApp) }.keyboardShortcut(.defaultAction)
       }
     }
   }
+}
 
-  func appRow(_ title: String, _ url: URL) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
-      Text(title)
-      HStack {
-        Text(url.path.replacingOccurrences(of: model.paths.root.path + "/", with: ""))
-          .font(.caption.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
-        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-          .buttonStyle(.link).font(.caption)
+// MARK: - Snapshots (tests)
+
+/// --snapshot PATH --screen NAME: shows one screen with sample state (no checks, extraction, build or prep run; no
+/// state is written), saves this app's own window to a PNG and quits. CGWindowListCreateImage needs no
+/// screen-recording permission for the app's own windows; it is looked up at run time (deprecated API).
+enum SetupSnapshot {
+  static let request: (path: String, screen: String)? = {
+    let args = CommandLine.arguments
+    guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return nil }
+    let screen = args.firstIndex(of: "--screen").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } ?? "checks"
+    return (args[i + 1], screen)
+  }()
+
+  static func start(_ request: (path: String, screen: String), model: SetupModel) {
+    model.sample(request.screen)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+      guard let window = NSApp.windows.first(where: { $0.isVisible }) else { print("snapshot: no window"); exit(1) }
+      typealias Create = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+      guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage"),
+            let image = unsafeBitCast(symbol, to: Create.self)(
+              .null, CGWindowListOption.optionIncludingWindow.rawValue, UInt32(window.windowNumber),
+              CGWindowImageOption([.boundsIgnoreFraming, .bestResolution]).rawValue)?.takeRetainedValue(),
+            let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]),
+            (try? png.write(to: URL(fileURLWithPath: request.path))) != nil else {
+        print("snapshot: could not capture the window"); exit(1)
       }
+      print(request.path)
+      exit(0)
     }
   }
 }

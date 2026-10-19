@@ -37,6 +37,7 @@
 // #include "fable2_ui_render_probe.h"
 #include "keyboard_gamepad.h"
 #include "test_background.h"
+#include "core/fable2_shader_prep_hide.h"
 
 #include <rex/cvar.h>
 
@@ -45,6 +46,9 @@
 // initializer. See src/input/test_background.h.
 [[maybe_unused]] static const bool g_fable2_test_background_hints =
     fable2::testbg::ApplyLaunchHints();
+// FABLE2_SHADER_PREP (headless shader prep): no Dock icon; see src/core/fable2_shader_prep_hide.h.
+[[maybe_unused]] static const bool g_fable2_shader_prep_hidden =
+    fable2::shader_prep_hide::ApplyEarly();
 
 // Host keyboard -> guest gamepad map (see src/input/keyboard_gamepad.h).
 // Format: "Key:Button,Key:Button,...".

@@ -64,9 +64,10 @@ compiles them unpatched, which the game never uses: ~95 s of extra compiles for 
   other scale prepares the renderer's own pipelines in ~1 s. Progress shows "N of M from the game disc"; the marker
   records `bank: true`, so turning the setting on later runs it once. Skip still works.
 - **Launcher / source install**: the shared setting "Prepare all of the disc's shaders at install" (Settings,
-  Performance, Startup and CPU; `FABLE2_SHADER_PREP_BANK`); `tools/fable2_cache_warm.py` (the setup app's shader step)
-  runs a bank prep at the player's scale before its sessions (`--no-bank`, the setting or `=0` skip it; its scratch
-  cache is discarded, nothing is published from it). `tools/fable2_shader_prep.py run --empty` does it by hand.
+  Performance, Startup and CPU; `FABLE2_SHADER_PREP_BANK`); the setup app's shader step
+  (`tools/fable2_cache_warm.py --headless`, since 2026-10-19) runs the bank prep at the player's scale on a clone of
+  the player's cache and publishes it (`--no-bank`, the setting or `=0` skip it); the older session modes run it on a
+  scratch cache that is discarded. `tools/fable2_shader_prep.py run --empty` does it by hand.
 
 Nothing in the repo, the app or the release zip holds game data: the bank is read from the player's extracted files
 at install, and what is compiled lands only in macOS's Metal cache on their Mac.

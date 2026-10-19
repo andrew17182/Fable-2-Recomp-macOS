@@ -7,7 +7,12 @@ disc image into a playable build, without the command line.
    `xcode-select --install` if they are missing), compiles the setup app from
    `tools/macos/Setup/*.swift` into `out/setup/Fable II Setup.app` and opens it. The app is
    rebuilt only when its sources change.
-2. **Fable II Setup** walks through:
+2. **Fable II Setup** walks through these steps. It goes on by itself when nothing needs a choice (2026-10-19):
+   passing checks go straight to the disc step, and a known disc image starts extraction, the build and the
+   shader prep with no further click. A click is left only for a real decision: a failed check, an unknown disc
+   image (**Continue Anyway**), game files already in the folder (**Use These Files**), or a return to the disc
+   step after a cancel or failure (**Continue**). Every tool runs under `/usr/bin/python3` (3.9), never a
+   Homebrew `python3` on PATH.
    - **Prerequisites:** Xcode with its Metal Toolchain component (the Metal shader compiler is
      not part of the command-line tools; the app offers `xcodebuild -downloadComponent
      MetalToolchain`), CMake 3.25+, Python 3.9+, curl/ditto/shasum/patch/tar and free disk
@@ -45,23 +50,39 @@ disc image into a playable build, without the command line.
      `Contents/Resources/LocalDefaults.plist`) and the launcher finds the project through its
      `Fable2RepoRoot` Info.plist key. The builds in `out/` stay where they are;
      `tools/fable2_dev_session.py` and the test tools keep using them.
-   - **Shaders** (optional, on by default; checkbox on the disc page, `--no-warm-shaders`): one background run of
-     the new game build prepares the shader cache. See "Shader warm-up" below.
-   - **Play:** buttons for the two copies in the project folder. Nothing is copied to
-     /Applications or outside the project folder.
+   - **Shaders** (optional, on by default; checkbox on the disc page, `--no-warm-shaders`): a headless shader
+     prep, no window and no game. See "Shaders" below.
+   - **Done:** **Open Launcher** (the launcher is the way to play). Nothing is copied to /Applications or outside
+     the project folder.
 3. Running it again skips finished steps (`out/setup/state.json`); **Rebuild** forces the build
    and launcher steps. Every run refreshes the project-folder copies when they are missing or
    older than the builds in `out/`. The normal dev commands (`python3 tools/build_macos_metal.py`,
    `build_dev_launcher.sh --install`) do not touch those copies; run Install.command again to
    refresh them.
 
-## Shader warm-up
+## Shaders
 
-(2026-10-14: the portable player app instead runs a headless shader preparation after extraction, with no game
-session; `docs/offline-shader-seed.md` compares the two. Install.command still uses the session below.)
+Since 2026-10-19 the setup app runs `/usr/bin/python3 tools/fable2_cache_warm.py --headless` after the apps are
+placed: the same headless shader prep the release app uses (`FABLE2_SHADER_PREP`, `docs/offline-shader-seed.md`
+section 2). The game binary starts only up to shader storage init, never runs the game, and exits by itself:
 
-`tools/fable2_cache_warm.py --new-game`, run by the setup app after the apps are placed (about 3 minutes with the 2× and 3× sessions; never fatal:
-on failure the step shows a warning and the game compiles those shaders during play as before).
+- one run per resolution scale, the player's scale first; that first run also compiles the disc's own shader bank
+  (`FABLE2_SHADER_PREP_BANK`, `docs/shader-precompile-20261015.md`; the launcher setting or `--no-bank` skip it);
+- each run starts from a clone of the player's cache and is published back with the launcher's append-only
+  write-back (`fable2_dev_session.publish_cache`); it refuses while a normal Fable II game is open;
+- no window, no Dock icon: `src/core/fable2_shader_prep_hide.h` hides the window the moment SDL shows it (before
+  AppKit draws it) and makes the app an accessory app. Before that fix each run showed its window for ~0.4 s
+  (CGWindowList check, `out/validation/setup-fixes-20261019/`);
+- progress: `[prep] NN% <text>` lines on stdout drive the setup window's bar ("1x: 812 of 1,312 from the disc").
+
+Never fatal: on failure the step shows a warning and the game compiles those shaders during play. It runs once per
+setup (`shadersWarmed` in `out/setup/state.json`); **Rebuild** runs it again.
+
+### Session warm-up (tests only)
+
+The older session modes of `tools/fable2_cache_warm.py` (title screen, `--new-game`) stay for tests. They open a
+visible background game window, which is why Setup no longer uses them. Before 2026-10-19 Setup ran
+`--new-game` (about 3 minutes with the 2× and 3× sessions):
 
 - It starts one agent-style test session of `out/build/…/Fable II.app` (`fable2_test_control.launch`): a background
   window that never takes focus, muted, physical input off, its own clone of the state folder's saves, settings and
@@ -117,7 +138,11 @@ List an image without extracting:
 
 ```sh
 ./Install.command --iso "path/to/Fable II.iso" --auto [--extract-only] [--rebuild] [--clean-env] [--no-warm-shaders] [--warm-state-root DIR]
+"out/setup/Fable II Setup.app/Contents/MacOS/FableIISetup" --snapshot out.png --screen checks|disc|disc-unknown|disc-files|working|shaders|finished|failed
 ```
+
+`--snapshot` shows one screen with sample state (nothing runs, nothing is written), saves the window to a PNG and
+quits.
 
 `--auto` drives the same window and code as the buttons, mirrors progress to stdout and exits
 0/1. `--no-warm-shaders` skips the shader warm-up; `--warm-state-root DIR` points it at a scratch state folder
