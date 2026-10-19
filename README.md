@@ -46,10 +46,9 @@ your Mac.
    first. The first time you play, shaders are compiled as they are needed, so
    expect a few short hitches once; they are remembered after that.
 
-If Fable II is still in Downloads (or Desktop, Documents, iCloud Drive, a disk image) when you open it, it
-offers to move itself to Applications first; accept it. If macOS asked to let Fable II access a folder and you
-clicked **Don't Allow**, the window says what to do: move the app to Applications, choose the disc image again,
-or turn Fable II on under **System Settings → Privacy & Security → Files and Folders**, then click **Try Again**.
+If macOS asked to let Fable II access a folder and you clicked **Don't Allow**, the window says what to do:
+choose the disc image again, or turn Fable II on under **System Settings → Privacy & Security → Files and
+Folders**, then click **Try Again**.
 
 First-launch build time (after the disc copy, which takes a few seconds to a few minutes):
 

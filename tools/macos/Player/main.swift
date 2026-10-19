@@ -26,12 +26,11 @@
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
 //   --show-launcher      as holding Option
-//   --snapshot PATH.png [--window play|ready|welcome|progress|move|denied|general|display|controls|mods|performance|
+//   --snapshot PATH.png [--window play|ready|welcome|progress|denied|general|display|controls|mods|performance|
 //                        fixes|diagnostics|advanced|devlauncher] [--dev-options on|off]
 //                        show that window without taking focus, save it to a PNG and quit (progress: once
-//                        the extraction has started, with details shown; move: the Move to Applications offer;
-//                        denied: once a refused access is shown)
-//   --access-check PATH, --bundle-location [APP], --move-to-applications: the access helpers as JSON (tests)
+//                        the extraction has started, with details shown; denied: once a refused access is shown)
+//   --access-check PATH, --bundle-location [APP]: the access helpers as JSON (tests)
 import AppKit
 import Darwin
 import SwiftUI
@@ -41,7 +40,7 @@ import UniformTypeIdentifiers
 
 /// Flags this app consumes; the rest are passed to the game.
 let playerFlags: Set<String> = ["--play", "--press-play", "--print-env", "--reuse", "--show-launcher", "--start-fresh",
-                                 "--archive-saves", "--list-archives", "--relaunched", "--move-to-applications"]
+                                 "--archive-saves", "--list-archives", "--relaunched"]
 let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive"]
 var gameArguments: [String] {
   var out: [String] = []
@@ -1084,8 +1083,8 @@ final class BuildRunner: ObservableObject {
     }
   }
 
-  /// Access refused (macOS privacy or file permissions): the window explains it and offers Move to Applications,
-  /// Privacy Settings and Try Again, which checks again (a new attempt, not the old result).
+  /// Access refused (macOS privacy or file permissions): the window explains it and offers Privacy Settings and
+  /// Try Again, which checks again (a new attempt, not the old result).
   private func denied(_ problem: AppAccess.Problem) {
     phase = .denied(problem)
     let time = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
@@ -1117,7 +1116,7 @@ enum StartMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
-enum Screen { case move, welcome, preparing, building, play }
+enum Screen { case welcome, preparing, building, play }
 
 final class PlayerModel: SettingsModel {
   @Published var screen: Screen
@@ -1138,14 +1137,10 @@ final class PlayerModel: SettingsModel {
   @Published var showStartFresh = false
   @Published var showStartFreshMain = false
   @Published var showArchives = false
-  /// Where this app runs from (docs/release-app.md "Protected folders and Move to Applications").
-  let location = AppAccess.location(of: Paths.bundle.bundleURL)
-  @Published var moveError = ""
   /// Shown on the Play window after the game was built (first launch or an update): the build never starts the
   /// game by itself, so the player can look at the settings first (--play, a test flag, still plays when ready).
   @Published var readyNote = ""
   private var buildWasUpdate = false
-  @Published var moveDontAsk = false
   private var hiddenWindows: [NSWindow] = []
   let prepare = PrepareRunner()
   let shaderPrep = ShaderPrepRunner()
@@ -1160,7 +1155,7 @@ final class PlayerModel: SettingsModel {
     // One settings file, one store object: the checkout and the Dev Launcher window share it.
     DevCheckout.store = store
     DevHost.shared.store = store
-    screen = Self.offersMove(AppAccess.location(of: Paths.bundle.bundleURL), store: store) ? .move : Self.normalScreen
+    screen = Self.normalScreen
     super.init(store: store)
     // The game next to this executable: no-converter (release/portable) builds force the native switches on.
     let hasConverter = LaunchSettings.hasConverter(macOSFolder: Paths.macOS)
@@ -1187,78 +1182,9 @@ final class PlayerModel: SettingsModel {
     refresh()
   }
 
-  /// The screen after the Move to Applications offer.
+  /// The first screen: the welcome window, the build or the Play window. The app never moves, copies or trashes
+  /// its own bundle; it runs wherever the player put it (docs/release-app.md "Protected folders").
   static var normalScreen: Screen { !GameFiles.ready ? .welcome : GameBuild.ready ? .play : .building }
-
-  /// The release app offers to move itself first when it runs from Downloads, Desktop, Documents, iCloud Drive,
-  /// another volume, a disk image or a translocated copy, before anything reads its build kit
-  /// (FABLE2_TEST_OFFER_MOVE=1 offers it in other apps too, for tests). "Don't ask again" is remembered.
-  static func offersMove(_ location: AppAccess.Location, store: PlistSettingsStore) -> Bool {
-    guard Paths.buildsGame || Paths.environment["FABLE2_TEST_OFFER_MOVE"] == "1" else { return false }
-    if Snapshot.path != nil { return Snapshot.window == "move" }
-    if store.object(forKey: "moveOfferDeclined") as? Bool == true { return false }
-    return location.shouldOfferMove
-  }
-
-  /// "Not Now": continue from here (the build kit is still copied out of the app by this process first).
-  func declineMove() {
-    if moveDontAsk { store.set(true, forKey: "moveOfferDeclined") }
-    appendLog(Paths.logs + "/player.log", "[move] not moved (\(moveDontAsk ? "don't ask again" : "not now")): \(location.json)")
-    moveError = ""
-    screen = Self.normalScreen
-    refresh()
-  }
-
-  /// "Move to Applications": copy there, Trash the original, open the copy and quit this one.
-  func moveToApplications() {
-    moveError = ""
-    let original = location.originalPath.map { URL(fileURLWithPath: $0) }
-    do {
-      let result = try AppAccess.moveToApplications(bundle: Paths.bundle.bundleURL, original: original)
-      appendLog(Paths.logs + "/player.log", "[move] copied to \(result.destination.path); original in the Trash: "
-                + "\(result.trashedOriginal); replaced an older copy: \(result.replacedExisting)")
-      relaunch(at: result.destination)
-    } catch {
-      appendLog(Paths.logs + "/player.log", "[move] failed: \(error)")
-      moveError = "\(error)"
-    }
-  }
-
-  /// Opens the moved copy (same arguments, minus one-shot flags) and quits this one.
-  func relaunch(at app: URL) {
-    if Paths.environment["FABLE2_TEST_MOVE_NO_RELAUNCH"] == "1" {
-      appendLog(Paths.logs + "/player.log", "[move] (test) would open \(app.path); this copy quits")
-      exit(0)
-    }
-    if PlayerApp.heldLock >= 0 { close(PlayerApp.heldLock); PlayerApp.heldLock = -1 }
-    if lock >= 0 { close(lock); lock = -1 }
-    let oneShot: Set<String> = ["--play", "--press-play", "--reuse", "--relaunched"]
-    var args: [String] = []
-    var i = 0
-    while i < commandLine.count {
-      if ["--iso", "--snapshot", "--window"].contains(commandLine[i]) { i += 2; continue }
-      if !oneShot.contains(commandLine[i]) { args.append(commandLine[i]) }
-      i += 1
-    }
-    let configuration = NSWorkspace.OpenConfiguration()
-    configuration.createsNewApplicationInstance = true
-    configuration.arguments = args + ["--relaunched"]
-    configuration.environment = Paths.environment
-    configuration.activates = Paths.environment["FABLE2_TEST_BACKGROUND"] != "1"
-    NSWorkspace.shared.openApplication(at: app, configuration: configuration) { [weak self] _, error in
-      DispatchQueue.main.async {
-        guard let error = error else {
-          appendLog(Paths.logs + "/player.log", "[move] opened \(app.path); this copy quits")
-          exit(0)
-        }
-        appendLog(Paths.logs + "/player.log", "[move] could not open \(app.path): \(error.localizedDescription)")
-        guard let self = self else { return }
-        self.lock = self.relock()
-        PlayerApp.heldLock = self.lock
-        self.moveError = "Copied, but could not open it (\(error.localizedDescription)). Open Fable II from Applications."
-      }
-    }
-  }
 
   /// `pickNewest`: put the save menu on the newest save (first time, and after a game).
   func refresh(pickNewest: Bool = false) {
@@ -1658,7 +1584,7 @@ enum DiscDrop {
   }
 }
 
-/// Plain-English texts for a refused access (docs/release-app.md "Protected folders and Move to Applications").
+/// Plain-English texts for a refused access (docs/release-app.md "Protected folders").
 enum AccessText {
   /// "your Downloads folder", "iCloud Drive", "an external or network volume".
   static func place(_ folder: String) -> String {
@@ -1706,50 +1632,6 @@ enum AccessText {
     case .other(let path, let code):
       return ("The disc image could not be opened",
               "“\(name(path))”: \(String(cString: strerror(code))).")
-    }
-  }
-}
-
-/// First launch from Downloads, Desktop, Documents, iCloud Drive, another volume, a disk image or a translocated copy:
-/// offer to move the app to Applications first (as other Mac apps do), before anything reads its build kit.
-struct MoveView: View {
-  @ObservedObject var model: PlayerModel
-
-  var body: some View {
-    VStack(spacing: 0) {
-      Header()
-      VStack(alignment: .leading, spacing: 12) {
-        Text("Move Fable II to the Applications folder?").font(.title2.weight(.semibold))
-        Text(model.location.reason)
-          .fixedSize(horizontal: false, vertical: true)
-          .help("From Applications, macOS needs no extra permission for the first build.")
-        Text(model.location.translocated && model.location.originalPath == nil
-             ? "The downloaded copy can then be deleted." : "This copy moves to the Trash.")
-          .font(.callout).foregroundStyle(.secondary)
-        if !model.moveError.isEmpty {
-          Text(model.moveError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-          Button("Show Fable II in Finder") {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: model.location.originalPath
-                                                                ?? Paths.bundle.bundlePath)])
-          }
-          .help("Drag Fable II into the Applications folder in Finder, then open it from there.")
-        }
-        HStack {
-          Toggle("Don’t ask again", isOn: $model.moveDontAsk).font(.callout)
-          Spacer()
-          Button("Not Now") { model.declineMove() }.keyboardShortcut(.cancelAction)
-          Button("Move to Applications") { model.moveToApplications() }
-            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
-        }
-        .controlSize(.large)
-        .padding(.top, 6)
-      }
-      .padding(20)
-    }
-    .frame(width: 560)
-    .onAppear {
-      if Paths.environment["FABLE2_TEST_AUTO_MOVE"] == "1" { DispatchQueue.main.async { model.moveToApplications() } }
     }
   }
 }
@@ -1935,14 +1817,7 @@ struct BuildView: View {
         case .denied(let problem):
           Text(AccessText.build(problem).text).fixedSize(horizontal: false, vertical: true)
           if !builder.retryNote.isEmpty { Text(builder.retryNote).font(.callout).foregroundStyle(.orange) }
-          if !model.moveError.isEmpty {
-            Text(model.moveError).font(.callout).foregroundStyle(.red).textSelection(.enabled)
-              .fixedSize(horizontal: false, vertical: true)
-          }
           HStack {
-            if AccessText.inApp(problem) && !model.location.inApplications {
-              Button("Move to Applications") { model.moveToApplications() }
-            }
             if problem.folder != nil {
               Button("Open Privacy Settings") { NSWorkspace.shared.open(AppAccess.privacySettingsURL) }
             }
@@ -2037,7 +1912,6 @@ struct MainView: View {
         PlayerSettingsPage(model: model)
       } else {
       switch model.screen {
-      case .move: MoveView(model: model)
       case .welcome: WelcomeView(model: model)
       case .preparing: PreparingView(model: model, prepare: model.prepare, shaders: model.shaderPrep)
       case .building: BuildView(model: model, builder: model.builder)
@@ -2188,7 +2062,6 @@ enum Snapshot {
       return
     }
     switch window {
-    case "move": break  // PlayerModel shows the offer for this snapshot
     case "ready":  // the Play window right after the build
       model.readyNote = "Ready to play."
       model.screen = .play
@@ -2587,7 +2460,7 @@ if commandLine.contains("--list-capabilities") {
   exit(0)
 }
 if AppRole.devLauncher { DevLauncherMain.run() }
-// Access tooling (docs/release-app.md "Protected folders and Move to Applications"; tests/release_access_tests.py).
+// Access tooling (docs/release-app.md "Protected folders"; tests/release_access_tests.py).
 if let path = argument(after: "--access-check") {
   let problem = AppAccess.check(path)
   let object: [String: Any] = ["path": path, "ok": problem == nil, "problem": (problem?.json as Any?) ?? NSNull(),
@@ -2597,7 +2470,7 @@ if let path = argument(after: "--access-check") {
 }
 if commandLine.contains("--access-classify") {
   // Pure checks, no file access: stdin is a JSON list of {"path", "home", "errno"?, "output"?, "extra"?}; prints one
-  // verdict per case (protected folder, errno and helper-output classification, translocation by path, Move offer).
+  // verdict per case (protected folder, errno and helper-output classification, translocation by path).
   let input = FileHandle.standardInput.readDataToEndOfFile()
   let cases = (try? JSONSerialization.jsonObject(with: input)) as? [[String: Any]] ?? []
   let results: [[String: Any]] = cases.map { c in
@@ -2612,12 +2485,7 @@ if commandLine.contains("--access-classify") {
       out["outputProblem"] = AppAccess.classify(output: text, home: home, extra: extra)?.json ?? NSNull()
     }
     let translocated = path.contains("/AppTranslocation/")
-    let location = AppAccess.Location(bundlePath: path, originalPath: nil, translocated: translocated,
-                                      folder: AppAccess.protectedFolder(for: path, home: home, extra: extra),
-                                      readOnly: c["readOnly"] as? Bool ?? false)
     out["translocated"] = translocated
-    out["shouldOfferMove"] = location.shouldOfferMove
-    out["reason"] = location.reason
     return out
   }
   print(String(decoding: (try? JSONSerialization.data(withJSONObject: results, options: .sortedKeys)) ?? Data(), as: UTF8.self))
@@ -2628,20 +2496,6 @@ if commandLine.contains("--bundle-location") {
   let location = AppAccess.location(of: given.map { URL(fileURLWithPath: $0) } ?? Bundle.main.bundleURL)
   print(String(decoding: (try? JSONSerialization.data(withJSONObject: location.json, options: .sortedKeys)) ?? Data(), as: UTF8.self))
   exit(0)
-}
-if commandLine.contains("--move-to-applications") {  // the Move button without the relaunch (tests)
-  let location = AppAccess.location(of: Bundle.main.bundleURL)
-  var object: [String: Any] = ["location": location.json]
-  do {
-    let result = try AppAccess.moveToApplications(bundle: Bundle.main.bundleURL,
-                                                  original: location.originalPath.map { URL(fileURLWithPath: $0) })
-    object.merge(["ok": true, "destination": result.destination.path, "trashedOriginal": result.trashedOriginal,
-                  "replacedExisting": result.replacedExisting]) { $1 }
-  } catch {
-    object.merge(["ok": false, "error": "\(error)"]) { $1 }
-  }
-  print(String(decoding: (try? JSONSerialization.data(withJSONObject: object, options: .sortedKeys)) ?? Data(), as: UTF8.self))
-  exit(object["ok"] as? Bool == true ? 0 : 1)
 }
 // --import-saves FOLDER [--replace]: the Import Saves action without the window (tests, stand-in folders only).
 if let source = argument(after: "--import-saves") {

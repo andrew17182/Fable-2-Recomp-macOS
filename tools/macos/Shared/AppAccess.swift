@@ -1,17 +1,18 @@
-// macOS privacy folders (TCC, System Settings > Privacy & Security > Files and Folders), App Translocation and the
-// "Move to Applications" offer of the release app (docs/release-app.md "Protected folders and Move to Applications").
+// macOS privacy folders (TCC, System Settings > Privacy & Security > Files and Folders) and App Translocation, for
+// the release app (docs/release-app.md "Protected folders").
 //
 // Why: macOS asks the player before an app reads Downloads, Desktop, Documents, iCloud Drive, other cloud storage or
 // removable and network volumes. A process reading its own app bundle is not asked, but helper processes outside the
 // bundle are: /usr/bin/python3 running the build kit from an app left in ~/Downloads (also when macOS runs it
-// translocated) triggered "Fable II would like to access files in your Downloads folder", and after Don't Allow the
-// build failed the same way on every Try Again. So the app offers to move itself to Applications first, copies the
-// build kit out of its bundle with its own process, hands the disc image to the extractor as an open file, and
-// explains a denial with the ways out (Move to Applications, Choose Disc Image…, Privacy Settings, Try Again).
+// translocated) triggered "Fable II would like to access files in your Downloads folder". Rule since 2026-10-19:
+// the apps never trigger a privacy prompt. So the app copies the build kit out of its bundle with its own process,
+// hands the disc image (a user pick) to the extractor as an open file, never copies, moves or trashes its own bundle
+// (the old "Move to Applications" offer trashed the original in Downloads, which asked for Downloads access), and
+// explains a denial (Choose Disc Image…, Privacy Settings, Try Again).
 //
 // Pure functions (paths and errno in, verdicts out) so tests can drive them: FableIIPlayer --access-check PATH and
-// --bundle-location [PATH] print them as JSON. Test switches: FABLE2_TEST_PROTECTED_DIRS (colon-separated folders that
-// count as Downloads), FABLE2_TEST_APPLICATIONS_DIR (where Move copies to).
+// --bundle-location [PATH] print them as JSON. Test switch: FABLE2_TEST_PROTECTED_DIRS (colon-separated folders that
+// count as Downloads).
 import AppKit
 import Darwin
 
@@ -173,19 +174,9 @@ enum AppAccess {
       let p = AppAccess.standard(originalPath ?? bundlePath)
       return p.hasPrefix("/Applications/") || AppAccess.inside(p, NSHomeDirectory() + "/Applications")
     }
-    /// Offer to move: translocated, in a protected folder or on a read-only volume (never from Applications).
-    var shouldOfferMove: Bool { !inApplications && (translocated || folder != nil || readOnly) }
-    /// The sentence for the offer.
-    var reason: String {
-      if let folder = folder, folder.hasPrefix("an ") { return "Fable II is running from \(folder)." }
-      if let folder = folder { return "Fable II is running from your \(folder) folder." }
-      if readOnly { return "Fable II is running from a disk image or another read-only volume." }
-      return "Fable II is running from a temporary copy made by macOS."
-    }
     var json: [String: Any] {
       ["bundlePath": bundlePath, "originalPath": (originalPath as Any?) ?? NSNull(), "translocated": translocated,
-       "folder": (folder as Any?) ?? NSNull(), "readOnly": readOnly, "inApplications": inApplications,
-       "shouldOfferMove": shouldOfferMove]
+       "folder": (folder as Any?) ?? NSNull(), "readOnly": readOnly, "inApplications": inApplications]
     }
   }
 
@@ -197,95 +188,5 @@ enum AppAccess {
     let readOnly = !translocated && readOnlyVolume(bundle.path) || (original.map { readOnlyVolume($0.path) } ?? false)
     return Location(bundlePath: bundle.path, originalPath: original?.path, translocated: translocated,
                     folder: protectedFolder(for: place, home: home, extra: extra), readOnly: readOnly)
-  }
-
-  // MARK: Move to Applications
-
-  /// FABLE2_TEST_APPLICATIONS_DIR, else /Applications when writable, else ~/Applications.
-  static func applicationsFolder() -> URL {
-    if let dir = environment["FABLE2_TEST_APPLICATIONS_DIR"], dir.hasPrefix("/") { return URL(fileURLWithPath: dir) }
-    if access("/Applications", W_OK) == 0 { return URL(fileURLWithPath: "/Applications") }
-    return URL(fileURLWithPath: NSHomeDirectory() + "/Applications")
-  }
-
-  struct MoveResult {
-    let destination: URL
-    let trashedOriginal: Bool
-    let replacedExisting: Bool
-  }
-
-  enum MoveError: Error, CustomStringConvertible {
-    case failed(String)
-    var description: String { if case .failed(let s) = self { return s }; return "" }
-  }
-
-  static func codesignVerifies(_ url: URL) -> Bool {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-    process.arguments = ["--verify", "--strict", url.path]
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
-    guard (try? process.run()) != nil else { return false }
-    process.waitUntilExit()
-    return process.terminationStatus == 0
-  }
-
-  /// The Trash, or FABLE2_TEST_TRASH_DIR in tests (never the real Trash there).
-  static func trashOrThrow(_ url: URL) throws {
-    if let dir = environment["FABLE2_TEST_TRASH_DIR"], dir.hasPrefix("/") {
-      try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-      try FileManager.default.moveItem(at: url, to: URL(fileURLWithPath: dir).appendingPathComponent(url.lastPathComponent))
-      return
-    }
-    try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-  }
-  static func trash(_ url: URL) -> Bool { (try? trashOrThrow(url)) != nil }
-
-  /// Copies the running app (read by this process: its own bundle, which macOS privacy never asks about) into the
-  /// Applications folder, removes the download quarantine from the copy (it is this same app, already opened, so
-  /// macOS does not translocate it again), checks its signature, then moves the original to the Trash (best effort:
-  /// if macOS refuses, the copy in Downloads just stays). An existing app of the same name goes to the Trash first.
-  static func moveToApplications(bundle: URL, original: URL?, folder: URL = applicationsFolder()) throws -> MoveResult {
-    let fm = FileManager.default
-    let source = original ?? bundle
-    let name = source.lastPathComponent.hasSuffix(".app") ? source.lastPathComponent : "Fable II.app"
-    let destination = folder.appendingPathComponent(name)
-    if standard(destination.path) == standard(source.path) {
-      return MoveResult(destination: destination, trashedOriginal: false, replacedExisting: false)
-    }
-    do { try fm.createDirectory(at: folder, withIntermediateDirectories: true) } catch {
-      throw MoveError.failed("The \(folder.path) folder could not be created: \(error.localizedDescription)")
-    }
-    let work = folder.appendingPathComponent("." + name + ".moving")
-    try? fm.removeItem(at: work)
-    do { try fm.copyItem(at: bundle, to: work) } catch {
-      try? fm.removeItem(at: work)
-      throw MoveError.failed("Fable II could not be copied to \(folder.path): \(error.localizedDescription)")
-    }
-    // No quarantine on the copy: macOS would otherwise run it translocated again.
-    if let walker = fm.enumerator(atPath: work.path) {
-      removexattr(work.path, "com.apple.quarantine", XATTR_NOFOLLOW)
-      for case let relative as String in walker {
-        removexattr(work.path + "/" + relative, "com.apple.quarantine", XATTR_NOFOLLOW)
-      }
-    }
-    if codesignVerifies(bundle) && !codesignVerifies(work) {
-      try? fm.removeItem(at: work)
-      throw MoveError.failed("The copy in \(folder.path) did not pass the signature check, so it was removed.")
-    }
-    var replaced = false
-    if fm.fileExists(atPath: destination.path) {
-      do { try trashOrThrow(destination); replaced = true } catch {
-        try? fm.removeItem(at: work)
-        throw MoveError.failed("An older \(name) is in \(folder.path) and could not be moved to the Trash: "
-                               + error.localizedDescription + ". Quit it if it is open, or remove it, and try again.")
-      }
-    }
-    do { try fm.moveItem(at: work, to: destination) } catch {
-      try? fm.removeItem(at: work)
-      throw MoveError.failed("Fable II could not be put into \(folder.path): \(error.localizedDescription)")
-    }
-    let trashed = trash(source)
-    return MoveResult(destination: destination, trashedOriginal: trashed, replacedExisting: replaced)
   }
 }

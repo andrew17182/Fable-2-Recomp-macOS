@@ -94,9 +94,6 @@ built and signed locally, so it carries no quarantine attribute and Gatekeeper d
 
 ## First launch
 
-0. **Move to Applications** (only when the app runs from Downloads, Desktop, Documents, iCloud Drive, other cloud
-   storage, an external or network volume, a disk image or a translocated copy): offered before anything reads the
-   build kit. See "Protected folders and Move to Applications".
 1. **Welcome**: choose the disc image (open panel or drag and drop onto the window), or reuse a finished extraction
    of another Fable II app on this Mac.
 2. **Extract** with `FableIIPrepare` (progress, Cancel, Show details). The app opens the image itself and hands the
@@ -131,7 +128,7 @@ built and signed locally, so it carries no quarantine attribute and Gatekeeper d
    starts the game by itself, so the player can review Settings, Controls and resolution first. Only the test flag
    `--play` (used by the end-to-end harness) plays as soon as the game is ready.
 
-## Protected folders and Move to Applications
+## Protected folders
 
 macOS asks the player before an app reads Downloads, Desktop, Documents, iCloud Drive, other cloud storage
 (`~/Library/CloudStorage`) or removable and network volumes (System Settings → Privacy & Security → Files and
@@ -148,19 +145,16 @@ which macOS refused again at once (it remembers the answer), so it looked as if 
 
 What the app does now (`tools/macos/Shared/AppAccess.swift`, `tools/macos/Player/main.swift`):
 
-- **Move to Applications** first launch screen, offered when the app runs from a protected folder, a read-only
-  volume (disk image) or translocated (`SecTranslocateIsTranslocatedURL`, `SecTranslocateCreateOriginalPathForURL`).
-  It copies the running bundle to `/Applications` (`~/Applications` when that is not writable), removes the download
-  quarantine from the copy (so macOS does not translocate it again), checks the signature, puts an older copy there
-  and then the original in the Trash (best effort: if macOS refuses, the copy in Downloads stays), opens the new copy
-  and quits. **Not Now** continues in place; **Don't ask again** is remembered (`moveOfferDeclined` in
-  `player-settings.plist`). Nothing reads the build kit before this screen.
+- **No Move to Applications (removed 2026-10-19).** The app runs wherever the player put it and never copies,
+  moves or trashes its own bundle. The old first-launch offer (2026-10-15) copied the app to `/Applications` and put
+  the original in the Trash; trashing a file in `~/Downloads` made macOS ask for Downloads access. Rule: the app must
+  not trigger macOS permission prompts. The README asks the player to drag Fable II to Applications.
 - **Nothing outside the bundle reads the bundle**: the kit is copied out by the app's own process before python runs.
 - **The disc image comes from the open panel or drag and drop** (a user pick grants access to that file even in a
   protected folder or after Don't Allow) and is handed to the extractor as an open file. A path that was never picked
   in this session (relaunch while an extraction was incomplete) brings back the welcome window.
 - **A refused access is explained** (EPERM/EACCES, classified by folder): "macOS is not letting Fable II read its own
-  files" (build kit; **Move to Applications**, **Open Privacy Settings**, **Try Again**) or "… read the disc image"
+  files" (build kit; **Open Privacy Settings**, **Try Again**) or "… read the disc image"
   (**Choose Disc Image…**, **Open Privacy Settings**, **Try Again**). The build driver reports a refused read as
   `[denied] <errno> <path>`; python's own "can't open file" is recognized too. **Try Again** really retries: it
   opens the image or copies the kit again and, if macOS still refuses, says "Checked again at <time>: still no
@@ -168,23 +162,24 @@ What the app does now (`tools/macos/Shared/AppAccess.swift`, `tools/macos/Player
 - With ad-hoc signing every new version is a new app to macOS privacy, so an answer given to an old version does
   not carry over.
 
-Tests: `tests/release_access_tests.py` (classification, translocation by path, the move with a quarantined file,
+Tests: `tests/release_access_tests.py` (classification, translocation by path, no Trash/Apple-event/move calls in
+the app sources, an app in a stand-in Downloads building in place with its bundle untouched,
 the extractor reading a handed-over image from a folder it cannot open, the driver's `[denied]` line, and the real
 windows in background mode with a chmod-ed stand-in Downloads folder: refused, still refused after Try Again, then
-going on after access returns; the Move screen comes before any kit read; a finished build waits on the Play window).
-Snapshots: `out/validation/release-access/` (KEEP): `move-offer-downloads.png`, `denied-disc-image.png`,
+going on after access returns; a finished build waits on the Play window).
+Snapshots: `out/validation/release-access/` (KEEP): `denied-disc-image.png`,
 `denied-build-kit.png`, `play-ready-after-build.png`.
 
 **Manual check (a real privacy prompt cannot be automated):**
 
 1. Download the release zip in Safari (so it is quarantined), let it unzip in `~/Downloads`, approve it with Open
-   Anyway, open it from Downloads (from a script: `open "Fable II.app" --args -ApplePersistenceIgnoreState YES`). Expect the Move to Applications screen before any other window.
-2. Click **Move to Applications**: Fable II reopens from `/Applications` (the Downloads copy is in the Trash),
-   with no Gatekeeper question and no Downloads prompt during the build.
-3. Start Fresh, move the app back to Downloads by hand, open it, choose **Not Now** and a disc image in Downloads.
+   Anyway, open it from Downloads (from a script: `open "Fable II.app" --args -ApplePersistenceIgnoreState YES`). Expect
+   the welcome window first (no Move offer), no Downloads prompt through the build, and the app still in Downloads.
+2. Drag Fable II to Applications and open it there: the same, with no Gatekeeper question for this copy.
+3. Start Fresh, open the copy in Downloads again and choose a disc image in Downloads.
    If macOS asks about Downloads, click **Don't Allow**: the build or the image window explains it; **Try Again**
-   says "still no access"; **Move to Applications** or turning Fable II on in Files and Folders (then Try Again)
-   continues. For the image, **Choose Disc Image…** with the same file continues even with access off.
+   says "still no access"; turning Fable II on in Files and Folders (then Try Again) continues. For the image,
+   **Choose Disc Image…** with the same file continues even with access off.
 4. Reset the answer afterwards: `tccutil reset SystemPolicyDownloadsFolder org.fable2recomp.metal.release`.
 
 The build environment is cleaned: no `FABLE2_*`, `REXGLUE_*` or `CMAKE_*` variables from the caller, PATH is
@@ -266,8 +261,6 @@ test never touches system folders). CLI (same code): `FableIIPlayer --start-fres
 | `FABLE2_TEST_AUTO_INSTALL_TOOLS=1` | press Install at once |
 | `FABLE2_TEST_PROTECTED_DIRS=<dir>[:…]` | these folders count as Downloads (a chmod-ed one then shows the privacy texts) |
 | `FABLE2_TEST_RETRY_WHEN=<file>` | while access is refused, press Try Again when the file appears (it is removed) |
-| `FABLE2_TEST_APPLICATIONS_DIR`, `FABLE2_TEST_TRASH_DIR` | where Move copies to and what counts as the Trash |
-| `FABLE2_TEST_OFFER_MOVE=1`, `FABLE2_TEST_AUTO_MOVE=1`, `FABLE2_TEST_MOVE_NO_RELAUNCH=1` | offer Move in any app, press it, quit instead of opening the copy |
 | `FABLE2_GAME_BUILD_ARGS="…"` | extra driver arguments: `--measure`, `--jobs N`, `--ignore-system-cmake`, `--cmake-url URL`, `--clean`, `--debug-info line-tables-only` and `--register-first` (the build before 2026-10-15) |
 
 ## Build time (2026-10-15)
