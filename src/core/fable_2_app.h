@@ -282,7 +282,7 @@ class Fable2App : public rex::ReXApp {
   }
 
   void OnPostSetup() override {
-    // Controller hotkeys: Share = quick save, View = screenshot
+    // Controller hotkeys: bindable turbo / quick save / screenshot
     // (src/input/controller_hotkeys.h). The SDL gamepad subsystem is up once
     // the input system is attached to the window.
     fable2::padkeys::SetDefaultScreenshotDir(game_data_root() / "Screenshots");

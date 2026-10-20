@@ -12,7 +12,7 @@ The playtest copy lives in out/playtest/:
                  The game writes data/scripts/recomp/recomp_notify_text.lua at runtime and every build
                  restages data/scripts/recomp + data/dir.manifest, so the playtest copy must not share
                  the checkout's data/ folder with agent builds. game-data/Screenshots links to the
-                 checkout's Screenshots/ folder (controller View button).
+                 checkout's Screenshots/ folder (controller screenshot button).
   playtest.json  version string, git sha, source build hash, freeze time
 Agent builds only replace out/build/...; they never touch out/playtest. Saves, settings and the
 game's own pipeline archive stay in the live state folder (Application Support), which only

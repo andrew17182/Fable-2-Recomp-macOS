@@ -101,7 +101,7 @@ REXCVAR_DEFINE_STRING(
     screenshot_dir,
     "",
     "Input",
-    "Folder for controller View-button screenshots (PNG). Empty = Screenshots/ "
+    "Folder for controller screenshots (PNG). Empty = Screenshots/ "
     "in the game data root. The FABLE2_SCREENSHOT_DIR environment variable wins.");
 
 REX_DEFINE_APP(fable_2, Fable2App::Create)

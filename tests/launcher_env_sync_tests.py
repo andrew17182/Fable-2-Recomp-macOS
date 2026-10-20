@@ -47,6 +47,8 @@ CASES = [
       'hotkeyBinds': {'bind_settings': 'F4', 'bind_console': 'None'}, 'viewButtonToGame': True},
      ['--keyboard-map', 'Return:Pause,E:A,LMB:X', '--mouse-look', '--mouse-look-scale', '700',
       '--bind', 'bind_settings=F4', '--bind', 'bind_console=None', '--view-button-to-game']),
+    # Controller hotkeys (FABLE2_PAD_*).
+    ({'padTurbo': 'rs', 'padScreenshot': 'none'}, ['--pad-turbo', 'rs', '--pad-screenshot', 'none']),
 ]
 # Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.
 PLAYER_ONLY = {'FABLE2_PLAYER_LAUNCH': '1'}

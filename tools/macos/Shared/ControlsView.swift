@@ -12,8 +12,9 @@
 //   (REX_BIND_*; the settings key is also mouse_unlock_key). F5/F6/F7/F9 and 5/6/7 are fixed in
 //   src/input/window_keyboard_mouse.h and only listed.
 // - Controllers: macOS remaps controller buttons system-wide (System Settings > Game Controllers); this
-//   tab links there and lists connected controllers (GameController framework). View-button switch:
-//   FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h).
+//   tab links there and lists connected controllers (GameController framework). Controller hotkeys
+//   (turbo, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_QUICKSAVE,
+//   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h).
 import AppKit
 import GameController
 import SwiftUI
@@ -234,7 +235,59 @@ struct Hotkey: Identifiable {
   let keys: String
   let detail: String
   var cvar: String? = nil
+  /// The controller hotkey with the same action (its button is shown next to the keys).
+  var pad: PadAction? = nil
   var id: String { cvar ?? title }
+}
+
+/// Controller buttons a controller hotkey can use (src/input/controller_hotkeys.h).
+enum PadButton: String, CaseIterable, Identifiable {
+  case none, view, share, ls, rs
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .none: return "None"
+    case .view: return "View"
+    case .share: return "Share"
+    case .ls: return "Left stick click"
+    case .rs: return "Right stick click"
+    }
+  }
+}
+
+/// Controller hotkeys: one button each (FABLE2_PAD_*).
+enum PadAction: String, CaseIterable, Identifiable {
+  case turbo, quickSave, screenshot
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .turbo: return "Turbo"
+    case .quickSave: return "Quick save"
+    case .screenshot: return "Screenshot"
+    }
+  }
+  var defaultButton: PadButton {
+    switch self {
+    case .turbo: return .none
+    case .quickSave: return .share
+    case .screenshot: return .view
+    }
+  }
+  var envName: String {
+    switch self {
+    case .turbo: return "FABLE2_PAD_TURBO"
+    case .quickSave: return "FABLE2_PAD_QUICKSAVE"
+    case .screenshot: return "FABLE2_PAD_SCREENSHOT"
+    }
+  }
+  var storeKey: String { "pad" + rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+  var cliFlag: String {
+    switch self {
+    case .turbo: return "--pad-turbo"
+    case .quickSave: return "--pad-quicksave"
+    case .screenshot: return "--pad-screenshot"
+    }
+  }
 }
 
 enum Hotkeys {
@@ -248,13 +301,13 @@ enum Hotkeys {
   ]
   /// Fixed hotkeys (src/input/window_keyboard_mouse.h, src/input/controller_hotkeys.h, SDL's window menu).
   static let fixed: [Hotkey] = [
-    Hotkey(title: "Quick save", keys: "F5 or 5", detail: "Same as Save and Continue in the pause menu."),
+    Hotkey(title: "Quick save", keys: "F5 or 5", detail: "Same as Save and Continue in the pause menu.", pad: .quickSave),
     Hotkey(title: "Lua script menu", keys: "F6 or 6", detail: "Opens the script selector (or runs f6_lua_path)."),
-    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (General > Turbo speed, Turbo audio, Turbo notice)."),
+    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (General > Turbo speed, Turbo audio, Turbo notice).", pad: .turbo),
     Hotkey(title: "FPS counter", keys: "F9", detail: "Shows or hides the frame-rate counter."),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
     Hotkey(title: "Quit", keys: "⌘Q", detail: "Closes the game (it does not save)."),
-    Hotkey(title: "Controller: screenshot", keys: "View", detail: "Saves a PNG in the Screenshots folder."),
+    Hotkey(title: "Screenshot", keys: "", detail: "Saves a PNG in the Screenshots folder. Controller only.", pad: .screenshot),
   ]
   /// Keys the game also uses as fixed hotkeys (number keys only while no overlay is open).
   static let fixedKeys: [String: String] = [
@@ -273,8 +326,21 @@ struct ControlSettings: Equatable {
   /// Overlay binds by cvar name; a missing entry is the recomp default. "None" unbinds.
   var binds: [String: String] = [:]
   var viewButtonToGame = false
+  /// Controller hotkey buttons; a missing entry is the action's default.
+  var pad: [PadAction: PadButton] = [:]
 
   static let scaleRange = 1...4096
+
+  func padButton(_ action: PadAction) -> PadButton { pad[action] ?? action.defaultButton }
+
+  /// Puts `action` on `button`; another action that had the button gets None.
+  mutating func setPad(_ button: PadButton, for action: PadAction) {
+    if button != .none {
+      for other in PadAction.allCases where other != action && padButton(other) == button { pad[other] = PadButton.none }
+    }
+    pad[action] = button
+    for a in PadAction.allCases where pad[a] == a.defaultButton { pad[a] = nil }
+  }
 
   func bind(_ cvar: String) -> String {
     binds[cvar] ?? Hotkeys.rebindable.first { $0.cvar == cvar }?.keys ?? "None"
@@ -292,6 +358,9 @@ struct ControlSettings: Equatable {
     if let scale = store.object(forKey: "mouseLookScale") as? Int { c.mouseLookScale = scale }
     if let binds = store.object(forKey: "hotkeyBinds") as? [String: String] { c.binds = binds }
     if let on = store.object(forKey: "viewButtonToGame") as? Bool { c.viewButtonToGame = on }
+    for action in PadAction.allCases {
+      if let raw = store.string(forKey: action.storeKey), let button = PadButton(rawValue: raw) { c.pad[action] = button }
+    }
     return c
   }
 
@@ -301,6 +370,9 @@ struct ControlSettings: Equatable {
     if mouseLookScale != old.mouseLookScale { store.set(mouseLookScale, forKey: "mouseLookScale") }
     if binds != old.binds { store.set(binds, forKey: "hotkeyBinds") }
     if viewButtonToGame != old.viewButtonToGame { store.set(viewButtonToGame, forKey: "viewButtonToGame") }
+    for action in PadAction.allCases where padButton(action) != old.padButton(action) {
+      store.set(padButton(action).rawValue, forKey: action.storeKey)
+    }
   }
 
   /// NAME=VALUE items (part of LaunchSettings.settingsEnvironment). The map and mouse look are always explicit
@@ -315,6 +387,10 @@ struct ControlSettings: Equatable {
       if cvar == "bind_settings" { env.append("REX_MOUSE_UNLOCK_KEY=\(key == "None" ? "" : key)") }
     }
     if viewButtonToGame { env.append("FABLE2_VIEW_BUTTON_TO_GAME=1") }
+    // Controller hotkeys: all three once any differs, so the game never mixes them with its defaults.
+    if PadAction.allCases.contains(where: { padButton($0) != $0.defaultButton }) {
+      for action in PadAction.allCases { env.append("\(action.envName)=\(padButton(action).rawValue)") }
+    }
     return env
   }
 
@@ -322,7 +398,7 @@ struct ControlSettings: Equatable {
 
   /// Dev Launcher --launch options: --keyboard-map MAP, --mouse-look / --no-mouse-look, --mouse-look-scale N,
   /// --bind CVAR=KEY (bind_console, bind_settings, bind_debug_overlay, bind_achievements),
-  /// --view-button-to-game / --no-view-button-to-game.
+  /// --view-button-to-game / --no-view-button-to-game, --pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs.
   mutating func applyCLI(_ arg: String, _ value: String?) -> CLIResult {
     switch arg {
     case "--keyboard-map":
@@ -346,7 +422,12 @@ struct ControlSettings: Equatable {
       binds[parts[0]] = parts[1]; return .ok(consumed: 1)
     case "--view-button-to-game": viewButtonToGame = true; return .ok(consumed: 0)
     case "--no-view-button-to-game": viewButtonToGame = false; return .ok(consumed: 0)
-    default: return .notMine
+    default:
+      guard let action = PadAction.allCases.first(where: { $0.cliFlag == arg }) else { return .notMine }
+      guard let button = value.flatMap(PadButton.init(rawValue:)) else {
+        return .error("\(arg) expects none|view|share|ls|rs")
+      }
+      setPad(button, for: action); return .ok(consumed: 1)
     }
   }
 }
@@ -677,7 +758,7 @@ struct ControlsTabContent: View {
             Text(hotkey.detail).font(.caption).foregroundStyle(.secondary)
           }
           Spacer()
-          Text(hotkey.keys).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
+          Text(fixedKeys(hotkey)).font(.system(.callout, design: .rounded)).foregroundStyle(.secondary)
         }
       }
     } header: {
@@ -691,6 +772,13 @@ struct ControlsTabContent: View {
           .disabled(controls.binds.allSatisfy { cvar, key in Hotkeys.rebindable.first { $0.cvar == cvar }?.keys == key })
       }
     }
+  }
+
+  /// A fixed hotkey's keys plus its controller button, if bound.
+  private func fixedKeys(_ hotkey: Hotkey) -> String {
+    let button = hotkey.pad.map(controls.padButton) ?? PadButton.none
+    let parts = [hotkey.keys, button == .none ? "" : button.title].filter { !$0.isEmpty }
+    return parts.isEmpty ? "None" : parts.joined(separator: ", ")
   }
 
   private func hotkeyRow(_ hotkey: Hotkey) -> some View {
@@ -756,16 +844,32 @@ struct ControlsTabContent: View {
         Text(controllers.names.isEmpty ? "None" : controllers.names.joined(separator: ", "))
           .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
       }
+      ForEach(PadAction.allCases) { action in
+        FixedPicker(action.title, selection: Binding(
+          get: { controls.padButton(action) },
+          set: { model.settings.controls.setPad($0, for: action) })) {
+          ForEach(PadButton.allCases) { Text($0.title).tag($0) }
+        }
+        .help(variant == .dev ? "\(action.envName) (src/input/controller_hotkeys.h). A bound button no longer reaches the game." : "A bound button no longer reaches the game.")
+      }
       Toggle(isOn: $model.settings.controls.viewButtonToGame) {
         VStack(alignment: .leading, spacing: 2) {
           Text("View button reaches the game as Back")
-          Text("Off: View takes a screenshot only. On: it also acts as Back (Select) in the game.")
+          Text("When View has a hotkey, it also acts as Back. Unbound, it always does.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
       }
       .help(variant == .dev ? "FABLE2_VIEW_BUTTON_TO_GAME=1 when on (src/input/controller_hotkeys.h)." : "")
     } header: {
       Text("Game controllers")
+    } footer: {
+      HStack {
+        Text("Picking a button another hotkey uses moves it here.")
+          .font(.caption).foregroundStyle(.secondary)
+        Spacer()
+        Button("Restore Defaults") { model.settings.controls.pad = [:] }
+          .disabled(model.settings.controls.pad.isEmpty)
+      }
     }
   }
 }

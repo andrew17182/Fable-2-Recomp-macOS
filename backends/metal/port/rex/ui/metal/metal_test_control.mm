@@ -90,6 +90,8 @@ constexpr Sint32 kTestPadPrepareBit = 0x20000;
 int PadButton(const std::string& name) {
   if (name == "share") return SDL_GAMEPAD_BUTTON_MISC1;
   if (name == "view") return SDL_GAMEPAD_BUTTON_BACK;
+  if (name == "ls") return SDL_GAMEPAD_BUTTON_LEFT_STICK;
+  if (name == "rs") return SDL_GAMEPAD_BUTTON_RIGHT_STICK;
   return -1;
 }
 bool SendPad(int button, Sint32 flags) {
@@ -423,7 +425,7 @@ void StartMetalTestControl(WindowedAppContext* context, Presenter* presenter) {
               if (!ok) result = "error UI unavailable";
             }
           } else if (command == "physical") {
-            // `physical key <name>` / `physical pad share|view` (see SendPhysicalKey above).
+            // `physical key <name>` / `physical pad share|view|ls|rs` (see SendPhysicalKey above).
             std::string kind = argument, name = rest;
             bool sent = false;
             if (kind == "key" && Key(name) != SDL_SCANCODE_UNKNOWN) {
@@ -450,7 +452,7 @@ void StartMetalTestControl(WindowedAppContext* context, Presenter* presenter) {
                 [window performClose:nil];
               });
               std::filesystem::remove(entry.path()); continue;
-            } else result = "error usage: physical key <name> | physical pad share|view | physical close-window|quit";
+            } else result = "error usage: physical key <name> | physical pad share|view|ls|rs | physical close-window|quit";
           } else if (command == "ping") result = "ok ready";
           Write(response, result);
           std::filesystem::remove(entry.path());

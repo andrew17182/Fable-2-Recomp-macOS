@@ -1,37 +1,52 @@
-// fable_2 - controller hotkeys: Share = quick save, View = screenshot.
+// fable_2 - controller hotkeys: bindable turbo / quick save / screenshot.
 //
-// - Share (SDL_GAMEPAD_BUTTON_MISC1 on Xbox Series controllers) makes the same
-//   native quick save as F5 (fable2::quicksave::request, src/core/fable2_quick_save.h:
-//   game thread, pause-menu "Save and Continue", 3 s cooldown).
-// - View (SDL_GAMEPAD_BUTTON_BACK, the 360 "Back") saves the game's rendered frame
-//   as a PNG: <dir>/Fable II YYYY-MM-DD HH-MM-SS.png. <dir> is FABLE2_SCREENSHOT_DIR,
-//   else the `screenshot_dir` cvar, else <game_data_root>/Screenshots.
-// - View no longer reaches the game as Back: BackFilterDriver wraps the SDK's SDL
-//   gamepad driver and clears X_INPUT_GAMEPAD_BACK from its state and keystrokes.
-//   FABLE2_VIEW_BUTTON_TO_GAME=1 lets Back through again (the screenshot still fires).
+// Three actions, each bound to one controller button (or none):
+//   FABLE2_PAD_TURBO       default none   - same toggle as F7 (fable2::turbo::Toggle)
+//   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as F5
+//                                           (fable2::quicksave::request, src/core/fable2_quick_save.h)
+//   FABLE2_PAD_SCREENSHOT  default view   - saves the game's rendered frame as a PNG:
+//                                           <dir>/Fable II YYYY-MM-DD HH-MM-SS.png. <dir> is
+//                                           FABLE2_SCREENSHOT_DIR, else the `screenshot_dir` cvar,
+//                                           else <game_data_root>/Screenshots.
+// Buttons: none | view (SDL BACK, the 360 Back) | share (SDL MISC1) | ls | rs (stick clicks).
+// The launcher sets these (tools/macos/Shared/ControlsView.swift, Controls > Game controllers).
+// One button acts for one action: an explicitly set action takes its button first, and a
+// default that lands on a taken button is dropped (FABLE2_PAD_TURBO=view alone moves View
+// from screenshot to turbo). Two explicit actions on one button: the first in the list wins.
+//
+// - A bound button no longer reaches the game: BackFilterDriver wraps the SDK's SDL
+//   gamepad driver and clears its XInput bit (view -> BACK, ls -> LEFT_THUMB,
+//   rs -> RIGHT_THUMB; share has no XInput bit) from its state and keystrokes.
+//   An unbound button reaches the game as usual (unbound View = Back again).
+//   FABLE2_VIEW_BUTTON_TO_GAME=1 lets Back through even while View is bound (the action still fires).
 //
 // Buttons are read straight from SDL gamepad events through an SDL event watch
 // (UI thread), so they work for any connected controller and act once per press
-// (down edge). Each open is logged once with the controller name and whether it
-// reports MISC1 (Share).
+// (down edge, 300 ms bounce guard). SDL drops pad events while the app is in the
+// background, and a test-only instance (FABLE2_PHYSICAL_INPUT=0) takes only the test
+// channel's virtual pad, the same rules as the keyboard F7. Each open is logged once
+// with the controller name and whether it reports MISC1 (Share).
 //
 // Share on macOS: SDL reads Xbox pads through Apple's GameController framework
 // (SDL "MFi" backend, GUID signature 'm') and maps "Button Share" to MISC1, but the
 // user's Bluetooth Xbox Series pad never produced a MISC1 event. So Share is also
 // read straight from GameController (controller_share_macos.mm: gesture state +
-// pressedChangedHandler on the Share element). Either source triggers the quick
-// save; a second report of the same press within 500 ms is logged and ignored.
-// Diagnostics: each pad's SDL backend/mapping is logged once; every MISC1 down/up
-// from SDL and every GameController Share down/up is logged; FABLE2_PAD_DEBUG=1
-// logs every SDL gamepad and joystick button down/up.
+// pressedChangedHandler on the Share element) while Share is bound. Either source
+// triggers Share's action; a second report of the same press within 500 ms is logged
+// and ignored. With Share unbound the watcher is not installed (macOS keeps its own
+// Share gesture). Diagnostics: each pad's SDL backend/mapping is logged once; every
+// MISC1 down/up from SDL and every GameController Share down/up is logged;
+// FABLE2_PAD_DEBUG=1 logs every SDL gamepad and joystick button down/up.
 //
-// Test channel: metal_test_control.mm `press <session> share|view` pushes
+// Test channel: metal_test_control.mm `press <session> share|view|ls|rs` pushes
 // kTestPadEventType user events. The watch then drives a virtual SDL gamepad
 // (attached on the first such press), so the press travels the real path: SDL
 // gamepad event -> this watch, and SDK SDL driver -> BackFilterDriver -> guest.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -40,6 +55,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <map>
 #include <set>
 #include <string>
 #include <thread>
@@ -59,6 +75,7 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#include "fable2_turbo.h"
 #include "test_background.h"
 
 #ifdef __APPLE__
@@ -101,12 +118,147 @@ inline bool pad_debug() {
   return on;
 }
 
+// ---------------------------------------------------------------------------
+// Bindings (FABLE2_PAD_TURBO / FABLE2_PAD_QUICKSAVE / FABLE2_PAD_SCREENSHOT).
+enum class Action : uint8_t { kNone, kTurbo, kQuickSave, kScreenshot };
+enum Button : int { kView, kShare, kLeftStick, kRightStick, kButtonCount };
+
+inline const char* ActionName(Action a) {
+  switch (a) {
+    case Action::kTurbo: return "turbo";
+    case Action::kQuickSave: return "quick save";
+    case Action::kScreenshot: return "screenshot";
+    default: return "nothing";
+  }
+}
+inline const char* ButtonName(int b) {
+  static constexpr const char* kNames[kButtonCount] = {"View", "Share", "Left stick click",
+                                                       "Right stick click"};
+  return b >= 0 && b < kButtonCount ? kNames[b] : "?";
+}
+// SDL button -> Button, or -1.
+inline int ButtonFromSdl(int sdl_button) {
+  switch (sdl_button) {
+    case SDL_GAMEPAD_BUTTON_BACK: return kView;
+    case SDL_GAMEPAD_BUTTON_MISC1: return kShare;
+    case SDL_GAMEPAD_BUTTON_LEFT_STICK: return kLeftStick;
+    case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return kRightStick;
+    default: return -1;
+  }
+}
+
+struct Bindings {
+  Action by_button[kButtonCount] = {};
+  std::string summary;  // "turbo=none, quick save=Share, screenshot=View"
+  std::vector<std::string> warnings;
+  std::vector<std::string> notes;  // defaults that gave way to a set action
+  Action at(int b) const { return b >= 0 && b < kButtonCount ? by_button[b] : Action::kNone; }
+  int button_of(Action a) const {
+    for (int b = 0; b < kButtonCount; ++b)
+      if (by_button[b] == a) return b;
+    return -1;
+  }
+};
+
+// "none"=-1, a Button, or -2 (invalid).
+inline int ParseButton(std::string v) {
+  for (auto& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
+  if (v == "none" || v == "off" || v.empty()) return -1;
+  if (v == "view" || v == "back") return kView;
+  if (v == "share" || v == "misc1") return kShare;
+  if (v == "ls" || v == "l3" || v == "leftstick") return kLeftStick;
+  if (v == "rs" || v == "r3" || v == "rightstick") return kRightStick;
+  return -2;
+}
+
+inline Bindings ResolveBindings() {
+  struct Slot {
+    Action action;
+    const char* env;
+    int fallback;
+  };
+  const Slot slots[] = {{Action::kTurbo, "FABLE2_PAD_TURBO", -1},
+                        {Action::kQuickSave, "FABLE2_PAD_QUICKSAVE", kShare},
+                        {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", kView}};
+  Bindings out;
+  int chosen[3];
+  bool explicit_set[3];
+  for (int i = 0; i < 3; ++i) {
+    const char* env = std::getenv(slots[i].env);
+    explicit_set[i] = env && *env;
+    chosen[i] = slots[i].fallback;
+    if (!explicit_set[i]) continue;
+    const int parsed = ParseButton(env);
+    if (parsed == -2) {
+      out.warnings.push_back(std::format("ignoring {}='{}' (none|view|share|ls|rs)", slots[i].env, env));
+      explicit_set[i] = false;
+    } else {
+      chosen[i] = parsed;
+    }
+  }
+  // Explicit settings first, then defaults on buttons still free.
+  for (int pass = 0; pass < 2; ++pass) {
+    for (int i = 0; i < 3; ++i) {
+      if (explicit_set[i] != (pass == 0) || chosen[i] < 0) continue;
+      Action& slot = out.by_button[chosen[i]];
+      if (slot != Action::kNone) {
+        (pass == 0 ? out.warnings : out.notes)
+            .push_back(std::format("{} on {} dropped: {} has it", ActionName(slots[i].action),
+                                   ButtonName(chosen[i]), ActionName(slot)));
+        continue;
+      }
+      slot = slots[i].action;
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    const int b = out.button_of(slots[i].action);
+    out.summary += std::format("{}{}={}", i ? ", " : "", ActionName(slots[i].action),
+                               b < 0 ? "none" : ButtonName(b));
+  }
+  return out;
+}
+
+inline const Bindings& bindings() {
+  static const Bindings b = ResolveBindings();
+  return b;
+}
+
+// XInput bits / keystroke keys the guest must not see (bound buttons; Back stays with
+// FABLE2_VIEW_BUTTON_TO_GAME=1).
+inline uint16_t RemovedGuestButtons() {
+  static const uint16_t mask = [] {
+    const auto& b = bindings();
+    uint16_t m = 0;
+    if (b.at(kView) != Action::kNone && !view_to_game()) m |= rex::input::X_INPUT_GAMEPAD_BACK;
+    if (b.at(kLeftStick) != Action::kNone) m |= rex::input::X_INPUT_GAMEPAD_LEFT_THUMB;
+    if (b.at(kRightStick) != Action::kNone) m |= rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB;
+    return m;
+  }();
+  return mask;
+}
+// Bound XInput bits (removed or, for Back with FABLE2_VIEW_BUTTON_TO_GAME=1, passed): logged per press.
+inline uint16_t BoundGuestButtons() {
+  const auto& b = bindings();
+  uint16_t m = 0;
+  if (b.at(kView) != Action::kNone) m |= rex::input::X_INPUT_GAMEPAD_BACK;
+  if (b.at(kLeftStick) != Action::kNone) m |= rex::input::X_INPUT_GAMEPAD_LEFT_THUMB;
+  if (b.at(kRightStick) != Action::kNone) m |= rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB;
+  return m;
+}
+inline bool RemovedKeystroke(uint16_t vk) {
+  const uint16_t m = RemovedGuestButtons();
+  using VK = rex::ui::VirtualKey;
+  return ((m & rex::input::X_INPUT_GAMEPAD_BACK) && vk == uint16_t(VK::kXInputPadBack)) ||
+         ((m & rex::input::X_INPUT_GAMEPAD_LEFT_THUMB) && vk == uint16_t(VK::kXInputPadLThumbPress)) ||
+         ((m & rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB) && vk == uint16_t(VK::kXInputPadRThumbPress));
+}
+
 namespace detail {
 inline void OnSdkDevicesChanged();
 }
 
 // ---------------------------------------------------------------------------
-// Back filter around the SDK SDL driver.
+// Filter around the SDK SDL driver: bound buttons do not reach the guest.
 class BackFilterDriver final : public rex::input::InputDriver {
  public:
   explicit BackFilterDriver(std::unique_ptr<rex::input::InputDriver> inner)
@@ -132,20 +284,23 @@ class BackFilterDriver final : public rex::input::InputDriver {
     const auto result = inner_->GetDeviceState(id, out_state);
     if (result != X_ERROR_SUCCESS || !out_state) return result;
     const uint16_t buttons = out_state->gamepad.buttons;
-    const bool back = (buttons & rex::input::X_INPUT_GAMEPAD_BACK) != 0;
-    if (back && !view_to_game()) {
-      out_state->gamepad.buttons.set(
-          uint16_t(buttons & ~uint16_t(rex::input::X_INPUT_GAMEPAD_BACK)));
-    }
-    // One line per press, so a log shows what the guest got.
+    const uint16_t removed = RemovedGuestButtons();
+    if (buttons & removed) out_state->gamepad.buttons.set(uint16_t(buttons & ~removed));
+    // One line per press of a bound button, so a log shows what the guest got.
+    const uint16_t held = buttons & BoundGuestButtons();
     std::lock_guard lock(mutex_);
-    const bool was = back_down_.count(uint64_t(id)) != 0;
-    if (back && !was) {
-      back_down_.insert(uint64_t(id));
-      REXLOG_INFO("[pad-hotkeys] guest poll: Back held on SDL pad device {} -> {}", uint64_t(id),
-                  view_to_game() ? "passed to the game" : "removed (not sent to the game)");
-    } else if (!back && was) {
-      back_down_.erase(uint64_t(id));
+    uint16_t& was = held_[uint64_t(id)];
+    const uint16_t pressed = uint16_t(held & ~was);
+    was = held;
+    for (const uint16_t bit : {uint16_t(rex::input::X_INPUT_GAMEPAD_BACK),
+                               uint16_t(rex::input::X_INPUT_GAMEPAD_LEFT_THUMB),
+                               uint16_t(rex::input::X_INPUT_GAMEPAD_RIGHT_THUMB)}) {
+      if (!(pressed & bit)) continue;
+      const char* name = bit == rex::input::X_INPUT_GAMEPAD_BACK         ? "Back"
+                         : bit == rex::input::X_INPUT_GAMEPAD_LEFT_THUMB ? "LeftThumb"
+                                                                         : "RightThumb";
+      REXLOG_INFO("[pad-hotkeys] guest poll: {} held on SDL pad device {} -> {}", name, uint64_t(id),
+                  (removed & bit) ? "removed (not sent to the game)" : "passed to the game");
     }
     return result;
   }
@@ -159,12 +314,11 @@ class BackFilterDriver final : public rex::input::InputDriver {
   }
   rex::X_RESULT GetDeviceKeystroke(rex::input::DeviceId id, uint32_t flags,
                                    rex::input::X_INPUT_KEYSTROKE* out) override {
-    // Drop Back keystrokes (down, repeat and up); return the next one instead.
+    // Drop keystrokes (down, repeat and up) of removed buttons; return the next one instead.
     for (int i = 0; i < 64; ++i) {
       const auto result = inner_->GetDeviceKeystroke(id, flags, out);
-      if (result != X_ERROR_SUCCESS || !out || view_to_game()) return result;
-      if (uint16_t(out->virtual_key) != uint16_t(rex::ui::VirtualKey::kXInputPadBack))
-        return result;
+      if (result != X_ERROR_SUCCESS || !out || !RemovedGuestButtons()) return result;
+      if (!RemovedKeystroke(uint16_t(out->virtual_key))) return result;
     }
     return X_ERROR_EMPTY;
   }
@@ -176,7 +330,7 @@ class BackFilterDriver final : public rex::input::InputDriver {
   std::unique_ptr<rex::input::InputDriver> inner_;
   size_t last_count_ = 0;
   std::mutex mutex_;
-  std::set<uint64_t> back_down_;  // SDL pad device ids with Back held
+  std::map<uint64_t, uint16_t> held_;  // SDL pad device id -> bound buttons held
 };
 
 // ---------------------------------------------------------------------------
@@ -302,7 +456,7 @@ struct State {
   SDL_Joystick* virtual_joystick = nullptr;
   std::string saved_background_hint;
   bool background_hint_forced = false;
-  std::chrono::steady_clock::time_point last_shot{};
+  std::chrono::steady_clock::time_point last_press[kButtonCount]{};  // bounce guard
 };
 inline State& state() {
   static State s;
@@ -336,10 +490,12 @@ inline void LogButtons(SDL_JoystickID id) {
   const char* name = SDL_GetGamepadName(pad);
   REXLOG_INFO(
       "[pad-hotkeys] controller \"{}\" (id {}): Share/MISC1 reported: {}; View/Back reported: {}. "
-      "Share = quick save, View = screenshot{}",
+      "{}{}",
       name ? name : "?", uint32_t(id), SDL_GamepadHasButton(pad, SDL_GAMEPAD_BUTTON_MISC1) ? "yes" : "no",
-      SDL_GamepadHasButton(pad, SDL_GAMEPAD_BUTTON_BACK) ? "yes" : "no",
-      view_to_game() ? " (Back also passed to the game)" : " (Back not passed to the game)");
+      SDL_GamepadHasButton(pad, SDL_GAMEPAD_BUTTON_BACK) ? "yes" : "no", bindings().summary,
+      bindings().at(kView) == Action::kNone ? " (View reaches the game as Back)"
+      : view_to_game()                       ? " (Back also passed to the game)"
+                                             : " (Back not passed to the game)");
   // Which SDL backend reads the pad: GUID byte 14 is the driver signature.
   const SDL_GUID guid = SDL_GetGamepadGUIDForID(id);
   char guid_text[64] = {};
@@ -368,8 +524,34 @@ inline void OnSdkDevicesChanged() {
   });
 }
 
-// Share from either source (SDL MISC1 or GameController). One quick save per
-// press: a report within 500 ms of the last accepted one is the same press.
+// Runs a bound action (UI thread, from the SDL watch or the GameController handler).
+inline void Dispatch(Action action, const std::string& what) {
+  auto& s = state();
+  switch (action) {
+    case Action::kNone:
+      if (pad_debug()) REXLOG_INFO("[pad-hotkeys] {} pressed -> nothing (not bound)", what);
+      return;
+    case Action::kTurbo:
+      REXLOG_INFO("[pad-hotkeys] {} pressed -> turbo", what);
+      // Same toggle as F7; its own UI task, outside the SDL event watch.
+      if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::Toggle(); }))
+        REXLOG_WARN("[pad-hotkeys] turbo skipped: UI thread unavailable");
+      return;
+    case Action::kQuickSave:
+      REXLOG_INFO("[pad-hotkeys] {} pressed -> quick save", what);
+      fable2::quicksave::request();
+      return;
+    case Action::kScreenshot:
+      REXLOG_INFO("[pad-hotkeys] {} pressed -> screenshot", what);
+      // Not inside the SDL event watch: run the GPU readback as its own UI task.
+      if (!s.context || !s.context->CallInUIThreadDeferred([] { TakeScreenshot(); }))
+        REXLOG_WARN("[pad-hotkeys] screenshot skipped: UI thread unavailable");
+      return;
+  }
+}
+
+// Share from either source (SDL MISC1 or GameController). One action per press:
+// a report within 500 ms of the last accepted one is the same press.
 inline void ShareDown(const std::string& source) {
   static std::atomic<int64_t> last_ms{-1000000};
   const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -381,23 +563,23 @@ inline void ShareDown(const std::string& source) {
     return;
   }
   last_ms.store(now);
-  REXLOG_INFO("[pad-hotkeys] Share pressed ({}) -> quick save", source);
-  fable2::quicksave::request();
+  Dispatch(bindings().at(kShare), std::format("Share ({})", source));
 }
 
-inline void OnButtonDown(SDL_JoystickID which, int button) {
-  if (button == SDL_GAMEPAD_BUTTON_MISC1) {
+inline void OnButtonDown(SDL_JoystickID which, int sdl_button) {
+  const int button = ButtonFromSdl(sdl_button);
+  if (button < 0) return;
+  if (button == kShare) {
     ShareDown(std::format("SDL MISC1, pad {}", uint32_t(which)));
-  } else if (button == SDL_GAMEPAD_BUTTON_BACK) {
-    auto& s = state();
-    const auto now = std::chrono::steady_clock::now();
-    if (now - s.last_shot < std::chrono::milliseconds(300)) return;  // bounce guard
-    s.last_shot = now;
-    REXLOG_INFO("[pad-hotkeys] View pressed on pad {} -> screenshot", uint32_t(which));
-    // Not inside the SDL event watch: run the GPU readback as its own UI task.
-    if (!s.context || !s.context->CallInUIThreadDeferred([] { TakeScreenshot(); }))
-      REXLOG_WARN("[pad-hotkeys] screenshot skipped: UI thread unavailable");
+    return;
   }
+  const Action action = bindings().at(button);
+  if (action == Action::kNone) return;  // reaches the game as a normal button
+  auto& s = state();
+  const auto now = std::chrono::steady_clock::now();
+  if (now - s.last_press[button] < std::chrono::milliseconds(300)) return;  // bounce guard
+  s.last_press[button] = now;
+  Dispatch(action, std::format("{} on pad {}", ButtonName(button), uint32_t(which)));
 }
 
 // Virtual pad for the test channel. Buttons 0..15 = SDL_GamepadButton SOUTH..MISC1
@@ -539,13 +721,21 @@ inline void Install(rex::ui::WindowedAppContext* context) {
   SDL_JoystickID* ids = SDL_GetGamepads(&count);
   for (int i = 0; ids && i < count; ++i) detail::LogConnected(ids[i]);
   SDL_free(ids);
-  REXLOG_INFO("[pad-hotkeys] installed: Share = quick save, View = screenshot -> {} ({} pad(s) now)",
-              detail::ScreenshotDir().string(), count);
+  const auto& b = bindings();
+  for (const auto& warning : b.warnings) REXLOG_WARN("[pad-hotkeys] {}", warning);
+  for (const auto& note : b.notes) REXLOG_INFO("[pad-hotkeys] default {}", note);
+  REXLOG_INFO("[pad-hotkeys] installed: {}; screenshots -> {} ({} pad(s) now){}", b.summary,
+              detail::ScreenshotDir().string(), count,
+              b.at(kView) == Action::kNone ? "; View reaches the game as Back" : "");
 #ifdef __APPLE__
   // Share straight from GameController (main thread = this UI thread). Not on a test-only
   // instance (FABLE2_PHYSICAL_INPUT=0): GameController sees controllers whatever SDL does.
   if (!fable2::testbg::physical_input()) {
     REXLOG_INFO("[pad-hotkeys] physical input off: GameController Share watcher not installed");
+    return;
+  }
+  if (b.at(kShare) == Action::kNone) {
+    REXLOG_INFO("[pad-hotkeys] Share not bound: GameController Share watcher not installed");
     return;
   }
   gcshare::Install(
@@ -554,7 +744,7 @@ inline void Install(rex::ui::WindowedAppContext* context) {
         REXLOG_INFO("[pad-hotkeys] GameController Share {} on \"{}\" (app active={})",
                     down ? "down" : "up", name ? name : "?", app_active);
         if (!down) return;
-        // Same focus rule as SDL pad events: no saves from a background window.
+        // Same focus rule as SDL pad events: no actions from a background window.
         if (!app_active) {
           REXLOG_INFO("[pad-hotkeys] GameController Share ignored: app not active");
           return;

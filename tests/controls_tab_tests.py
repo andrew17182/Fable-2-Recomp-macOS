@@ -146,7 +146,8 @@ var c = ControlSettings()
 var results: [String] = []
 for (arg, value) in [("--keyboard-map", "Return:Pause,e:A"), ("--keyboard-map", "Return:pause"), ("--mouse-look", ""),
                      ("--mouse-look-scale", "5000"), ("--mouse-look-scale", "700"), ("--bind", "bind_settings=F4"),
-                     ("--bind", "bind_console=Nope"), ("--view-button-to-game", ""), ("--other", "")] {
+                     ("--bind", "bind_console=Nope"), ("--view-button-to-game", ""), ("--pad-turbo", "view"),
+                     ("--pad-quicksave", "bogus"), ("--other", "")] {
   switch c.applyCLI(arg, value) {
   case .notMine: results.append("notMine")
   case .ok(let n): results.append("ok\(n)")
@@ -154,6 +155,15 @@ for (arg, value) in [("--keyboard-map", "Return:Pause,e:A"), ("--keyboard-map", 
   }
 }
 out["cli"] = results
+var pads = ControlSettings()
+out["padDefault"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
+pads.setPad(.ls, for: .turbo)
+out["padLs"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
+pads.setPad(.share, for: .turbo)  // Share moves from quick save to turbo
+out["padMove"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
+pads.setPad(.share, for: .quickSave)
+pads.setPad(.none, for: .turbo)
+out["padBack"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") } + [pads.pad.isEmpty ? "empty" : "set"]
 out["envCLI"] = c.environment
 let store = PlistSettingsStore(path: CommandLine.arguments[1])
 var s = LaunchSettings()
@@ -218,10 +228,28 @@ class ControlsHarnessTests(unittest.TestCase):
     def test_environment(self):
         self.assertEqual(self.out['envDefault'], [
             'REX_KEYBOARD_GAMEPAD_MAP=' + self.out['defaultMap'], 'REX_MOUSE_LOOK=false', 'REX_MOUSE_LOOK_SCALE=256'])
-        self.assertEqual(self.out['cli'], ['error', 'ok1', 'ok0', 'error', 'ok1', 'ok1', 'error', 'ok0', 'notMine'])
+        self.assertEqual(self.out['cli'], ['error', 'ok1', 'ok0', 'error', 'ok1', 'ok1', 'error', 'ok0', 'ok1', 'error',
+                                           'notMine'])
+        # --pad-turbo view takes View from the screenshot.
         self.assertEqual(self.out['envCLI'], [
             'REX_KEYBOARD_GAMEPAD_MAP=Return:pause', 'REX_MOUSE_LOOK=true', 'REX_MOUSE_LOOK_SCALE=700',
-            'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1'])
+            'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1',
+            'FABLE2_PAD_TURBO=view', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none'])
+
+    def test_controller_hotkeys(self):
+        self.assertEqual(self.out['padDefault'], [])
+        self.assertEqual(self.out['padLs'], ['FABLE2_PAD_TURBO=ls', 'FABLE2_PAD_QUICKSAVE=share',
+                                             'FABLE2_PAD_SCREENSHOT=view'])
+        self.assertEqual(self.out['padMove'], ['FABLE2_PAD_TURBO=share', 'FABLE2_PAD_QUICKSAVE=none',
+                                               'FABLE2_PAD_SCREENSHOT=view'])
+        self.assertEqual(self.out['padBack'], ['empty'])
+
+    def test_game_reads_launcher_names(self):
+        header = (ROOT / 'src/input/controller_hotkeys.h').read_text()
+        for name in ('FABLE2_PAD_TURBO', 'FABLE2_PAD_QUICKSAVE', 'FABLE2_PAD_SCREENSHOT'):
+            self.assertIn('"%s"' % name, header)
+        for value in ('none', 'view', 'share', 'ls', 'rs'):
+            self.assertIn('"%s"' % value, header)
 
     def test_survives_reload(self):
         self.assertTrue(self.out['persisted'])

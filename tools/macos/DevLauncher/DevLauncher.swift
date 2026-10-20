@@ -23,9 +23,10 @@
 //       memexport-readback, unlock-extras, fps-counter, shader-autolearn, rtt-1x, rt-shrink, ...)
 //       [--keyboard-map KEY:INPUT,...] [--mouse-look|--no-mouse-look] [--mouse-look-scale N]
 //       [--bind bind_console|bind_settings|bind_debug_overlay|bind_achievements=KEY] [--view-button-to-game]
+//       [--pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs]
 //       [--print-args]   print the fable2_dev_session.py arguments as JSON instead of launching
 // With no --pick it uses the choices last made in the window.
-//   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics]
+//   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics] [--scroll bottom]
 //       [--pick ...] [--dev-options on|off] [--dev-options-sequence on,off]
 //       shows the front page, the save library sheet (picker) or a Settings tab (without taking focus), saves the
 //       window to a PNG, quits. Nothing is stored (--dev-options applies to that picture only).
@@ -984,9 +985,27 @@ enum DevSnapshot {
         return
       }
       // Rendering settle time after the data is in (window/sheet animation and layout).
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { write(request) }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        // --scroll bottom: the end of a long Settings tab (e.g. Controls > Game controllers).
+        guard argument(after: "--scroll") == "bottom" else { write(request); return }
+        scrollToBottom()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { write(request) }
+      }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { capture() }
+  }
+
+  /// Scrolls the tallest scroll view in the main window to its end.
+  @MainActor private static func scrollToBottom() {
+    func scrollViews(_ view: NSView) -> [NSScrollView] {
+      (view as? NSScrollView).map { [$0] } ?? [] + view.subviews.flatMap(scrollViews)
+    }
+    guard let content = NSApp.windows.first(where: { $0.title == "Fable II Launcher" || $0.identifier?.rawValue.hasPrefix("main") == true })?.contentView,
+          let scroll = scrollViews(content).max(by: { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }),
+          let document = scroll.documentView else { return }
+    let y = document.isFlipped ? max(0, document.frame.height - scroll.contentView.bounds.height) : 0
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+    scroll.reflectScrolledClipView(scroll.contentView)
   }
 
   @MainActor private static func write(_ request: (path: String, tab: String)) {

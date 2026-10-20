@@ -166,19 +166,21 @@ environment route (below).
   settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
   overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 8); **None** unbinds. Fixed in code
   and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F9 FPS counter, ⌃⌘F full screen
-  (SDL's window menu), ⌘Q quit, controller View (screenshot).
+  (SDL's window menu), ⌘Q quit; the controller hotkeys show their button next to the keys.
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
-  controllers (GameController framework) and has **View button reaches the game as Back**
-  (`FABLE2_VIEW_BUTTON_TO_GAME=1`).
+  controllers (GameController framework), the controller hotkeys (**Turbo**, **Quick save**, **Screenshot**:
+  None / View / Share / Left stick click / Right stick click; see "Controller hotkeys" below) and
+  **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
-settings key). Stored keys: `keyboardMap` (+ `keyboardMapVersion`), `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`
+settings key); a changed controller hotkey adds all three `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
+`mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padQuickSave`, `padScreenshot`
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
-`--view-button-to-game`.
+`--view-button-to-game`, `--pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`.
 
 ### Mouse look (right stick)
 
@@ -240,13 +242,23 @@ Implementation: key handling in `src/input/window_keyboard_mouse.h` (macOS) and
 `MainRenderLoop` hook in `src/diagnostics/fps_meter.h`, and the
 string-build + `RunScript` call in `src/core/fable2_f5_lua.h`.
 
-### Controller: View = screenshot
+### Controller hotkeys
 
-On a controller, **View** (the 360 **Back**) saves the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png`
-in the game data root (override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). View no longer
-reaches the game as Back (`FABLE2_VIEW_BUTTON_TO_GAME=1` restores it; keyboard `M` = Select still
-works). `FABLE2_PAD_DEBUG=1` logs every pad button.
-Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view`.
+Three actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = stick clicks):
+
+| Action | Env | Default |
+|---|---|---|
+| Turbo on/off (same as F7) | `FABLE2_PAD_TURBO` | none |
+| Quick save (same as F5) | `FABLE2_PAD_QUICKSAVE` | share |
+| Screenshot | `FABLE2_PAD_SCREENSHOT` | view |
+
+A screenshot is the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png` in the game data root
+(override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). A bound button no longer reaches the game
+(View = Back, stick clicks = L3/R3); an unbound one does. `FABLE2_VIEW_BUTTON_TO_GAME=1` passes Back
+through while View is bound. One button, one action: a set action takes its button and a default on
+that button is dropped (`FABLE2_PAD_TURBO=view` alone moves View from screenshot to turbo). With Share
+unbound the GameController Share watcher is not installed. `FABLE2_PAD_DEBUG=1` logs every pad button.
+Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view|share|ls|rs`.
 
 ### Frame pacing (macOS)
 

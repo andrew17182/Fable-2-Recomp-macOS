@@ -9,6 +9,8 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   menus and gameplay, 7 is ignored while an overlay captures typing). The SDK
   achievements overlay moved from 7 to 8. Turbo is **off** at every start. A toggle shows "Turbo 2x on" /
   "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
+- Controller: Settings > Controls > Game controllers > **Turbo** puts the same toggle on View, Share or a
+  stick click (`FABLE2_PAD_TURBO=view|share|ls|rs`, default none; docs/reference.md "Controller hotkeys").
 - Speed: launcher front page → **Turbo speed** (slider and stepper, 1.1× to 4.0×
   in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Without a launcher:
   `[patches] turbo_scale` in `fable2_config.toml` (state directory,

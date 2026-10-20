@@ -142,7 +142,7 @@ struct TurboControls: View {
           .monospacedDigit()
       }
     }
-    .help("Game speed while turbo is on. F7 or 7 toggles turbo in game.")
+    .help("Game speed while turbo is on. F7 or 7 toggles turbo; a controller button can too (Controls).")
     FixedPicker("Turbo audio", selection: $model.settings.turboAudio) {
       ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
     }
