@@ -3,8 +3,8 @@
 **Based on [himdo/Fable-2-Recomp](https://github.com/himdo/Fable-2-Recomp).** If you're on Windows or Linux, use that project.
 
 **This fork is mostly AI-generated.** Issues, comments and pull requests are welcome, but they
-will be processed by AI. In other words, don't expect much human interaction. This is mostly my
-own experiment in single developer/AI coding. **Forks are encouraged:** take it wherever you like.
+may be processed by AI. This is mostly my
+own experiment in single developer/AI coding.
 
 A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, with a Metal renderer.
 **It is very much an early work in progress.** Not yet tested all the way to the game's ending.
@@ -50,7 +50,7 @@ If macOS asked to let Fable II access a folder and you clicked **Don't Allow**, 
 choose the disc image again, or turn Fable II on under **System Settings → Privacy & Security → Files and
 Folders**, then click **Try Again**.
 
-First-launch time (after the disc copy, which takes a few seconds to a few minutes):
+Estimated first-launch time (after the disc copy):
 
 | Mac | Build | Shader prep |
 |---|---|---|
@@ -64,8 +64,7 @@ First-launch time (after the disc copy, which takes a few seconds to a few minut
 
 - An Apple Silicon Mac. Auto picks the resolution and frame rate for your GPU (an M3 Pro runs 2×
   uncapped; base chips run 1× at 30 FPS).
-- Xcode (free, App Store) with its Metal Toolchain component. Building from source needs Xcode;
-  playing the downloaded app does not. The setup app checks the rest and can download CMake and the
+- Xcode (free, App Store) with its Metal Toolchain component. Building from source needs Xcode. The setup app checks the rest and can download CMake and the
   Metal Toolchain for you.
 - About 13 GB of free disk space.
 - **Your own copy of Fable II.** The port is tested only with the Platinum Hits disc image, whose
