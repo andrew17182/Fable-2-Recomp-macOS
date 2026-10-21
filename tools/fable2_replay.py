@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Replay guest pad snapshots against observed state transitions (no images)."""
+"""Replay guest pad snapshots against observed state transitions (no images).
+
+Recordings (docs/reference.md "Input recording"): schema 1 (host time only) and schema 2 (adds guest time
+g_us / gdt_us and "speed" events). load_recording validates both and accepts a crash-truncated final line.
+The default replay driver is the game itself (FABLE2_REPLAY_INPUT / control/replay-input.txt), which schedules
+by guest time, so it holds at any turbo speed. This module's Replay class is the old host-clock driver
+(fable2_test_control.py replay --host-clock): exact only when recording and replay both run at 1x."""
 import argparse
 import json
 from pathlib import Path
@@ -12,13 +18,20 @@ def clock_us():
 
 
 def load_recording(path):
-    events = [json.loads(line) for line in Path(path).read_text().splitlines() if line]
+    lines = [line for line in Path(path).read_text().splitlines() if line]
+    events = []
+    for i, line in enumerate(lines):
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            if i == len(lines) - 1: break  # a crash can cut the last line short: the prefix stays valid
+            raise ValueError('Recording line %d is not JSON' % (i + 1))
     if not events or events[0].get('state') != 'AppLaunch' or events[0].get('t_us') != 0:
         raise ValueError('Recording must start with the AppLaunch anchor')
     anchors = {}
     previous_seq, previous_time = -1, -1
     for event in events:
-        if event.get('schema') != 1 or event.get('type') not in ('state', 'key', 'pad', 'recording_end'):
+        if event.get('schema') not in (1, 2) or event.get('type') not in ('state', 'key', 'pad', 'speed', 'recording_end'):
             raise ValueError('Unsupported recording schema/event')
         if not isinstance(event.get('seq'), int) or event['seq'] <= previous_seq:
             raise ValueError('Recording event sequence is not increasing')
@@ -31,6 +44,8 @@ def load_recording(path):
             raise ValueError('Input refers to a missing or future anchor')
         if abs(event['dt_us'] - (event['t_us'] - anchors[event['anchor']]['t_us'])) > 1000:
             raise ValueError('Inconsistent anchor-relative timing')
+        if event['schema'] == 2 and not (isinstance(event.get('g_us'), int) and isinstance(event.get('gdt_us'), int)):
+            raise ValueError('Schema 2 event without guest time')
         if event['type'] == 'pad':
             pad = event.get('pad')
             limits = [(0, 65535), (0, 255), (0, 255)] + [(-32768, 32767)] * 4
@@ -43,8 +58,10 @@ def load_recording(path):
         # EOF is a stop at the last recorded timestamp. Keep this terminal event
         # in memory only: the original trace is never rewritten.
         last = events[-1]
-        events.append(dict(schema=1, seq=last['seq'] + 1, type='recording_end',
-                           t_us=last['t_us'], anchor=last['anchor'], dt_us=last['dt_us']))
+        end = dict(schema=last['schema'], seq=last['seq'] + 1, type='recording_end',
+                   t_us=last['t_us'], anchor=last['anchor'], dt_us=last['dt_us'])
+        if last['schema'] == 2: end.update(g_us=last['g_us'], gdt_us=last['gdt_us'])
+        events.append(end)
     return events
 
 

@@ -112,7 +112,10 @@ class WindowKeyboardMouse final
     Clear();
     Refresh();
   }
-  void OnClosing(rex::ui::UIEvent&) override { Detach(); }
+  void OnClosing(rex::ui::UIEvent&) override {
+    fable2::session::Get().Finish("quit");  // input recording: complete file on a normal quit
+    Detach();
+  }
 
   void OnKeyDown(rex::ui::KeyEvent& event) override {
     fable2::session::Get().Key(uint16_t(event.virtual_key()), true, event.prev_state());

@@ -76,7 +76,10 @@ class SettingsModel: ObservableObject {
 
   init(store: SettingsStore) {
     self.store = store
-    settings = LaunchSettings.load(from: store)
+    var loaded = LaunchSettings.load(from: store)
+    // --snapshot: on/off switches given as --<cli> / --no-<cli> apply to that picture only (never stored).
+    if commandLine.contains("--snapshot") { for arg in commandLine { _ = loaded.applyFlag(arg) } }
+    settings = loaded
     let developer = Self.snapshotDeveloper ?? (store.object(forKey: "developerMode") as? Bool ?? false)
     developerMode = developer
     showUpdatePlaytest = store.object(forKey: "showUpdatePlaytest") as? Bool ?? false
@@ -87,6 +90,12 @@ class SettingsModel: ObservableObject {
 
   /// ⌘, and the Settings button.
   func toggleSettingsPage() { page = page == .launcher ? .settings : .launcher }
+
+  /// The front page's "Recording input" note: Settings > Diagnostics (the setting's tab; General without Dev Options).
+  func openRecordingSetting() {
+    if developerMode { settingsTab = .diagnostics }
+    page = .settings
+  }
 
   func binding(_ path: WritableKeyPath<LaunchSettings, Bool>) -> Binding<Bool> {
     Binding(get: { self.settings[keyPath: path] }, set: { self.settings[keyPath: path] = $0 })
@@ -280,6 +289,17 @@ struct SettingsTabView: View {
         .help("Flight-recorder preset (docs/telemetry-design-20261008.md).")
         ForEach(LaunchSettings.flags(in: .diagnostics).filter { $0.section == "Logging" }) { row($0) }
       }
+      Section {
+        ForEach(LaunchSettings.flags(in: .diagnostics).filter { $0.section == "Input recording" }) { row($0) }
+        HStack {
+          Text("One file per game in logs/recordings.").font(.caption).foregroundStyle(.secondary)
+          Spacer()
+          Button("Show Recordings") { InputRecordings.reveal() }
+            .help(InputRecordings.folder)
+        }
+      } header: {
+        Text("Input recording")
+      }
       section(.diagnostics, "Verify modes")
       Section {
         TextField("Extra environment", text: $model.settings.extraEnv, prompt: Text("NAME=VALUE NAME2=VALUE2"))
@@ -298,6 +318,19 @@ struct SettingsTabView: View {
         }
       }
     }
+  }
+}
+
+/// Where the game writes input recordings (Settings > Diagnostics > Record input): logs/recordings in the state
+/// folder the game uses. Dev Launcher role: the live state (tools/fable2_dev_session.py sets
+/// FABLE2_RECORD_INPUT_PATH there for play sessions); player role: the app's own state folder.
+enum InputRecordings {
+  static var folder: String { (AppRole.devLauncher ? Backend.liveState : Paths.state) + "/logs/recordings" }
+  /// Opens the folder in Finder (created first, so the button always works). Our own Application Support folder:
+  /// no permission prompt.
+  static func reveal() {
+    try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    NSWorkspace.shared.open(URL(fileURLWithPath: folder, isDirectory: true))
   }
 }
 

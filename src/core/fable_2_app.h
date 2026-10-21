@@ -511,6 +511,7 @@ class Fable2App : public rex::ReXApp {
     fable2::fr::Init();
     fable2::fr::InstallLogSink();
     // Start before the window/guest movies: raw inputs and launch anchor are retained.
+    fable2::session::BuildVersion() = FABLE2_VERSION_STRING;
     fable2::session::Get();
     const auto state_dir = fable2::StateDirectory();
     fable2::config::Load(state_dir / "fable2_config.toml");
@@ -791,6 +792,9 @@ class Fable2App : public rex::ReXApp {
     if (archive_flush) archive_flush();
 #endif
     fable2::fr::OnCloseRequested("window close requested");
+    // Input recording (src/diagnostics/fable2_session_journal.h): a normal quit ends the file with
+    // recording_end before the SDK hard-exits (also on the window's OnClosing, window_keyboard_mouse.h).
+    fable2::session::Get().Finish("quit");
     return true;
   }
   void OnWindowFocusChanged(bool focused) override {

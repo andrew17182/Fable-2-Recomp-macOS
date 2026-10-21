@@ -563,6 +563,8 @@ struct LaunchSettings: Equatable {
   var rtShrinkVerify = false
   var nsSpecializeVerify = false
   var texturePrecommitVerify = false
+  /// Input recording (src/diagnostics/fable2_session_journal.h, docs/reference.md "Input recording"). Off by default.
+  var recordInput = false
   var extraEnv = ""
   // Main window
   var build = BuildChoice.latest
@@ -802,6 +804,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "texturePrecommitVerify", path: \.texturePrecommitVerify, cli: "texture-precommit-verify",
          tab: .diagnostics, section: "Verify modes", title: "Verify texture pre-commit",
          detail: "Compares pre-committed texture sources with the shared memory they came from. Slow."),
+    Flag(key: "recordInput", path: \.recordInput, cli: "record-input", tab: .diagnostics, section: "Input recording",
+         title: "Record input",
+         detail: "Saves controller and keyboard input to logs/recordings, one file per game. Replay it with tools/fable2_test_control.py replay."),
   ]
 
   /// Default-on switches that are passed only when turned off (NAME=0), so a default launch has the
@@ -876,6 +881,8 @@ struct LaunchSettings: Equatable {
     (\.texUnchangedVerify, "FABLE2_TEX_UNCHANGED_VERIFY"),
     // docs/ssm-merge-20261015.md (default off: +0.1 ms GPU at 2x on the M5 Max; for bandwidth-bound Macs).
     (\.ssmMerge, "FABLE2_SSM_MERGE"),
+    // Input recording (src/diagnostics/fable2_session_journal.h; the game picks the file name).
+    (\.recordInput, "FABLE2_RECORD_INPUT"),
   ]
 
   static func flags(in tab: SettingsTab) -> [Flag] { flags.filter { $0.tab == tab } }

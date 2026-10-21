@@ -41,6 +41,25 @@ class ReplayTests(unittest.TestCase):
         self.save(events)
         self.assertEqual(replay.load_recording(self.recording),events)
 
+    def test_schema2_guest_time_speed_events_and_crash_prefix(self):
+        # Player recordings (src/diagnostics/fable2_session_journal.h): guest time, speed events, and a final line
+        # cut short by a crash.
+        def ev2(seq,kind,t,g,anchor=0,dt=None,gdt=None,**kw):
+            return dict(schema=2,seq=seq,type=kind,t_us=t,anchor=anchor,dt_us=t if dt is None else dt,g_us=g,
+                        gdt_us=g if gdt is None else gdt,**kw)
+        events=[ev2(0,'state',0,0,state='AppLaunch',meta={'version':'x'}),
+                ev2(1,'speed',50,40,speed=2.0),
+                ev2(2,'state',100,180,anchor=2,dt=0,gdt=0,state='LevelLoaded'),
+                ev2(3,'pad',150,280,anchor=2,dt=50,gdt=100,pad=[4096,0,0,0,0,0,0])]
+        self.recording.write_text(''.join(json.dumps(e)+'\n' for e in events)+'{"schema":2,"seq":4,"ty')
+        loaded=replay.load_recording(self.recording)
+        self.assertEqual(loaded[:4],events)
+        self.assertEqual(loaded[-1]['type'],'recording_end')
+        self.assertEqual(loaded[-1]['gdt_us'],100)
+        bad=dict(events[3]);del bad['g_us']
+        self.save(events[:3]+[bad])
+        with self.assertRaises(ValueError):replay.load_recording(self.recording)
+
     def test_unknown_does_not_become_sync_anchor(self):
         self.save([event(0,'state',0,state='AppLaunch'),
                    event(1,'state',200,state='Unknown'),

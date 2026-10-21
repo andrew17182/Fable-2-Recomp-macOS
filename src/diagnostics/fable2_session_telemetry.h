@@ -32,6 +32,9 @@ struct FrameScope {
   }
   ~FrameScope() {
     if(!active || --frame_depth!=0) return;
+    // A frame with no UI items is not a state: it flickered against "Unknown" from run to run and made
+    // replay anchors unreliable (2026-10-21). Such frames count as no UI.
+    if(frame_items.empty()) return;
     std::sort(frame_items.begin(),frame_items.end());
     uint64_t hash=14695981039346656037ull;
     for(auto item:frame_items) {hash^=item;hash*=1099511628211ull;}

@@ -295,6 +295,57 @@ Info.plist (`Fable2VersionString`), the launcher footer and the setup app's fini
 the same string.
 
 
+### Input recording and replay
+
+**Record:** Settings > Diagnostics (Dev Options) > **Record input** (`FABLE2_RECORD_INPUT=1`, off by default). While it
+is on, the launcher's front page shows a red "Recording input" note. Each game writes one file,
+`logs/recordings/Fable II input YYYY-MM-DD HH-MM-SS.jsonl`, in the state folder (Dev Launcher: the live
+`~/Library/Application Support/Fable II Recomp`; player app: its own folder). **Show Recordings** opens that folder.
+`FABLE2_RECORD_INPUT_PATH` sets another file (`*.jsonl`) or folder. A normal quit ends the file with
+`recording_end`. Every line is flushed as it is written, so after a crash the file is still a valid prefix.
+The first line (`AppLaunch`) has a `meta` object: build version, save name (Dev Launcher), resolution and
+frame-rate settings.
+
+**What is recorded:** the final pad state the game reads (`XamInputGetState`, after keyboard mapping, mouse look
+and the controller-hotkey filter), one `pad` event per change. Raw `key` events are recorded too, for information
+only. State anchors are `LevelLoaded` (end of each level load), `AfterNewGameVideo`, and UI fingerprints of frames
+that draw UI items. Turbo and speed changes are `speed` events.
+
+**Replay:**
+- Test session: `python3 tools/fable2_test_control.py replay <recording> [--env FABLE2_TURBO_SCALE=2]`. This needs a
+  test-session recording (`launch --record`, then `stop-recording`), whose `initial-state/` snapshot holds the
+  saves.
+- Any launch: `FABLE2_REPLAY_INPUT=<recording>`, for example in the launcher's Extra environment. Boot the same save
+  the recording started from. A player recording has no state snapshot.
+
+Status is logged as `[replay]` lines in `fable_2.log` (test sessions also write `control/replay-status.json`).
+`fable2_replay.py` validates recordings (`load_recording`) and keeps the old host-clock driver
+(`replay --host-clock`).
+
+**Timing (schema 2):** every event has host time (`t_us`, `dt_us`) and guest time (`g_us`, `gdt_us`). The guest
+clock runs at the turbo (or slow-mode) speed. The in-game driver matches the recorded anchors in order, then applies
+each pad change when the guest clock reaches the live anchor time plus `gdt_us`. So a recording made at 2× replays
+at 1× (and the other way round) at the same game moments. Recorded speed changes are not replayed: the replay runs
+at the speed you launch it with. Schema 1 files (host time only) still load and are exact only at 1×.
+
+Measured 2026-10-21 (boot into a save, about 7 s of walking and an A press, 2 runs per arm, 7–12 pad changes
+each):
+
+| Recorded at | Replayed at | Pad changes, guest offset from recorded |
+|---|---|---|
+| 1× | 1× | 0 to +33 ms |
+| 1× | 2× | +6 to +35 ms |
+| 2× | 1× | +0.6 to +6 ms |
+
+The game reads the pad once per frame, so a change lands at the next frame's read: at most one frame late (33 ms
+of guest time at 30 FPS, 67 ms at 2×).
+
+**Caveat:** replay is state-anchored, not frame-exact. Physics, AI, streaming and load times are not
+deterministic, so long replays drift and can diverge (a missed hit, a different path). Inputs before the first
+`LevelLoaded` are timed from launch, and load time depends on the Mac and the speed. A recorded anchor that never
+happens fails the replay after `FABLE2_REPLAY_TIMEOUT_S` (60 s) and returns control to the player. Code:
+`src/diagnostics/fable2_session_journal.h`.
+
 ### Fable II Launcher (macOS: the way to play from source)
 
 Normal launcher play retains in-game subtitles and audio preferences across launches, including library-only play with no hero write-back. The options profile is saved independently of hero saves after a completed, stable write; previous preferences are backed up under `out/save-backups`. Automated test sessions keep their options isolated.

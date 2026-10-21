@@ -596,7 +596,8 @@ struct LauncherView: View {
       Form {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.pick, busy: model.busy, disabled: !model.canLaunch,
-                   startTitle: { model.startTitle() }, load: { model.loadSave() })
+                   startTitle: { model.startTitle() }, load: { model.loadSave() },
+                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() })
         }
         FrontPageOptions(model: model)
         // Dev rows go last, so turning Dev Options on or picking a library save moves nothing above them.

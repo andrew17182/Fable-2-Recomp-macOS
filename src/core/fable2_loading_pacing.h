@@ -16,6 +16,7 @@
 #include <mach/mach_vm.h>
 #include <rex/logging/macros.h>
 #include "fable2_flight_recorder.h"
+#include "fable2_session_journal.h"
 #include "fable2_guest_stack.h"
 #include "fable2_fast_pacing.h"
 
@@ -442,7 +443,8 @@ extern "C" void sub_826C60C0(PPCContext& ctx,uint8_t* base) {
 extern "C" void __imp__sub_825F3050(PPCContext&,uint8_t*);
 extern "C" void sub_825F3050(PPCContext& ctx,uint8_t* base) {
   FR_HEARTBEAT("level_load_825F3050");
-  if(!fable2::fr::Active()){__imp__sub_825F3050(ctx,base);return;}
+  // Input recording/replay anchor (src/diagnostics/fable2_session_journal.h): the end of each level load.
+  if(!fable2::fr::Active()){__imp__sub_825F3050(ctx,base);fable2::session::Get().Marker("LevelLoaded");return;}
   static std::atomic<int> calls{0};
   const int n=calls.fetch_add(1)+1;
   const auto start=std::chrono::steady_clock::now();
@@ -454,6 +456,7 @@ extern "C" void sub_825F3050(PPCContext& ctx,uint8_t* base) {
   if(log)REXSYS_INFO("[loading-pacing] level-load sub_825F3050 enter #{} r3={:#x}",n,ctx.r3.u32);
   __imp__sub_825F3050(ctx,base);
   fable2::fr::LevelLoadEnd(mach_absolute_time()-m0);
+  fable2::session::Get().Marker("LevelLoaded");
   if(log)REXSYS_INFO("[loading-pacing] level-load sub_825F3050 exit #{} {:.1f}ms",n,
       std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count());
 }

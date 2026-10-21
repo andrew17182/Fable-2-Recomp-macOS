@@ -789,6 +789,11 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
         key, _, value = item.partition('=')
         if not key: raise ValueError('--env expects NAME=VALUE')
         env[key] = value
+    if env.get('FABLE2_RECORD_INPUT', '0') not in ('', '0') and not test_control:
+        # Launcher Diagnostics > Record input (src/diagnostics/fable2_session_journal.h): play sessions keep the
+        # recording in the live state's logs/recordings (Show Recordings), not in the pruned session folder.
+        env.setdefault('FABLE2_RECORD_INPUT_PATH', str(LIVE_STATE / 'logs/recordings'))
+        if save: env.setdefault('FABLE2_RECORD_INPUT_SAVE', save)
     if test_control:  # tests always skip the intros + fast title (FABLE2_TEST_INTRO=1: intro-path tests only)
         common.force_test_intro_skip(env, data_root)
     if test_control:  # window-title tag (src/core/fable2_window_title.h); --env / the caller's wins; play: none

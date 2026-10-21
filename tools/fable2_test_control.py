@@ -170,7 +170,10 @@ def copy_latest_window_position(state, source):
     return str(latest)
 
 
-def launch(display_sync=True, record=False, replay=None, state_source=None, checkpoint=False, allow_build_mismatch=False, replay_timeout=60, save=None, background=True, game_args=None, cache_snapshot=None):
+def launch(display_sync=True, record=False, replay=None, state_source=None, checkpoint=False, allow_build_mismatch=False, replay_timeout=60, save=None, background=True, game_args=None, cache_snapshot=None, env=None, host_clock=False):
+    """`env`: extra FABLE2_*/REX_* game variables (wins over out/test-control-env.json), e.g.
+    {'FABLE2_TURBO_SCALE': '2'}. Replay runs in the game on the guest clock (FABLE2_REPLAY_INPUT, any turbo speed);
+    host_clock=True uses the old host-clock driver tools/fable2_replay.py (exact at 1x only)."""
     if replay_timeout<=0:
         raise ValueError("Replay transition timeout must be positive")
     # Agent-driven tests: out/test-control-env.json may name a library save under
@@ -209,16 +212,17 @@ def launch(display_sync=True, record=False, replay=None, state_source=None, chec
     scale_env = dict(os.environ)
     if _env_file.is_file():
         scale_env.update({k: str(v) for k, v in json.loads(_env_file.read_text()).items() if k.startswith('FABLE2_')})
+    scale_env.update(env or {})
     hold = common.test_game_hold('test_control launch', common.launch_scale(scale_env, source))
     try:
         return _launch_held(hold, display_sync, record, replay, state_source, checkpoint, allow_build_mismatch,
-                            replay_timeout, save, background, source, game_args, agent_cache_mode)
+                            replay_timeout, save, background, source, game_args, agent_cache_mode, env, host_clock)
     finally:
         hold.close()  # no-op once handed to the holder process
 
 
 def _launch_held(hold, display_sync, record, replay, state_source, checkpoint, allow_build_mismatch, replay_timeout,
-                 save, background, source, game_args=None, agent_cache_mode=None):
+                 save, background, source, game_args=None, agent_cache_mode=None, launch_env=None, host_clock=False):
     import fable2_instances as instances
     common.wait_instance_room('test launch', lambda: len(instances.instances()))
     session = ROOT / 'out/validation/gameplay-tests' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
@@ -264,6 +268,13 @@ def _launch_held(hold, display_sync, record, replay, state_source, checkpoint, a
         extra_env = {k: str(v) for k, v in json.loads(extra_env_file.read_text()).items()
                      if k.startswith(('FABLE2_', 'REX_'))}
         env.update(extra_env)
+    for key, value in (launch_env or {}).items():
+        if not key.startswith(('FABLE2_', 'REX_')): raise ValueError('--env takes FABLE2_* / REX_* variables: ' + key)
+        env[key] = str(value)
+    env.pop('FABLE2_REPLAY_INPUT', None)
+    if replay and not host_clock:
+        # In-game replay driver (src/diagnostics/fable2_session_journal.h): guest-clock scheduling.
+        env.update(FABLE2_REPLAY_INPUT=str(Path(replay).resolve()), FABLE2_REPLAY_TIMEOUT_S=str(replay_timeout))
     # Background test mode (default): test presses reach the game without focus
     # and no focus requests are made (src/input/test_background.h); the game is
     # launched through LaunchServices with `open -g` so it never activates.
@@ -309,10 +320,11 @@ def _launch_held(hold, display_sync, record, replay, state_source, checkpoint, a
         allow_build_mismatch=allow_build_mismatch, replay_transition_timeout=replay_timeout,
         window_position_source=window_position_source, test_window=test_window, background=background,
         library_save=save, library_save_folder=save_meta['folder'] if save_meta else None,
-        extra_env=extra_env, agent_game_slots=hold.games, agent_game_wait_s=hold.games_wait,
+        extra_env=extra_env, launch_env=launch_env or {}, replay_driver=(None if not replay else 'host' if host_clock else 'game'),
+        agent_game_slots=hold.games, agent_game_wait_s=hold.games_wait,
         perf_lock_shared_wait_s=hold.wait, agent_cache=agent_cache_record,
         executable_sha256=hashlib.sha256((APP / "Contents/MacOS/fable_2").read_bytes()).hexdigest()), indent=2) + '\n')
-    if replay:
+    if replay and host_clock:
         subprocess.Popen(["/usr/bin/python3", str(ROOT / "tools/fable2_replay.py"),
                           str(Path(replay).resolve()), str(session), "--timeout", str(replay_timeout)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -683,7 +695,14 @@ def main():
     q.add_argument('--save', help='library save (out/save-library/<name>) to use as the only hero save')
     q.add_argument('--foreground', action='store_true',
                    help='old behaviour: focus the game window (takes the keyboard); default is background test mode')
+    q.add_argument('--env', action='append', default=[], metavar='NAME=VALUE',
+                   help='extra FABLE2_*/REX_* game variable (repeatable), e.g. FABLE2_TURBO_SCALE=2')
     q = sub.add_parser('replay'); q.add_argument('recording', type=Path)
+    q.add_argument('--env', action='append', default=[], metavar='NAME=VALUE',
+                   help='extra FABLE2_*/REX_* game variable (repeatable), e.g. FABLE2_TURBO_SCALE=2 (replay at 2x)')
+    q.add_argument('--host-clock', action='store_true',
+                   help='old host-clock replay driver (tools/fable2_replay.py); default: in-game, guest clock')
+    q.add_argument('--timeout', type=float, default=60, help='seconds to wait for each recorded state transition')
     q.add_argument('--checkpoint', action='store_true')
     q.add_argument('--allow-build-mismatch', action='store_true')
     q.add_argument('--save', help='library save (out/save-library/<name>) to use as the only hero save')
@@ -709,8 +728,12 @@ def main():
         if command == 'mark': q.add_argument('text')
         if command == 'tag': q.add_argument('key_value', help='key=value, e.g. level_name=BowerLake')
     args = p.parse_args()
-    if args.cmd == 'launch': result = launch(args.display_sync == 'on', record=args.record, checkpoint=args.checkpoint, save=args.save, background=not args.foreground)
-    elif args.cmd == 'replay': result = launch(replay=args.recording, checkpoint=args.checkpoint, allow_build_mismatch=args.allow_build_mismatch, save=args.save, background=not args.foreground)
+    def env_items(items):
+        pairs = [item.partition('=') for item in items]
+        if any(not key or not sep for key, sep, _ in pairs): raise SystemExit('--env expects NAME=VALUE')
+        return {key: value for key, _, value in pairs}
+    if args.cmd == 'launch': result = launch(args.display_sync == 'on', record=args.record, checkpoint=args.checkpoint, save=args.save, background=not args.foreground, env=env_items(args.env))
+    elif args.cmd == 'replay': result = launch(replay=args.recording, checkpoint=args.checkpoint, allow_build_mismatch=args.allow_build_mismatch, save=args.save, background=not args.foreground, env=env_items(args.env), host_clock=args.host_clock, replay_timeout=args.timeout)
     elif args.cmd == 'saves': result = list_saves()
     elif args.cmd == 'import-save': result = import_save(args.name, args.source, args.hero, args.note)
     elif args.cmd == 'telemetry': result = telemetry(args.session)

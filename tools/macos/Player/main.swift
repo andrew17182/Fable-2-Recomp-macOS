@@ -1513,7 +1513,8 @@ struct PlayView: View {
       Form {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.startPick, busy: false, disabled: model.gameRunning,
-                   startTitle: { model.startTitle() }, load: { model.loadSave() })
+                   startTitle: { model.startTitle() }, load: { model.loadSave() },
+                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() })
         }
         FrontPageOptions(model: model)
         Section {

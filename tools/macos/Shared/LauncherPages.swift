@@ -60,6 +60,10 @@ struct SaveMenu: View {
   let disabled: Bool
   let startTitle: () -> Void
   let load: () -> Void
+  /// Settings > Diagnostics > Record input is on: a red "Recording input" note right of the buttons (its slot is
+  /// always there, so nothing moves when it shows). Clicking it opens that setting.
+  var recording = false
+  var showRecording: () -> Void = {}
   static let buttonWidth: CGFloat = 200
   static let spacing: CGFloat = 10
   static var menuWidth: CGFloat { 2 * buttonWidth + spacing }
@@ -85,19 +89,49 @@ struct SaveMenu: View {
         .disabled(disabled || !hasSaves)
         .help("Load the save below. ↩")
         Spacer(minLength: 0)
+        RecordingBadge(on: recording, action: showRecording)
       }
-      Picker("Save", selection: $selection) {
+      HStack(spacing: Self.spacing) {
+        Text("Select save game:")
+          .frame(width: Self.labelWidth, alignment: .leading)
+        Picker("Save", selection: $selection) {
         if hasSaves {
           ForEach(choices) { Text($0.label).tag($0.id) }
         } else {
           Text("No saves").tag(SaveChoice.titleID)
         }
       }
-      .labelsHidden()
-      .frame(width: Self.menuWidth, alignment: .leading)  // fixed: a long save label truncates
-      .disabled(!hasSaves)
-      .help("Newest save first.")
+        .labelsHidden()
+        .frame(width: Self.menuWidth, alignment: .leading)  // fixed: a long save label truncates
+        .disabled(!hasSaves)
+        .help("Newest save first.")
+        Spacer(minLength: 0)
+      }
     }
+  }
+  /// The fixed label column left of the save menu.
+  static let labelWidth: CGFloat = 118
+}
+
+/// "● Recording input" in a fixed slot (empty, same size, when recording is off).
+struct RecordingBadge: View {
+  let on: Bool
+  let action: () -> Void
+  static let width: CGFloat = 132
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Circle().fill(Color.red).frame(width: 8, height: 8)
+        Text("Recording input").font(.callout).foregroundStyle(.red)
+      }
+      .frame(width: Self.width, alignment: .trailing)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .opacity(on ? 1 : 0)
+    .disabled(!on)
+    .accessibilityHidden(!on)
+    .help("Input is being recorded (Settings > Diagnostics).")
   }
 }
 

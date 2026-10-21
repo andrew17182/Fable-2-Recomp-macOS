@@ -1,8 +1,29 @@
 #pragma once
-// Opt-in app-owned recording. Inert outside test sessions.
+// Input journal: opt-in recording and in-game replay of the guest pad (docs/reference.md "Input recording").
+//
+// Three ways it turns on (otherwise it is inert):
+//   - Test sessions (FABLE2_SESSION_DIR, tools/fable2_test_control.py, fable2_dev_session.py --test-control):
+//     state transitions always go to <dir>/events.jsonl; FABLE2_RECORD_INPUT=1 adds pad/key/speed events
+//     until <dir>/stop-recording appears (then a recording_end).
+//   - Player recording (FABLE2_RECORD_INPUT=1 without a session dir; launcher Diagnostics > Record input):
+//     everything goes to FABLE2_RECORD_INPUT_PATH (a .jsonl file, or a folder), else
+//     <state dir>/logs/recordings/, as "Fable II input YYYY-MM-DD HH-MM-SS.jsonl". Finish() (window close)
+//     writes recording_end; every line is flushed, so a crash leaves a valid prefix.
+//   - In-game replay (FABLE2_REPLAY_INPUT=<recording>, or <session dir>/replay-input.txt): the recorded pad
+//     is injected at the guest's XamInputGetState boundary when the guest clock reaches each event.
+//
+// Timing (schema 2). Every event carries host time (t_us, dt_us since its anchor) and guest time (g_us,
+// gdt_us): the guest clock (rex::chrono::Clock::QueryGuestTickCount) runs at the turbo / slow-mode speed, so
+// gdt_us is the same game moment at any speed. Anchors are reliable state transitions (UI fingerprints,
+// named markers); replay matches them in recorded order and schedules each pad change at
+// live anchor guest time + gdt_us. Speed changes (turbo) are recorded as "speed" events, never replayed.
+// Schema 1 recordings (host time only) replay with dt_us as guest time (exact at 1x only).
+#include <algorithm>
 #include <chrono>
 #include <time.h>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -11,6 +32,11 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <vector>
+#include <rex/chrono/clock.h>
+#include <rex/logging/macros.h>
+#include "fable2_guest_speed.h"
+#include "fable2_state_path.h"
 namespace fable2::session {
 inline std::string Quote(const std::string& s) {
   std::string r="\"";
@@ -25,6 +51,19 @@ inline int64_t NowUs() {
   clock_gettime(CLOCK_MONOTONIC, &t);
   return int64_t(t.tv_sec)*1000000 + t.tv_nsec/1000;
 }
+// Guest clock in microseconds since process start (the SDK guest tick count starts at 0).
+inline int64_t GuestUs() {
+  const uint64_t hz=rex::chrono::Clock::guest_tick_frequency();
+  if(!hz) return 0;
+  const unsigned __int128 ticks=rex::chrono::Clock::QueryGuestTickCount();
+  return int64_t(ticks*1000000u/hz);
+}
+// Set by the app before the journal starts (FABLE2_VERSION_STRING); recorded in the AppLaunch metadata.
+inline std::string& BuildVersion() {static std::string version;return version;}
+inline bool EnvOn(const char* name) {
+  const char* v=std::getenv(name);
+  return v&&*v&&std::strcmp(v,"0")!=0;
+}
 struct Pad {
   int buttons=0,lt=0,rt=0,lx=0,ly=0,rx=0,ry=0;
   bool operator==(const Pad&) const=default;
@@ -34,25 +73,104 @@ struct Pad {
     return s.str();
   }
 };
+// Player recording file: FABLE2_RECORD_INPUT_PATH (file ending in .jsonl, else a folder), else
+// <state dir>/logs/recordings. A new, unused name per launch.
+inline std::filesystem::path RecordingPath() {
+  namespace fs=std::filesystem;
+  fs::path dir=fable2::StateDirectory()/"logs"/"recordings";
+  if(const char* env=std::getenv("FABLE2_RECORD_INPUT_PATH");env&&*env) {
+    fs::path p(env);
+    if(p.extension()==".jsonl") return p;
+    dir=p;
+  }
+  char stamp[64];
+  const std::time_t now=std::time(nullptr);
+  std::tm local{};
+  localtime_r(&now,&local);
+  std::strftime(stamp,sizeof(stamp),"Fable II input %Y-%m-%d %H-%M-%S",&local);
+  fs::path path=dir/(std::string(stamp)+".jsonl");
+  std::error_code ec;
+  for(int i=2;fs::exists(path,ec)&&i<100;++i) path=dir/(std::string(stamp)+" "+std::to_string(i)+".jsonl");
+  return path;
+}
+// Minimal readers for the journal's own one-line JSON events.
+inline const char* JsonField(const std::string& line,const char* key) {
+  const std::string k=std::string("\"")+key+"\":";
+  auto at=line.find(k);
+  return at==std::string::npos?nullptr:line.c_str()+at+k.size();
+}
+inline bool JsonInt(const std::string& line,const char* key,int64_t& out) {
+  const char* p=JsonField(line,key);
+  if(!p) return false;
+  char* end=nullptr;
+  out=std::strtoll(p,&end,10);
+  return end!=p;
+}
+inline bool JsonString(const std::string& line,const char* key,std::string& out) {
+  const char* p=JsonField(line,key);
+  if(!p||*p!='"') return false;
+  out.clear();
+  for(++p;*p&&*p!='"';++p) {
+    if(*p=='\\'&&p[1]) ++p;
+    out+=*p;
+  }
+  return *p=='"';
+}
+inline bool JsonPad(const std::string& line,Pad& pad) {
+  const char* p=JsonField(line,"pad");
+  if(!p||*p!='[') return false;
+  int v[7];
+  ++p;
+  for(int i=0;i<7;++i) {
+    char* end=nullptr;
+    v[i]=int(std::strtol(p,&end,10));
+    if(end==p) return false;
+    p=end;
+    if(*p==',') ++p;
+  }
+  pad=Pad{v[0],v[1],v[2],v[3],v[4],v[5],v[6]};
+  return true;
+}
 class Journal {
  public:
   Journal() {
+    const bool record=EnvOn("FABLE2_RECORD_INPUT");
+    const char* replay=std::getenv("FABLE2_REPLAY_INPUT");
     const char* dir=std::getenv("FABLE2_SESSION_DIR");
-    if(!dir||!*dir) return;
-    folder_=dir;
-    if(!folder_.is_absolute()) {folder_.clear();return;}
+    if(dir&&*dir&&std::filesystem::path(dir).is_absolute()) folder_=dir;
+    if(folder_.empty()&&!record&&!(replay&&*replay)) return;
     const char* origin=std::getenv("FABLE2_SESSION_ORIGIN_US");
     origin_=origin?std::strtoll(origin,nullptr,10):NowUs();
-    recording_=std::getenv("FABLE2_RECORD_INPUT")!=nullptr;
-    std::filesystem::create_directories(folder_);
-    output_.open(folder_/"events.jsonl",std::ios::out|std::ios::trunc);
-    if(!output_) {folder_.clear();return;}
-    output_<<"{\"schema\":1,\"seq\":0,\"type\":\"state\",\"t_us\":0,\"state\":\"AppLaunch\",\"anchor\":0,\"dt_us\":0}\n";
-    output_.flush();
+    std::error_code ec;
+    if(!folder_.empty()) {
+      std::filesystem::create_directories(folder_,ec);
+      output_.open(folder_/"events.jsonl",std::ios::out|std::ios::trunc);
+      recording_=record;
+    } else if(record) {
+      path_=RecordingPath();
+      std::filesystem::create_directories(path_.parent_path(),ec);
+      output_.open(path_,std::ios::out|std::ios::trunc);
+      recording_=bool(output_);
+      if(recording_) REXSYS_INFO("[record] recording input to {}", path_.string());
+      else REXSYS_WARN("[record] cannot write {}; input is not recorded", path_.string());
+    }
+    if(replay&&*replay) {
+      if(recording_&&folder_.empty()) {output_.close();recording_=false;}  // never record a replay
+      LoadReplay(replay);
+    }
+    active_=true;
+    live_.push_back({"AppLaunch",0});
+    if(output_) {
+      output_<<"{\"schema\":2,\"seq\":0,\"type\":\"state\",\"t_us\":0,\"state\":\"AppLaunch\",\"anchor\":0,"
+             "\"dt_us\":0,\"g_us\":0,\"gdt_us\":0,\"meta\":"<<Meta()<<"}\n";
+      output_.flush();
+    }
     worker_=std::thread([this]{Worker();});
   }
   ~Journal() {stop_=true;if(worker_.joinable()) worker_.join();}
-  bool Enabled() const {return !folder_.empty();}
+  bool Enabled() const {return active_;}
+  // The player recording's file (empty in test sessions or when not recording).
+  const std::filesystem::path& Path() const {return path_;}
   void Key(unsigned key,bool down,bool repeat=false) {
     if(!Enabled()) return;
     std::lock_guard lock(mu_);
@@ -62,68 +180,218 @@ class Journal {
   bool Input(Pad& pad) {
     if(!Enabled()) return false;
     std::lock_guard lock(mu_);
-    if(replaying_) pad=replay_pad_;
+    if(!replay_.empty()) Advance(GuestUs());
+    const bool injected=game_replay_||replaying_;
+    if(game_replay_) pad=game_pad_;
+    else if(replaying_) pad=replay_pad_;
     if(recording_&&(!have_pad_||pad!=previous_)) {
       Write("pad","\"pad\":"+pad.Json());previous_=pad;have_pad_=true;
     }
-    return replaying_;
+    return injected;
   }
   void Marker(const std::string& name) {
     if(!Enabled()) return;
-    std::lock_guard lock(mu_);Transition(name);
+    std::lock_guard lock(mu_);Transition(name,GuestUs());
   }
   void Signature(const std::string& name) {
     if(!Enabled()) return;
     std::lock_guard lock(mu_);
     signature_=name;last_ui_=NowUs();
   }
- private:
-  void Write(const char* type,const std::string& fields) {
-    auto t=NowUs()-origin_;
-    output_<<"{\"schema\":1,\"seq\":"<<++seq_<<",\"type\":"<<Quote(type)
-      <<",\"t_us\":"<<t<<",\"anchor\":"<<anchor_<<",\"dt_us\":"
-      <<t-anchor_time_<<','<<fields<<"}\n";output_.flush();
+  // Normal quit (window close): end the recording so the file is complete.
+  void Finish(const char* reason) {
+    if(!Enabled()) return;
+    std::lock_guard lock(mu_);
+    if(recording_) {Write("recording_end","\"reason\":"+Quote(reason));recording_=false;}
   }
-  void Transition(const std::string& state) {
+ private:
+  struct Recorded {
+    enum Kind {kState,kPad,kEnd} kind;
+    int64_t seq=0,anchor=0,gdt=0;
+    std::string state;
+    Pad pad;
+  };
+  std::string Meta() const {
+    auto env=[](const char* name){const char* v=std::getenv(name);return Quote(v?v:"");};
+    std::ostringstream s;
+    s<<"{\"version\":"<<Quote(BuildVersion())<<",\"save\":"<<env("FABLE2_RECORD_INPUT_SAVE")
+     <<",\"res_scale\":"<<env("FABLE2_RES_SCALE")<<",\"fps_60\":"<<env("FABLE2_FPS_60")
+     <<",\"vsync\":"<<env("REX_VSYNC")<<",\"turbo_speed\":"<<env("FABLE2_TURBO_SPEED")
+     <<",\"boot_save\":"<<env("FABLE2_BOOT_SAVE")<<",\"instance\":"<<env("FABLE2_INSTANCE_ID")<<'}';
+    return s.str();
+  }
+  void Write(const char* type,const std::string& fields,int64_t guest=-1) {
+    if(!output_) return;
+    auto t=NowUs()-origin_;
+    if(guest<0) guest=GuestUs();
+    output_<<"{\"schema\":2,\"seq\":"<<++seq_<<",\"type\":"<<Quote(type)
+      <<",\"t_us\":"<<t<<",\"anchor\":"<<anchor_<<",\"dt_us\":"
+      <<t-anchor_time_<<",\"g_us\":"<<guest<<",\"gdt_us\":"<<guest-anchor_guest_<<','<<fields<<"}\n";output_.flush();
+  }
+  // `guest`: when the state began (a UI fingerprint is confirmed after it has been stable for a while).
+  void Transition(const std::string& state,int64_t guest) {
     if(state==state_) return;
     state_=state;
-    if(state!="Unknown") {anchor_=seq_+1;anchor_time_=NowUs()-origin_;}
-    Write("state","\"state\":"+Quote(state));
+    if(state!="Unknown") {
+      anchor_=seq_+1;anchor_time_=NowUs()-origin_;anchor_guest_=guest;
+      live_.push_back({state,guest});
+      if(!replay_.empty()) Advance(GuestUs());
+    }
+    Write("state","\"state\":"+Quote(state),state!="Unknown"?guest:-1);
+  }
+  void LoadReplay(const std::filesystem::path& path) {
+    replay_.clear();replay_i_=live_i_=0;rec_anchor_guest_.clear();matched_.clear();
+    std::ifstream in(path);
+    std::string line;
+    while(std::getline(in,line)) {
+      std::string type;
+      if(!JsonString(line,"type",type)) continue;  // a crash-truncated final line
+      Recorded e{Recorded::kState};
+      if(!JsonInt(line,"seq",e.seq)||!JsonInt(line,"anchor",e.anchor)) continue;
+      if(!JsonInt(line,"gdt_us",e.gdt)&&!JsonInt(line,"dt_us",e.gdt)) continue;  // schema 1: host time
+      if(type=="state") {
+        if(!JsonString(line,"state",e.state)||e.state=="Unknown") continue;
+      } else if(type=="pad") {
+        e.kind=Recorded::kPad;
+        if(!JsonPad(line,e.pad)) continue;
+      } else if(type=="recording_end") {
+        e.kind=Recorded::kEnd;
+      } else continue;  // key (already in the pad), speed (the viewer picks the speed)
+      replay_.push_back(e);
+    }
+    if(replay_.empty()||replay_[0].state!="AppLaunch") {
+      replay_.clear();
+      REXSYS_WARN("[replay] {} is not a recording (no AppLaunch anchor)", path.string());
+      Status("failed","\"error\":\"not a recording (no AppLaunch anchor): "+path.filename().string()+"\"");
+      return;
+    }
+    if(replay_.back().kind!=Recorded::kEnd) replay_.push_back(Recorded{Recorded::kEnd,0,replay_.back().anchor,
+        replay_.back().gdt});
+    const char* timeout=std::getenv("FABLE2_REPLAY_TIMEOUT_S");
+    timeout_us_=int64_t((timeout&&*timeout?std::strtod(timeout,nullptr):60.0)*1e6);
+    wait_since_=0;
+    game_replay_=true;game_pad_=Pad{};
+    REXSYS_INFO("[replay] in-game replay of {}: {} events", path.string(), replay_.size());
+    Status("running");
+  }
+  // Applies every recorded event that is due at guest time `now`.
+  void Advance(int64_t now) {
+    while(replay_i_<replay_.size()) {
+      const auto& e=replay_[replay_i_];
+      if(e.kind==Recorded::kState) {
+        bool found=false;
+        while(live_i_<live_.size()) {
+          const auto& live=live_[live_i_++];
+          if(live.first==e.state) {
+            rec_anchor_guest_[e.seq]=live.second;found=true;
+            matched_+=std::string(matched_.empty()?"":",")+"{\"state\":"+Quote(e.state)+",\"recorded_seq\":"+
+                std::to_string(e.seq)+",\"live_guest_us\":"+std::to_string(live.second)+"}";
+            break;
+          }
+        }
+        if(!found) {
+          if(!wait_since_) {wait_since_=NowUs();Status("waiting","\"expected\":"+Quote(e.state));}
+          return;
+        }
+        wait_since_=0;++replay_i_;
+        continue;
+      }
+      auto anchor=rec_anchor_guest_.find(e.anchor);
+      if(anchor==rec_anchor_guest_.end()) {EndReplay("failed","\"error\":\"input refers to a missing anchor\"");return;}
+      if(now<anchor->second+e.gdt) return;
+      if(e.kind==Recorded::kPad) {game_pad_=e.pad;++replay_i_;continue;}
+      EndReplay("complete");
+      return;
+    }
+  }
+  void EndReplay(const char* status,const std::string& fields="") {
+    replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};wait_since_=0;
+    REXSYS_INFO("[replay] {}", status);
+    Status(status,fields);
+  }
+  void Status(const char* status,const std::string& fields="") {
+    if(folder_.empty()) return;
+    const auto path=folder_/"replay-status.json";
+    {
+      std::ofstream out(path.string()+".tmp",std::ios::trunc);
+      out<<"{\"status\":"<<Quote(status)<<",\"driver\":\"game\",\"matched\":["<<matched_<<"]"
+         <<(fields.empty()?"":",")<<fields<<"}\n";
+    }
+    std::error_code ec;
+    std::filesystem::rename(path.string()+".tmp",path,ec);
   }
   void Worker() {
+    double speed=1.0;
     while(!stop_) {
       {
         std::lock_guard lock(mu_);
-        if(recording_&&std::filesystem::exists(folder_/"stop-recording")) {
-          Write("recording_end","\"reason\":\"requested\"");recording_=false;
+        if(!folder_.empty()) {
+          if(recording_&&std::filesystem::exists(folder_/"stop-recording")) {
+            Write("recording_end","\"reason\":\"requested\"");recording_=false;
+          }
+          // In-game replay requested by tools/fable2_test_control.py after launch.
+          std::error_code ec;
+          if(replay_.empty()&&std::filesystem::exists(folder_/"replay-input.txt",ec)) {
+            std::ifstream request(folder_/"replay-input.txt");
+            std::string path;
+            std::getline(request,path);
+            std::filesystem::remove(folder_/"replay-input.txt",ec);
+            if(!path.empty()) LoadReplay(path);
+          }
+          if(!replay_.empty()&&std::filesystem::exists(folder_/"cancel-replay",ec))
+            EndReplay("failed","\"error\":\"Replay cancelled\"");
+          // Host-clock replay (tools/fable2_replay.py --host-clock).
+          std::ifstream replay(folder_/"replay-pad.txt");
+          int active;Pad pad;int64_t lease;
+          if(replay>>active>>lease>>pad.buttons>>pad.lt>>pad.rt>>pad.lx>>pad.ly>>pad.rx>>pad.ry) {
+            replaying_=active&&NowUs()<lease;replay_pad_=pad;
+          } else replaying_=false;
         }
-        std::ifstream replay(folder_/"replay-pad.txt");
-        int active;Pad pad;int64_t lease;
-        if(replay>>active>>lease>>pad.buttons>>pad.lt>>pad.rt>>pad.lx>>pad.ly>>pad.rx>>pad.ry) {
-          replaying_=active&&NowUs()<lease;replay_pad_=pad;
-        } else replaying_=false;
+        const double now_speed=fable2::guestspeed::Get();
+        if(now_speed!=speed) {
+          speed=now_speed;
+          if(recording_) {
+            char text[48];std::snprintf(text,sizeof(text),"\"speed\":%.2f",speed);
+            Write("speed",text);
+          }
+        }
+        // State fingerprints: stable for 150 ms of guest time, dated from when they first appeared, so
+        // anchors land on the same game moment at any speed. The UI-gone timeout stays in host time.
         auto now=NowUs();
+        auto guest=GuestUs();
         std::string candidate=now-last_ui_.load()<300000 ? signature_ : "Unknown";
         if(!candidate.empty()) {
-          if(candidate!=pending_) {pending_=candidate;pending_since_=now;}
-          else if(now-pending_since_>=150000) Transition(candidate);
+          if(candidate!=pending_) {pending_=candidate;pending_since_=guest;}
+          // Dated no earlier than the previous anchor: a marker (Marker()) may have come in between.
+          else if(guest-pending_since_>=150000) Transition(candidate,std::max(pending_since_,anchor_guest_));
         } else pending_.clear();
+        if(!replay_.empty()) {
+          Advance(guest);
+          if(!replay_.empty()&&wait_since_&&now-wait_since_>timeout_us_)
+            EndReplay("failed","\"error\":"+Quote("No matching transition: "+replay_[replay_i_].state));
+        }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
   }
-  std::filesystem::path folder_;
+  std::filesystem::path folder_,path_;
   std::ofstream output_;
   std::mutex mu_;
   std::thread worker_;
   std::atomic<bool> stop_{false};
   std::atomic<int64_t> last_ui_{0};
-  bool recording_=false,replaying_=false,have_pad_=false;
-  int64_t origin_=0,anchor_time_=0,pending_since_=0;
+  bool active_=false,recording_=false,replaying_=false,have_pad_=false,game_replay_=false;
+  int64_t origin_=0,anchor_time_=0,anchor_guest_=0,pending_since_=0,wait_since_=0,timeout_us_=60000000;
   uint64_t seq_=0,anchor_=0;
-  Pad previous_,replay_pad_;
+  Pad previous_,replay_pad_,game_pad_;
   std::string state_="AppLaunch",pending_;
   std::string signature_;
+  // In-game replay: recorded events, live anchors (state, guest us) and the matched pairs.
+  std::vector<Recorded> replay_;
+  size_t replay_i_=0,live_i_=0;
+  std::vector<std::pair<std::string,int64_t>> live_;
+  std::map<int64_t,int64_t> rec_anchor_guest_;
+  std::string matched_;
 };
 inline Journal& Get() {static Journal journal;return journal;}
 } // namespace fable2::session
