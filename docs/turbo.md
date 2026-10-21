@@ -11,7 +11,7 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
 - **F8** toggles slow motion (below 1x; see "Slow mode").
 - Controller: Settings > Controls > Game controllers > **Turbo** puts the same toggle on View, Share or a
-  stick click (`FABLE2_PAD_TURBO=view|share|ls|rs`, default none; docs/reference.md "Controller hotkeys").
+  stick click (`FABLE2_PAD_TURBO=none|view|share|ls|rs`, default view: the View button; docs/reference.md "Controller hotkeys").
 - Speed: launcher front page → **Turbo speed** (slider and stepper, 1.1× to 4.0×
   in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Without a launcher:
   `[patches] turbo_scale` in `fable2_config.toml` (state directory,

@@ -146,7 +146,7 @@ var c = ControlSettings()
 var results: [String] = []
 for (arg, value) in [("--keyboard-map", "Return:Pause,e:A"), ("--keyboard-map", "Return:pause"), ("--mouse-look", ""),
                      ("--mouse-look-scale", "5000"), ("--mouse-look-scale", "700"), ("--bind", "bind_settings=F4"),
-                     ("--bind", "bind_console=Nope"), ("--view-button-to-game", ""), ("--pad-turbo", "view"),
+                     ("--bind", "bind_console=Nope"), ("--view-button-to-game", ""), ("--pad-screenshot", "view"),
                      ("--pad-quicksave", "bogus"), ("--other", "")] {
   switch c.applyCLI(arg, value) {
   case .notMine: results.append("notMine")
@@ -164,6 +164,31 @@ out["padMove"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
 pads.setPad(.share, for: .quickSave)
 pads.setPad(.none, for: .turbo)
 out["padBack"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") } + [pads.pad.isEmpty ? "empty" : "set"]
+func padLoad(_ name: String, _ stored: [String: Any]) -> [String] {
+  let st = PlistSettingsStore(path: CommandLine.arguments[1] + "." + name)
+  for (k, v) in stored { st.set(v, forKey: k) }
+  let loaded = ControlSettings.load(from: st)
+  return PadAction.allCases.map { "\($0.rawValue)=\(loaded.padButton($0).rawValue)" }
+    + [st.string(forKey: "padTurbo") ?? "-", st.string(forKey: "padScreenshot") ?? "-",
+       String(st.object(forKey: "padDefaultsVersion") as? Int ?? 0)]
+}
+out["padLoadFresh"] = padLoad("pfresh", [:])
+// Restore Defaults used to store the old defaults: treated as unset.
+out["padLoadOldDefaults"] = padLoad("pold", ["padTurbo": "none", "padScreenshot": "view"])
+// A real choice from before is kept; turbo's new default stays off View while the screenshot has it.
+out["padLoadOldCustom"] = padLoad("pcustom", ["padScreenshot": "view", "padQuickSave": "none"])
+out["padLoadOldCustomFree"] = padLoad("pfree", ["padScreenshot": "ls"])
+// After the migration, an explicit screenshot=View (turbo moved to None) is kept.
+out["padLoadNew"] = padLoad("pnew", ["padScreenshot": "view", "padTurbo": "none", "padDefaultsVersion": 2])
+var padSaved = ControlSettings()
+let padStore = PlistSettingsStore(path: CommandLine.arguments[1] + ".psave")
+var padOld = padSaved
+padSaved.setPad(.view, for: .screenshot)
+padSaved.save(to: padStore, old: padOld)
+padOld = padSaved
+padSaved.pad = [:]  // Restore Defaults
+padSaved.save(to: padStore, old: padOld)
+out["padSaveDefaults"] = [padStore.string(forKey: "padTurbo") ?? "-", padStore.string(forKey: "padScreenshot") ?? "-"]
 out["envCLI"] = c.environment
 let store = PlistSettingsStore(path: CommandLine.arguments[1])
 var s = LaunchSettings()
@@ -230,19 +255,42 @@ class ControlsHarnessTests(unittest.TestCase):
             'REX_KEYBOARD_GAMEPAD_MAP=' + self.out['defaultMap'], 'REX_MOUSE_LOOK=false', 'REX_MOUSE_LOOK_SCALE=256'])
         self.assertEqual(self.out['cli'], ['error', 'ok1', 'ok0', 'error', 'ok1', 'ok1', 'error', 'ok0', 'ok1', 'error',
                                            'notMine'])
-        # --pad-turbo view takes View from the screenshot.
+        # --pad-screenshot view takes View from turbo.
         self.assertEqual(self.out['envCLI'], [
             'REX_KEYBOARD_GAMEPAD_MAP=Return:pause', 'REX_MOUSE_LOOK=true', 'REX_MOUSE_LOOK_SCALE=700',
             'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1',
-            'FABLE2_PAD_TURBO=view', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none'])
+            'FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=view'])
 
     def test_controller_hotkeys(self):
         self.assertEqual(self.out['padDefault'], [])
         self.assertEqual(self.out['padLs'], ['FABLE2_PAD_TURBO=ls', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share',
-                                             'FABLE2_PAD_SCREENSHOT=view'])
+                                             'FABLE2_PAD_SCREENSHOT=none'])
         self.assertEqual(self.out['padMove'], ['FABLE2_PAD_TURBO=share', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=none',
-                                               'FABLE2_PAD_SCREENSHOT=view'])
-        self.assertEqual(self.out['padBack'], ['empty'])
+                                               'FABLE2_PAD_SCREENSHOT=none'])
+        self.assertEqual(self.out['padBack'], ['FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none',
+                                               'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none', 'set'])
+
+    def test_controller_hotkey_defaults_load(self):
+        new = ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none']
+        self.assertEqual(self.out['padLoadFresh'], new + ['-', '-', '2'])
+        self.assertEqual(self.out['padLoadOldDefaults'], new + ['-', '-', '2'])
+        self.assertEqual(self.out['padLoadOldCustom'],
+                         ['turbo=none', 'slow=none', 'quickSave=none', 'screenshot=view', '-', 'view', '2'])
+        self.assertEqual(self.out['padLoadOldCustomFree'],
+                         ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=ls', '-', 'ls', '2'])
+        self.assertEqual(self.out['padLoadNew'],
+                         ['turbo=none', 'slow=none', 'quickSave=share', 'screenshot=view', 'none', 'view', '2'])
+        # Defaults are stored as no entry.
+        self.assertEqual(self.out['padSaveDefaults'], ['-', '-'])
+
+    def test_game_and_launcher_defaults_agree(self):
+        header = (ROOT / 'src/input/controller_hotkeys.h').read_text()
+        game = dict(re.findall(r'\{Action::k\w+, "(FABLE2_PAD_\w+)", (\w+|-1)\}', header))
+        names = {'kView': 'view', 'kShare': 'share', 'kLeftStick': 'ls', 'kRightStick': 'rs', '-1': 'none'}
+        game = {k: names[v] for k, v in game.items()}
+        self.assertEqual(game, {'FABLE2_PAD_TURBO': 'view', 'FABLE2_PAD_SLOW': 'none',
+                                'FABLE2_PAD_QUICKSAVE': 'share', 'FABLE2_PAD_SCREENSHOT': 'none'})
+        self.assertEqual(self.out['padLoadFresh'][:4], ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none'])
 
     def test_game_reads_launcher_names(self):
         header = (ROOT / 'src/input/controller_hotkeys.h').read_text()

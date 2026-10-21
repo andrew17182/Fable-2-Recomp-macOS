@@ -104,7 +104,7 @@ REXCVAR_DEFINE_STRING(
     "released (free cursor) and re-engaged when it closes. Empty = always lock "
     "while focused. This key is excluded from the gamepad map.");
 
-// Controller View button screenshots (src/input/controller_hotkeys.h). Empty =
+// Controller screenshot hotkey (src/input/controller_hotkeys.h). Empty =
 // <game_data_root>/Screenshots; FABLE2_SCREENSHOT_DIR overrides both.
 REXCVAR_DEFINE_STRING(
     screenshot_dir,

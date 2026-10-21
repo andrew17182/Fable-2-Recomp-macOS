@@ -143,7 +143,7 @@ through `game:\`.
   `trim_bik.py`. The output is byte-identical to the checkout's files.
 - **Skip intro on by default:** the portable launcher sets `FABLE2_SKIP_INTRO_MOVIES=1` unless the environment sets
   it (package option `--no-skip-intro`).
-- **Screenshots and cache:** `Screenshots/` (View button) is created under the game data folder at runtime. The
+- **Screenshots and cache:** `Screenshots/` (controller screenshot hotkey) is created under the game data folder at runtime. The
   shader cache is under `<state>/cache`.
 
 ## No Xcode on the test Mac

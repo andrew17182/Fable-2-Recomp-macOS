@@ -180,6 +180,7 @@ Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
 settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
 `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
+(+ `padDefaultsVersion`)
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
 `--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`.
@@ -258,16 +259,18 @@ Four actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = 
 
 | Action | Env | Default |
 |---|---|---|
-| Turbo on/off (same as F7) | `FABLE2_PAD_TURBO` | none |
+| Turbo on/off (same as F7) | `FABLE2_PAD_TURBO` | view |
 | Slow motion on/off (same as F8) | `FABLE2_PAD_SLOW` | none |
 | Quick save (same as F5) | `FABLE2_PAD_QUICKSAVE` | share |
-| Screenshot | `FABLE2_PAD_SCREENSHOT` | view |
+| Screenshot | `FABLE2_PAD_SCREENSHOT` | none |
 
 A screenshot is the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png` in the game data root
 (override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). A bound button no longer reaches the game
 (View = Back, stick clicks = L3/R3); an unbound one does. `FABLE2_VIEW_BUTTON_TO_GAME=1` passes Back
 through while View is bound. One button, one action: a set action takes its button and a default on
-that button is dropped (`FABLE2_PAD_TURBO=view` alone moves View from screenshot to turbo). With Share
+that button is dropped (`FABLE2_PAD_SCREENSHOT=view` alone moves View from turbo to screenshot). Until
+2026-10-21 View defaulted to screenshot and turbo was unbound; the launcher treats a stored setting equal to
+those old defaults as unset (`padDefaultsVersion` = 2), so it gets the new ones. With Share
 unbound the GameController Share watcher is not installed. `FABLE2_PAD_DEBUG=1` logs every pad button.
 Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view|share|ls|rs`.
 

@@ -1,19 +1,20 @@
 // fable_2 - controller hotkeys: bindable turbo / slow / quick save / screenshot.
 //
 // Four actions, each bound to one controller button (or none):
-//   FABLE2_PAD_TURBO       default none   - same toggle as F7 (fable2::turbo::Toggle)
+//   FABLE2_PAD_TURBO       default view   - same toggle as F7 (fable2::turbo::Toggle)
 //   FABLE2_PAD_SLOW        default none   - same toggle as F8 (fable2::turbo::ToggleSlow)
 //   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as F5
 //                                           (fable2::quicksave::request, src/core/fable2_quick_save.h)
-//   FABLE2_PAD_SCREENSHOT  default view   - saves the game's rendered frame as a PNG:
+//   FABLE2_PAD_SCREENSHOT  default none   - saves the game's rendered frame as a PNG:
 //                                           <dir>/Fable II YYYY-MM-DD HH-MM-SS.png. <dir> is
 //                                           FABLE2_SCREENSHOT_DIR, else the `screenshot_dir` cvar,
 //                                           else <game_data_root>/Screenshots.
 // Buttons: none | view (SDL BACK, the 360 Back) | share (SDL MISC1) | ls | rs (stick clicks).
 // The launcher sets these (tools/macos/Shared/ControlsView.swift, Controls > Game controllers).
 // One button acts for one action: an explicitly set action takes its button first, and a
-// default that lands on a taken button is dropped (FABLE2_PAD_TURBO=view alone moves View
-// from screenshot to turbo). Two explicit actions on one button: the first in the list wins.
+// default that lands on a taken button is dropped (FABLE2_PAD_SCREENSHOT=view alone moves View
+// from turbo to screenshot). Two explicit actions on one button: the first in the list wins.
+// (Before 2026-10-21 View defaulted to screenshot and turbo was unbound.)
 //
 // - A bound button no longer reaches the game: BackFilterDriver wraps the SDK's SDL
 //   gamepad driver and clears its XInput bit (view -> BACK, ls -> LEFT_THUMB,
@@ -153,7 +154,7 @@ inline int ButtonFromSdl(int sdl_button) {
 
 struct Bindings {
   Action by_button[kButtonCount] = {};
-  std::string summary;  // "turbo=none, quick save=Share, screenshot=View"
+  std::string summary;  // "turbo=View, slow=none, quick save=Share, screenshot=none"
   std::vector<std::string> warnings;
   std::vector<std::string> notes;  // defaults that gave way to a set action
   Action at(int b) const { return b >= 0 && b < kButtonCount ? by_button[b] : Action::kNone; }
@@ -181,10 +182,10 @@ inline Bindings ResolveBindings() {
     const char* env;
     int fallback;
   };
-  const Slot slots[] = {{Action::kTurbo, "FABLE2_PAD_TURBO", -1},
+  const Slot slots[] = {{Action::kTurbo, "FABLE2_PAD_TURBO", kView},
                         {Action::kSlow, "FABLE2_PAD_SLOW", -1},
                         {Action::kQuickSave, "FABLE2_PAD_QUICKSAVE", kShare},
-                        {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", kView}};
+                        {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", -1}};
   constexpr int kSlots = int(sizeof(slots) / sizeof(slots[0]));
   Bindings out;
   int chosen[kSlots];

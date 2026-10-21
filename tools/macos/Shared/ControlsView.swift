@@ -268,13 +268,24 @@ enum PadAction: String, CaseIterable, Identifiable {
     case .screenshot: return "Screenshot"
     }
   }
+  /// Same as the game's defaults (ResolveBindings in src/input/controller_hotkeys.h).
   var defaultButton: PadButton {
+    switch self {
+    case .turbo: return .view
+    case .slow, .screenshot: return .none
+    case .quickSave: return .share
+    }
+  }
+  /// Defaults before padDefaultsVersion 2 (2026-10-21): View took screenshots, turbo was unbound.
+  var oldDefaultButton: PadButton {
     switch self {
     case .turbo, .slow: return .none
     case .quickSave: return .share
     case .screenshot: return .view
     }
   }
+  /// Stored as "padDefaultsVersion". 2 (2026-10-21): turbo on View, no screenshot button.
+  static let defaultsVersion = 2
   var envName: String {
     switch self {
     case .turbo: return "FABLE2_PAD_TURBO"
@@ -366,8 +377,24 @@ struct ControlSettings: Equatable {
     if let binds = store.object(forKey: "hotkeyBinds") as? [String: String] { c.binds = binds }
     if let on = store.object(forKey: "viewButtonToGame") as? Bool { c.viewButtonToGame = on }
     if let on = store.object(forKey: "padBackground") as? Bool { c.padBackground = on }
+    var stored: [PadAction: PadButton] = [:]
     for action in PadAction.allCases {
-      if let raw = store.string(forKey: action.storeKey), let button = PadButton(rawValue: raw) { c.pad[action] = button }
+      if let raw = store.string(forKey: action.storeKey), let button = PadButton(rawValue: raw) { stored[action] = button }
+    }
+    if (store.object(forKey: "padDefaultsVersion") as? Int ?? 1) < PadAction.defaultsVersion {
+      // Stored buttons that only restate the old defaults (Restore Defaults used to store them) are dropped,
+      // so these users get the new defaults like everyone with nothing stored.
+      if !stored.isEmpty && PadAction.allCases.allSatisfy({ (stored[$0] ?? $0.oldDefaultButton) == $0.oldDefaultButton }) {
+        for action in PadAction.allCases { store.set(nil, forKey: action.storeKey) }
+        stored = [:]
+      }
+      store.set(PadAction.defaultsVersion, forKey: "padDefaultsVersion")
+    }
+    c.pad = stored
+    // As in the game: a default on a button a stored action uses is dropped (that action keeps the button).
+    for action in PadAction.allCases where stored[action] == nil && action.defaultButton != .none
+      && stored.values.contains(action.defaultButton) {
+      c.pad[action] = PadButton.none
     }
     return c
   }
@@ -380,7 +407,10 @@ struct ControlSettings: Equatable {
     if viewButtonToGame != old.viewButtonToGame { store.set(viewButtonToGame, forKey: "viewButtonToGame") }
     if padBackground != old.padBackground { store.set(padBackground, forKey: "padBackground") }
     for action in PadAction.allCases where padButton(action) != old.padButton(action) {
-      store.set(padButton(action).rawValue, forKey: action.storeKey)
+      // A default is stored as no entry, so a later change of defaults reaches it.
+      store.set(pad[action].map(\.rawValue), forKey: action.storeKey)
+      // Written with the buttons so a choice equal to the old defaults is never taken for them.
+      store.set(PadAction.defaultsVersion, forKey: "padDefaultsVersion")
     }
   }
 
@@ -397,7 +427,7 @@ struct ControlSettings: Equatable {
     }
     if viewButtonToGame { env.append("FABLE2_VIEW_BUTTON_TO_GAME=1") }
     if !padBackground { env.append("FABLE2_PAD_BACKGROUND=0") }  // default on in the game
-    // Controller hotkeys: all three once any differs, so the game never mixes them with its defaults.
+    // Controller hotkeys: all four once any differs, so the game never mixes them with its defaults.
     if PadAction.allCases.contains(where: { padButton($0) != $0.defaultButton }) {
       for action in PadAction.allCases { env.append("\(action.envName)=\(padButton(action).rawValue)") }
     }

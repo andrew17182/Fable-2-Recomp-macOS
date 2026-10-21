@@ -56,7 +56,8 @@ CASES = [
     # Diagnostics > Record input (src/diagnostics/fable2_session_journal.h).
     ({'recordInput': True}, ['--record-input']),
     # Controller hotkeys (FABLE2_PAD_*).
-    ({'padTurbo': 'rs', 'padScreenshot': 'none'}, ['--pad-turbo', 'rs', '--pad-screenshot', 'none']),
+    ({'padTurbo': 'rs', 'padScreenshot': 'view'}, ['--pad-turbo', 'rs', '--pad-screenshot', 'view']),
+    ({'padTurbo': 'none', 'padScreenshot': 'none'}, ['--pad-turbo', 'none', '--pad-screenshot', 'none']),
     ({'padSlow': 'ls'}, ['--pad-slow', 'ls']),
 ]
 # Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.

@@ -244,7 +244,7 @@ class Fable2App : public rex::ReXApp {
         std::unique_ptr<rex::system::IInputSystem> {
       // Same drivers as rex::input::CreateDefaultInputSystem (SDL + MnK + NOP,
       // slot assignment), except that the SDL gamepad driver is wrapped so the
-      // View button no longer reaches the game as Back (it takes screenshots;
+      // View button no longer reaches the game as Back (it toggles turbo by default;
       // src/input/controller_hotkeys.h).
       using rex::X_STATUS;  // for X_STATUS_SUCCESS
       auto system = std::make_unique<rex::input::InputSystem>(nullptr);

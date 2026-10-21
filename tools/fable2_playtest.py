@@ -116,7 +116,7 @@ def update():
             if not (ROOT / item).is_dir(): raise RuntimeError(f'Missing {item} (needed for skip intro)')
             (data / item).parent.mkdir(parents=True, exist_ok=True)
             _run('cp', '-cR', ROOT / item, data / item)
-        # View-button screenshots go to <game data>/Screenshots: keep them in the checkout's folder.
+        # Controller-hotkey screenshots go to <game data>/Screenshots: keep them in the checkout's folder.
         (ROOT / 'Screenshots').mkdir(exist_ok=True)
         (data / 'Screenshots').symlink_to(Path('../../..') / 'Screenshots')
         record = dict(version=plist.get('Fable2VersionString'), bundle_id=plist['CFBundleIdentifier'],
