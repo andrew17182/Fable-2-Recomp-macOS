@@ -4752,9 +4752,22 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       }
       return list;
     }();
+    // FABLE2_SKIP_VS_PS=<ps hash hex> narrows the skip to that pixel shader,
+    // FABLE2_SKIP_VS_N=<n> to draws with that guest index count.
+    static const uint64_t skip_vs_ps = [] {
+      const char* v = std::getenv("FABLE2_SKIP_VS_PS");  // getenv-ok: once
+      return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    static const uint32_t skip_vs_n = [] {
+      const char* v = std::getenv("FABLE2_SKIP_VS_N");  // getenv-ok: once
+      return v ? uint32_t(std::strtoul(v, nullptr, 10)) : 0u;
+    }();
     if (!skip_vs.empty() &&
         std::find(skip_vs.begin(), skip_vs.end(),
-                  vertex_shader->ucode_data_hash()) != skip_vs.end()) {
+                  vertex_shader->ucode_data_hash()) != skip_vs.end() &&
+        (!skip_vs_ps ||
+         (pixel_shader && pixel_shader->ucode_data_hash() == skip_vs_ps)) &&
+        (!skip_vs_n || index_count == skip_vs_n)) {
       draw_skip_reason_ = "ds_skip_vs";
       return pending_draw_pass_transfer_guard.Flush();
     }
@@ -6046,12 +6059,14 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
                        index_buffer_info ? index_buffer_info->guest_base : 0u,
                        index_count);
     REXLOG_INFO("[shadow-trace] f{} draw {} vs={:016X} ps={:016X} zc={:08X} "
-                "cm={:08X} sc={:08X}-{:08X} vp={}x{}{}{}",
+                "cm={:08X} bc0={:08X} cc={:08X} prim={} sc={:08X}-{:08X} vp={}x{}{}{}",
                 frame_log::CurrentFrame(),
                 render_target_cache_->DescribeCurrentTargetsForTrace(),
                 vertex_shader->ucode_data_hash(),
                 pixel_shader ? pixel_shader->ucode_data_hash() : 0,
                 regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_COLOR_MASK],
+                regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL],
+                uint32_t(primitive_type),
                 regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
                 regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
                 regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) * 2.0f,
@@ -6060,6 +6075,78 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
                     ? fmt::format(" site={} prim={} n={}", census_draw_site_,
                                   uint32_t(primitive_type), index_count)
                     : std::string());
+  }
+  // Diagnostic (FABLE2_TRACE_VSC=<vs hash hex>:<c>,<c>,...): log these VS
+  // float constants for that vertex shader's draws in the shadow-trace window.
+  if (render_target_cache_ && MetalRenderTargetCache::ShadowTraceActive()) {
+    static const std::pair<uint64_t, std::vector<uint32_t>> trace_vsc = [] {
+      std::pair<uint64_t, std::vector<uint32_t>> r{0, {}};
+      const char* v = std::getenv("FABLE2_TRACE_VSC");  // getenv-ok: once
+      if (!v) return r;
+      char* end = nullptr;
+      r.first = std::strtoull(v, &end, 16);
+      while (end && (*end == ':' || *end == ',')) {
+        const char* b = end + 1;
+        const unsigned long c = std::strtoul(b, &end, 10);
+        if (end == b) break;
+        r.second.push_back(uint32_t(c));
+      }
+      return r;
+    }();
+    if (trace_vsc.first && vertex_shader->ucode_data_hash() == trace_vsc.first) {
+      std::string cs;
+      for (uint32_t c : trace_vsc.second) {
+        const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4;
+        cs += fmt::format(" c{}=({},{},{},{})", c, regs.Get<float>(base),
+                          regs.Get<float>(base + 1), regs.Get<float>(base + 2),
+                          regs.Get<float>(base + 3));
+      }
+      // FABLE2_TRACE_TEXDUMP=<dir>: raw guest bytes of each fetched texture
+      // (base level region, 1 MB max) as <dir>/<base hex>.bin, once each.
+      static const char* texdump_dir = std::getenv("FABLE2_TRACE_TEXDUMP");  // getenv-ok: once
+      if (texdump_dir) {
+        static std::vector<uint32_t> dumped;
+        uint32_t m = used_texture_mask, ti;
+        while (rex::bit_scan_forward(m, &ti)) {
+          m &= ~(uint32_t(1) << ti);
+          const auto fetch = regs.GetTextureFetch(ti);
+          for (uint32_t which = 0; which < 2; ++which) {
+            const uint32_t base = which ? uint32_t(fetch.mip_address << 12)
+                                        : uint32_t(fetch.base_address << 12);
+            if (!base || std::find(dumped.begin(), dumped.end(), base) != dumped.end()) {
+              continue;
+            }
+            dumped.push_back(base);
+            const uint8_t* src = memory_->TranslatePhysical<const uint8_t*>(base);
+            const std::string path = fmt::format("{}/{:08X}.bin", texdump_dir, base);
+            if (FILE* f = std::fopen(path.c_str(), "wb")) {
+              std::fwrite(src, 1, 1u << 20, f);
+              std::fclose(f);
+            }
+            REXLOG_INFO("[trace-texdump] T{} {:08X} fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+                        ti, base,
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6],
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6 + 1],
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6 + 2],
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6 + 3],
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6 + 4],
+                        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + ti * 6 + 5]);
+          }
+        }
+      }
+      std::string pcs;
+      for (uint32_t c : {20u, 31u, 46u}) {
+        const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_256_X + c * 4;
+        pcs += fmt::format(" pc{}=({},{},{},{})", c, regs.Get<float>(base),
+                           regs.Get<float>(base + 1), regs.Get<float>(base + 2),
+                           regs.Get<float>(base + 3));
+      }
+      REXLOG_INFO("[trace-vsc] f{} vs={:016X} ps={:016X} n={} aref={} cc={:08X}{}{}",
+                  frame_log::CurrentFrame(), vertex_shader->ucode_data_hash(),
+                  pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+                  index_count, regs.Get<float>(XE_GPU_REG_RB_ALPHA_REF),
+                  regs[XE_GPU_REG_RB_COLORCONTROL], cs, pcs);
+    }
   }
   const uint32_t trace_texture_base = REXCVAR_GET(metal_draw_trace_texture_base);
   if (REXCVAR_GET(metal_capture_labels) || trace_texture_base) {
