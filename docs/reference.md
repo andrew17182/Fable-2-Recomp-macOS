@@ -170,7 +170,8 @@ environment route (below).
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
-  controllers (GameController framework), the controller hotkeys
+  controllers (GameController framework), a live **Button test** (the buttons held now) and **Share button**
+  (Works / Not seen yet: whether macOS passes Share to apps; see "Share button" below), the controller hotkeys
   (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
   click; see "Controller hotkeys" below) and
   **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`).
@@ -261,6 +262,21 @@ through while View is bound. One button, one action: a set action takes its butt
 that button is dropped (`FABLE2_PAD_TURBO=view` alone moves View from screenshot to turbo). With Share
 unbound the GameController Share watcher is not installed. `FABLE2_PAD_DEBUG=1` logs every pad button.
 Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view|share|ls|rs`.
+
+**Share button.** SDL reads Xbox pads on macOS through Apple's GameController framework and maps Share to
+MISC1. macOS reserves Share for its own screenshot/recording gesture unless an app asks for it
+(`preferredSystemGestureState`); SDL and the game both set it to Disabled (app only) on every pad. With Share
+bound, the game also reads Share straight from GameController (`src/input/controller_share_macos.mm`): the
+element's `pressedChangedHandler` plus a 30 Hz poll of `isPressed` (an edge the handler missed is passed on as
+`via poll`), and the poll sets the gesture state back if something (SDL closing a pad) returned it to Enabled.
+Log lines (`fable_2.log`, `[pad-hotkeys]`): each pad's gesture-bound buttons and their states at connect, the
+first 5 button presses of a session (proof that pad input arrives), every Share down/up with its source (`SDL
+MISC1`, `via handler`, `via poll`) and the action it ran. Launcher play logs: Dev Options > Open Logs Folder
+(title-screen play: `~/Library/Application Support/Fable II Recomp/logs/`; library sessions:
+`out/dev-sessions/<id>/test-state/logs/`). To check whether macOS passes Share to apps at all, open Settings >
+Controls in the launcher and press Share: **Share button** turns to **Works**. If it never does, the press is
+not reaching apps: check System Settings > Game Controllers (that controller's Share button customization) and
+the controller's firmware (Xbox Accessories app).
 
 **Controllers in the background:** controllers keep working while the game window is not in front
 (Settings > Controls > Game controllers > **Works in background**, default on; `FABLE2_PAD_BACKGROUND=0` turns it off).

@@ -10,7 +10,10 @@
 //     -> AlwaysReceive, =leave -> untouched), and logs it again ~2 s later (after
 //     SDL has opened the pad);
 //   - installs a pressedChangedHandler on the Share element only (SDL polls and
-//     sets no element handlers; the Xbox/Home button is left alone).
+//     sets no element handlers; the Xbox/Home button is left alone);
+//   - polls the Share element at 30 Hz (main run loop): an edge the handler did not
+//     report is passed on as "poll", and a gesture state that went back to Enabled
+//     (SDL does that when it closes a pad) is set again. Every Share edge is logged.
 // It never opens a controller. Presses are passed to the ShareFn on the main
 // (UI) thread; controller_hotkeys.h turns them into quick saves.
 #pragma once
@@ -19,8 +22,9 @@
 namespace fable2::padkeys::gcshare {
 
 using LogFn = void (*)(const char* line);
-// down: pressed (true) / released (false). app_active: [NSApp isActive].
-using ShareFn = void (*)(const char* controller_name, bool down, bool app_active);
+// down: pressed (true) / released (false). app_active: [NSApp isActive]. via: "handler" (the element's
+// pressedChangedHandler) or "poll" (the 30 Hz isPressed poll saw an edge the handler did not report).
+using ShareFn = void (*)(const char* controller_name, bool down, bool app_active, const char* via);
 
 // Main thread. Safe to call more than once (only the first call installs).
 void Install(LogFn log, ShareFn share);

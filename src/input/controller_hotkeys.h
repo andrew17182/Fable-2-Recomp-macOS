@@ -37,7 +37,8 @@
 // triggers Share's action; a second report of the same press within 500 ms is logged
 // and ignored. With Share unbound the watcher is not installed (macOS keeps its own
 // Share gesture). Diagnostics: each pad's SDL backend/mapping is logged once; every
-// MISC1 down/up from SDL and every GameController Share down/up is logged;
+// MISC1 down/up from SDL, the first 5 button-downs of a session, and every GameController Share
+// down/up (via the element handler or the 30 Hz poll) are logged;
 // FABLE2_PAD_DEBUG=1 logs every SDL gamepad and joystick button down/up.
 //
 // Test channel: metal_test_control.mm `press <session> share|view|ls|rs` pushes
@@ -689,7 +690,11 @@ inline bool SDLCALL Watch(void*, SDL_Event* event) {
       if (!fable2::testbg::physical_input() && id != state().virtual_id) break;
       const int button = event->gbutton.button;
       const bool down = event->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
-      if (button == SDL_GAMEPAD_BUTTON_MISC1 || pad_debug()) {
+      // The first few presses of each session are always logged, so a play log shows that pad
+      // input arrives at all (and under which SDL button) next to any Share report.
+      static std::atomic<int> logged_downs{0};
+      const bool early = down && id != state().virtual_id && logged_downs.fetch_add(1) < 5;
+      if (button == SDL_GAMEPAD_BUTTON_MISC1 || pad_debug() || early) {
         const char* bname = SDL_GetGamepadStringForButton(SDL_GamepadButton(button));
         REXLOG_INFO("[pad-hotkeys] SDL gamepad button {} ({}) {} on pad {}", bname ? bname : "?",
                     button, down ? "down" : "up", uint32_t(id));
@@ -762,9 +767,9 @@ inline void Install(rex::ui::WindowedAppContext* context) {
   }
   gcshare::Install(
       [](const char* line) { REXLOG_INFO("{}", line); },
-      [](const char* name, bool down, bool app_active) {
-        REXLOG_INFO("[pad-hotkeys] GameController Share {} on \"{}\" (app active={})",
-                    down ? "down" : "up", name ? name : "?", app_active);
+      [](const char* name, bool down, bool app_active, const char* via) {
+        REXLOG_INFO("[pad-hotkeys] GameController Share {} on \"{}\" (via {}, app active={})",
+                    down ? "down" : "up", name ? name : "?", via ? via : "?", app_active);
         if (!down) return;
         // Same focus rule as SDL pad events: no actions from a background window, unless background
         // pads are on (FABLE2_PAD_BACKGROUND).

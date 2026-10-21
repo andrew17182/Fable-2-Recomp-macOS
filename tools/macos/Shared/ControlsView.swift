@@ -505,10 +505,18 @@ final class KeyCapture: ObservableObject {
 
 // MARK: - Controllers
 
-/// Connected game controllers (GameController framework), updated on connect/disconnect.
+/// Connected game controllers (GameController framework), updated on connect/disconnect, and a live button test:
+/// the buttons held right now on any of them, and whether Share has reached this app. While the Controls tab is
+/// open, buttons macOS binds to a system gesture (Share: screenshot/recording; Xbox button) are set to come to
+/// this app instead, as the game does; they go back to the system when the tab closes. No permission needed.
 final class ControllerList: ObservableObject {
   @Published private(set) var names: [String] = []
+  /// Buttons held now ("A + Share"), empty when none.
+  @Published private(set) var pressed: String = ""
+  /// Share was seen pressed since the tab opened.
+  @Published private(set) var shareSeen = false
   private var observers: [NSObjectProtocol] = []
+  private var gestureButtons: [GCControllerButtonInput] = []
 
   init() {
     refresh()
@@ -519,14 +527,48 @@ final class ControllerList: ObservableObject {
     }
   }
 
-  deinit { observers.forEach(NotificationCenter.default.removeObserver) }
+  deinit {
+    observers.forEach(NotificationCenter.default.removeObserver)
+    for button in gestureButtons where button.isBoundToSystemGesture { button.preferredSystemGestureState = .enabled }
+    for controller in GCController.controllers() { controller.physicalInputProfile.valueDidChangeHandler = nil }
+  }
 
   private func refresh() {
-    names = GCController.controllers().map { controller in
+    let controllers = GCController.controllers()
+    names = controllers.map { controller in
       let name = controller.vendorName ?? "Controller"
       return controller.productCategory.isEmpty || name.contains(controller.productCategory)
         ? name : "\(name) (\(controller.productCategory))"
     }
+    for controller in controllers {
+      let profile = controller.physicalInputProfile
+      for button in profile.buttons.values where button.isBoundToSystemGesture
+        && !gestureButtons.contains(where: { $0 === button }) {
+        button.preferredSystemGestureState = .disabled
+        gestureButtons.append(button)
+      }
+      profile.valueDidChangeHandler = { [weak self] _, _ in self?.updatePressed() }
+    }
+    updatePressed()
+  }
+
+  /// "Button Share" -> "Share"; the GameController element names otherwise.
+  static func shortName(_ element: String) -> String {
+    element.hasPrefix("Button ") ? String(element.dropFirst("Button ".count)) : element
+  }
+
+  private func updatePressed() {
+    var held: [String] = []
+    for controller in GCController.controllers() {
+      let buttons = controller.physicalInputProfile.buttons
+      for key in buttons.keys.sorted() where buttons[key]?.isPressed == true {
+        let name = Self.shortName(key)
+        if !held.contains(name) { held.append(name) }
+        if key == GCInputButtonShare || key == "Button Share" { shareSeen = true }
+      }
+    }
+    let text = held.joined(separator: " + ")
+    if text != pressed { pressed = text }
   }
 
   /// System Settings > Game Controllers (macOS 13+); falls back to System Settings.
@@ -856,6 +898,17 @@ struct ControlsTabContent: View {
         Text(controllers.names.isEmpty ? "None" : controllers.names.joined(separator: ", "))
           .foregroundStyle(.secondary).multilineTextAlignment(.trailing)
       }
+      LabeledContent("Button test") {
+        Text(controllers.names.isEmpty ? "No controller" : controllers.pressed.isEmpty ? "Press a button" : controllers.pressed)
+          .foregroundStyle(.secondary).lineLimit(1).monospacedDigit()
+      }
+      .help("Shows the buttons you hold. Works while this window is in front.")
+      LabeledContent("Share button") {
+        Label(controllers.shareSeen ? "Works" : "Not seen yet",
+              systemImage: controllers.shareSeen ? "checkmark.circle.fill" : "circle.dashed")
+          .foregroundStyle(controllers.shareSeen ? .green : .secondary)
+      }
+      .help("Press Share once. If it never shows here, macOS does not pass it to apps: check System Settings > Game Controllers.")
       ForEach(PadAction.allCases) { action in
         FixedPicker(action.title, selection: Binding(
           get: { controls.padButton(action) },
