@@ -28,12 +28,19 @@
 //     hotkeys (window_keyboard_mouse.h treats the window as unfocused); the SDK MnK driver is
 //     not added (fable_2_app.h). Synthetic test keys (kTestKeyEventType) and the replay-pad
 //     channel are unaffected.
+// Background controller input (FABLE2_PAD_BACKGROUND, default on; =0 = focus only): with physical
+// input on, controllers keep reaching the game while its window is not focused. SDL gets
+// SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1 before SDL_Init (it drops pad events in the background
+// otherwise), GameController monitors background events, the SDK SDL pad driver stays active without
+// focus (controller_hotkeys.h BackFilterDriver), and the controller hotkeys act in the background too.
+// Keyboard and mouse stay focus-only. Never in a test-only instance (FABLE2_PHYSICAL_INPUT=0).
 // Window-system actions are not game input and keep working: the close button, Cmd+Q, Dock
 // Quit, move/resize/minimise (AppKit handles them before any of the paths above).
 #pragma once
 
 #include <cstdint>
 #include <cstdlib>
+#include <initializer_list>
 
 #include <SDL3/SDL_hints.h>
 
@@ -71,9 +78,22 @@ inline bool physical_input() {
   return on;
 }
 
+// Controllers work while the window is unfocused (see above). False in test-only instances.
+inline bool pad_background() {
+  static const bool on = [] {
+    const char* v = std::getenv("FABLE2_PAD_BACKGROUND");
+    return physical_input() && !(v && v[0] == '0');
+  }();
+  return on;
+}
+
 // SDL reads hints from the environment, so this must run before SDL_Init.
 inline bool ApplyLaunchHints() {
 #ifndef _WIN32
+  if (pad_background()) {
+    setenv(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1", 1);
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  }
   if (!physical_input()) {
     // No physical joystick backends at all: nothing is opened, nothing is polled, and the
     // controller's lights/rumble are never touched by this instance.

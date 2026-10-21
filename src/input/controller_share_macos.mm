@@ -94,6 +94,10 @@ void Hook(GCController* c) API_AVAILABLE(macos(11.0)) {
 
 }  // namespace
 
+void MonitorBackgroundEvents(bool on) {
+  if (@available(macOS 11.3, *)) GCController.shouldMonitorBackgroundEvents = on;
+}
+
 void Install(LogFn log, ShareFn share) {
   if (g_log) return;
   g_log = log;

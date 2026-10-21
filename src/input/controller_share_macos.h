@@ -25,5 +25,9 @@ using ShareFn = void (*)(const char* controller_name, bool down, bool app_active
 // Main thread. Safe to call more than once (only the first call installs).
 void Install(LogFn log, ShareFn share);
 
+// GCController.shouldMonitorBackgroundEvents (macOS 11.3+): controller input also while the app is
+// not frontmost (FABLE2_PAD_BACKGROUND).
+void MonitorBackgroundEvents(bool on);
+
 }  // namespace fable2::padkeys::gcshare
 #endif

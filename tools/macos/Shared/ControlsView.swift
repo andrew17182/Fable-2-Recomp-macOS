@@ -14,7 +14,8 @@
 // - Controllers: macOS remaps controller buttons system-wide (System Settings > Game Controllers); this
 //   tab links there and lists connected controllers (GameController framework). Controller hotkeys
 //   (turbo, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_QUICKSAVE,
-//   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h).
+//   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h);
+//   "Works in background": FABLE2_PAD_BACKGROUND=0 when off (default on, src/input/test_background.h).
 import AppKit
 import GameController
 import SwiftUI
@@ -326,6 +327,8 @@ struct ControlSettings: Equatable {
   /// Overlay binds by cvar name; a missing entry is the recomp default. "None" unbinds.
   var binds: [String: String] = [:]
   var viewButtonToGame = false
+  /// Controllers keep working while the game window is not focused (FABLE2_PAD_BACKGROUND, default on).
+  var padBackground = true
   /// Controller hotkey buttons; a missing entry is the action's default.
   var pad: [PadAction: PadButton] = [:]
 
@@ -358,6 +361,7 @@ struct ControlSettings: Equatable {
     if let scale = store.object(forKey: "mouseLookScale") as? Int { c.mouseLookScale = scale }
     if let binds = store.object(forKey: "hotkeyBinds") as? [String: String] { c.binds = binds }
     if let on = store.object(forKey: "viewButtonToGame") as? Bool { c.viewButtonToGame = on }
+    if let on = store.object(forKey: "padBackground") as? Bool { c.padBackground = on }
     for action in PadAction.allCases {
       if let raw = store.string(forKey: action.storeKey), let button = PadButton(rawValue: raw) { c.pad[action] = button }
     }
@@ -370,6 +374,7 @@ struct ControlSettings: Equatable {
     if mouseLookScale != old.mouseLookScale { store.set(mouseLookScale, forKey: "mouseLookScale") }
     if binds != old.binds { store.set(binds, forKey: "hotkeyBinds") }
     if viewButtonToGame != old.viewButtonToGame { store.set(viewButtonToGame, forKey: "viewButtonToGame") }
+    if padBackground != old.padBackground { store.set(padBackground, forKey: "padBackground") }
     for action in PadAction.allCases where padButton(action) != old.padButton(action) {
       store.set(padButton(action).rawValue, forKey: action.storeKey)
     }
@@ -387,6 +392,7 @@ struct ControlSettings: Equatable {
       if cvar == "bind_settings" { env.append("REX_MOUSE_UNLOCK_KEY=\(key == "None" ? "" : key)") }
     }
     if viewButtonToGame { env.append("FABLE2_VIEW_BUTTON_TO_GAME=1") }
+    if !padBackground { env.append("FABLE2_PAD_BACKGROUND=0") }  // default on in the game
     // Controller hotkeys: all three once any differs, so the game never mixes them with its defaults.
     if PadAction.allCases.contains(where: { padButton($0) != $0.defaultButton }) {
       for action in PadAction.allCases { env.append("\(action.envName)=\(padButton(action).rawValue)") }
@@ -398,7 +404,7 @@ struct ControlSettings: Equatable {
 
   /// Dev Launcher --launch options: --keyboard-map MAP, --mouse-look / --no-mouse-look, --mouse-look-scale N,
   /// --bind CVAR=KEY (bind_console, bind_settings, bind_debug_overlay, bind_achievements),
-  /// --view-button-to-game / --no-view-button-to-game, --pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs.
+  /// --view-button-to-game / --no-view-button-to-game, --pad-background / --no-pad-background, --pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs.
   mutating func applyCLI(_ arg: String, _ value: String?) -> CLIResult {
     switch arg {
     case "--keyboard-map":
@@ -422,6 +428,8 @@ struct ControlSettings: Equatable {
       binds[parts[0]] = parts[1]; return .ok(consumed: 1)
     case "--view-button-to-game": viewButtonToGame = true; return .ok(consumed: 0)
     case "--no-view-button-to-game": viewButtonToGame = false; return .ok(consumed: 0)
+    case "--pad-background": padBackground = true; return .ok(consumed: 0)
+    case "--no-pad-background": padBackground = false; return .ok(consumed: 0)
     default:
       guard let action = PadAction.allCases.first(where: { $0.cliFlag == arg }) else { return .notMine }
       guard let button = value.flatMap(PadButton.init(rawValue:)) else {
@@ -860,6 +868,14 @@ struct ControlsTabContent: View {
         }
       }
       .help(variant == .dev ? "FABLE2_VIEW_BUTTON_TO_GAME=1 when on (src/input/controller_hotkeys.h)." : "")
+      Toggle(isOn: $model.settings.controls.padBackground) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Works in background")
+          Text("Controllers keep working when the game window is not in front. Keyboard and mouse don't.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .help(variant == .dev ? "FABLE2_PAD_BACKGROUND=0 when off (src/input/test_background.h)." : "")
     } header: {
       Text("Game controllers")
     } footer: {

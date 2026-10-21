@@ -22,8 +22,9 @@
 //
 // Buttons are read straight from SDL gamepad events through an SDL event watch
 // (UI thread), so they work for any connected controller and act once per press
-// (down edge, 300 ms bounce guard). SDL drops pad events while the app is in the
-// background, and a test-only instance (FABLE2_PHYSICAL_INPUT=0) takes only the test
+// (down edge, 300 ms bounce guard). Pad events and the actions also arrive while the app is
+// in the background (FABLE2_PAD_BACKGROUND, default on, test_background.h; =0: focus only), and a
+// test-only instance (FABLE2_PHYSICAL_INPUT=0) takes only the test
 // channel's virtual pad, the same rules as the keyboard F7. Each open is logged once
 // with the controller name and whether it reports MISC1 (Share).
 //
@@ -263,8 +264,14 @@ class BackFilterDriver final : public rex::input::InputDriver {
  public:
   explicit BackFilterDriver(std::unique_ptr<rex::input::InputDriver> inner)
       : rex::input::InputDriver(nullptr, 0), inner_(std::move(inner)) {
-    // InputSystem::SetActiveCallback reaches only this wrapper; pass it on.
-    inner_->set_is_active_callback([this] { return is_active(); });
+    // InputSystem::SetActiveCallback reaches only this wrapper; pass it on. The SDK callback is false
+    // without window focus; with background pads on (FABLE2_PAD_BACKGROUND, test_background.h) the pad
+    // stays active while the app has no keyboard focus. Focused, the SDK rule (ImGui overlay capturing
+    // the mouse) still applies.
+    inner_->set_is_active_callback([this] {
+      if (fable2::testbg::pad_background() && !SDL_GetKeyboardFocus()) return true;
+      return is_active();
+    });
   }
   X_STATUS Setup() override { return X_STATUS_SUCCESS; }  // inner already set up
   void EnumerateDevices(std::vector<rex::input::DeviceInfo>& out) override {
@@ -734,6 +741,11 @@ inline void Install(rex::ui::WindowedAppContext* context) {
     REXLOG_INFO("[pad-hotkeys] physical input off: GameController Share watcher not installed");
     return;
   }
+  // GameController (SDL's MFi backend and the Share watcher) delivers input in the background only
+  // when asked to (FABLE2_PAD_BACKGROUND).
+  gcshare::MonitorBackgroundEvents(fable2::testbg::pad_background());
+  REXLOG_INFO("[pad-hotkeys] controllers in the background: {}",
+              fable2::testbg::pad_background() ? "on" : "off (FABLE2_PAD_BACKGROUND=0)");
   if (b.at(kShare) == Action::kNone) {
     REXLOG_INFO("[pad-hotkeys] Share not bound: GameController Share watcher not installed");
     return;
@@ -744,8 +756,9 @@ inline void Install(rex::ui::WindowedAppContext* context) {
         REXLOG_INFO("[pad-hotkeys] GameController Share {} on \"{}\" (app active={})",
                     down ? "down" : "up", name ? name : "?", app_active);
         if (!down) return;
-        // Same focus rule as SDL pad events: no actions from a background window.
-        if (!app_active) {
+        // Same focus rule as SDL pad events: no actions from a background window, unless background
+        // pads are on (FABLE2_PAD_BACKGROUND).
+        if (!app_active && !fable2::testbg::pad_background()) {
           REXLOG_INFO("[pad-hotkeys] GameController Share ignored: app not active");
           return;
         }

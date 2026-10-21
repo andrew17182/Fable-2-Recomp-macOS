@@ -260,6 +260,14 @@ that button is dropped (`FABLE2_PAD_TURBO=view` alone moves View from screenshot
 unbound the GameController Share watcher is not installed. `FABLE2_PAD_DEBUG=1` logs every pad button.
 Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view|share|ls|rs`.
 
+**Controllers in the background:** controllers keep working while the game window is not in front
+(Settings > Controls > Game controllers > **Works in background**, default on; `FABLE2_PAD_BACKGROUND=0` turns it off).
+Keyboard and mouse still need focus. The game sets `SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1` before `SDL_Init`
+and `GCController.shouldMonitorBackgroundEvents`. The SDK pad driver stays active with no keyboard focus; when
+focused, an ImGui overlay that captures the mouse still blocks it. The controller hotkeys (including the
+GameController Share watcher) act in the background too. Test-only instances (`FABLE2_PHYSICAL_INPUT=0`) never set
+any of this. Code: `src/input/test_background.h`, `src/input/controller_hotkeys.h`.
+
 ### Frame pacing (macOS)
 
 Use `tools/fable2_dev_session.py launch --mode library --save hero1-dog-live --target-slot none --fps 60` to try 60 FPS without writing back to live saves. `--fps 30` selects original pacing, and `--fps uncapped` removes the guest vblank limit. For the GPU-based choice, pass `--env FABLE2_FPS_60=auto --env REX_VSYNC=1` instead of `--fps`. Omit `--fps` to retain existing preferences (the copied config's `fps_60`, which defaults to `"auto"` when unset). 60 FPS mode targets one guest vblank per frame with the normal guest clock; it does not accelerate simulation time. The tested childhood market scene produced about 58–60 unique gameplay frames/s, with one settled window at 60.00; demanding scenes may run slower.

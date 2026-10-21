@@ -47,6 +47,8 @@ CASES = [
       'hotkeyBinds': {'bind_settings': 'F4', 'bind_console': 'None'}, 'viewButtonToGame': True},
      ['--keyboard-map', 'Return:Pause,E:A,LMB:X', '--mouse-look', '--mouse-look-scale', '700',
       '--bind', 'bind_settings=F4', '--bind', 'bind_console=None', '--view-button-to-game']),
+    # Controls > Game controllers > Works in background (default on).
+    ({'padBackground': False}, ['--no-pad-background']),
     # Diagnostics > Record input (src/diagnostics/fable2_session_journal.h).
     ({'recordInput': True}, ['--record-input']),
     # Controller hotkeys (FABLE2_PAD_*).
