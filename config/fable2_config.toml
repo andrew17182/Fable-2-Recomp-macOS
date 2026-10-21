@@ -77,8 +77,16 @@ fps_60 = "auto"
 # Default: 2.0
 turbo_scale = 2.0
 
-# Audio while turbo is on: "natural" = sped up with the same pitch (Apple
-# time-stretch), "high-pitch" = sped up and higher (like a fast-forwarded tape),
+# Slow motion: F8 toggles running the whole game at this fraction of normal
+# speed (starts off; 0.25 to 0.9 in 0.05 steps, 1.0 disables F8). The frame
+# rate stays at the cap. Turbo and slow motion turn each other off.
+# FABLE2_SLOW_SPEED=<x> (Dev Launcher "Slow speed") overrides the speed;
+# FABLE2_SLOW_SCALE=<x> overrides it and starts slow motion on.
+# Default: 0.5
+slow_scale = 0.5
+
+# Audio while turbo or slow motion is on: "natural" = same pitch (Apple
+# time-stretch), "high-pitch" = pitch follows the speed (like a tape),
 # "normal" = audio stays at 1x and drifts behind the game. Not used at 1x.
 # FABLE2_TURBO_AUDIO overrides it (Dev Launcher "Turbo audio").
 # Default: "natural"

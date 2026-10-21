@@ -106,8 +106,15 @@ void fable2_hook_ce_grantavail(PPCRegister& r3) {
 // Preserve guest vblank rate and clock scalar: simulation keeps its real clock.
 // Environment overrides TOML so dev sessions can compare without editing prefs.
 // FABLE2_FPS_60 / fps_60 = 1|0|auto; resolved once in src/core/fable2_fps_auto.cpp.
+// Slow mode (fable2_turbo.h): vblanks follow the guest clock and arrive slower, so at a cap the
+// frame is presented immediately (interval 0, the game's own PRESENT_INTERVAL_IMMEDIATE value)
+// and paced by real time to 60 (or 30) real FPS. Uncapped (vsync off) runs as at 1x.
 void fable2_hook_fps_60(PPCRegister& r11) {
   static const bool enabled=fable2::fps::Use60();
   if(fable2::turbo::Active()){r11.u64=fable2::turbo::FrameInterval();return;}
+  if(fable2::turbo::SlowActive()){
+    static const bool capped=rex::cvar::GetFlagByName("vsync")!="false";
+    if(capped){r11.u64=0;fable2::turbo::SlowPaceFrame(enabled?60.0:30.0);return;}
+  }
   if(enabled)r11.u64=1;
 }

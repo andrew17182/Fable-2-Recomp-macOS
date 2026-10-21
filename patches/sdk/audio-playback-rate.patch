@@ -4,7 +4,7 @@ rate x faster than real time and squeeze them into real time with an Apple audio
 offline in the callback (AUNewTimePitch: same pitch; AUVarispeed: resampled, higher pitch).
 The guest's frame credit (client semaphore) grows to base x rate x audio_rate_headroom (2), so
 short guest stalls are absorbed; on the way back the extra credit becomes debt and the turbo backlog is dropped under
-a one-chunk fade. Rate 1 / kNormal leaves the original direct path. Also: audio_rate_stats
+a one-chunk fade. Rates below 1 (fable2 slow mode) take the same units. Rate 1 / kNormal leaves the original direct path. Also: audio_rate_stats
 (queue depth / consumption log) and audio_capture (WAV of the device output) cvars. A small
 trim of the unit rate keeps input pulled equal to rate x output (up to +8%; AUNewTimePitch
 pulls less than rate x output on real content) and slows the pull
@@ -24,7 +24,7 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
 +///   kNaturalPitch - AUNewTimePitch time-stretch (faster, same pitch);
 +///   kHighPitch    - AUVarispeed resampling (faster and higher, like tape);
 +///   kNormal       - no processing; the guest is paced at 1x (original path).
-+/// rate <= 1 or kNormal bypasses the units: the output path is the original
++/// Rate 1 or kNormal bypasses the units (below 1 slows): the path is the original
 +/// one, bit for bit. Safe to call from any thread; the device callback picks
 +/// the new value up on its next call, with a short fade across the switch.
 +#define REX_AUDIO_PLAYBACK_RATE 1
@@ -335,7 +335,7 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
    const int len = static_cast<int>(sizeof(float) * sample_count);
    float* data = SDL_stack_alloc(float, sample_count);
    if (!data) {
-@@ -178,53 +321,303 @@
+@@ -178,53 +321,310 @@
    const StereoFold fold = GetStereoFold();
    const SurroundMix mix = GetSurroundMix();
    const float gain = GetOutputGain();
@@ -449,7 +449,7 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
 +  // Decide the path for this callback.
 +  const float want_rate = GetPlaybackRate();
 +  const PlaybackRateMode want_mode = GetPlaybackRateMode();
-+  bool want_unit = want_mode != PlaybackRateMode::kNormal && want_rate > 1.0f;
++  bool want_unit = want_mode != PlaybackRateMode::kNormal && want_rate != 1.0f;  // turbo or slow
 +  if (want_unit && rs.active && rs.unit_mode != want_mode) want_unit = false;  // re-create next time
 +  if (want_unit && (!rs.unit || rs.unit_mode != want_mode)) {
 +    const int idx = int(want_mode);
@@ -545,6 +545,13 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
 +    rs.win_in0 = rs.win_out0 = 0;
 +    set_credit(int(std::ceil(rs.credit_base * want_rate *
 +                                std::max(1.0, REXCVAR_GET(audio_rate_headroom)))));
++    // A lower rate (turbo -> slow) drops the backlog beyond the new credit, as switching off does.
++    std::unique_lock<std::mutex> guard(driver->frames_mutex_);
++    while (rs.credit_debt > 0 && !driver->frames_queued_.empty()) {
++      driver->frames_unused_.push(driver->frames_queued_.front());
++      driver->frames_queued_.pop();
++      --rs.credit_debt;
++    }
 +  }
  
 -      auto ret = driver->semaphore_->Release(1, nullptr);
@@ -720,7 +727,7 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
 +}  // namespace rex::audio::sdl
 --- /dev/null
 +++ b/src/audio/sdl/rate_unit_apple.cpp
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,197 @@
 +/**
 + * @file        audio/sdl/rate_unit_apple.cpp
 + * @brief       RateUnit on Apple audio units, rendered offline (no AUGraph, no
@@ -806,7 +813,9 @@ Defines REX_AUDIO_PLAYBACK_RATE in rex/audio/downmix.h.
 +    const AudioUnitParameterID param =
 +        kind_ == Kind::kTimePitch ? AudioUnitParameterID(kNewTimePitchParam_Rate)
 +                                  : AudioUnitParameterID(kVarispeedParam_PlaybackRate);
-+    return AudioUnitSetParameter(unit_, param, kAudioUnitScope_Global, 0, rate, 0) == noErr;
++    // AUVarispeed takes 0.25..4 (slow mode at 0.25 with a -20% trim would fall out of range).
++    const float r = kind_ == Kind::kVarispeed ? std::clamp(rate, 0.25f, 4.0f) : rate;
++    return AudioUnitSetParameter(unit_, param, kAudioUnitScope_Global, 0, r, 0) == noErr;
 +  }
 +
 +  bool Render(float* out, uint32_t frames) override {

@@ -16,7 +16,7 @@
 // gdt_us): the guest clock (rex::chrono::Clock::QueryGuestTickCount) runs at the turbo / slow-mode speed, so
 // gdt_us is the same game moment at any speed. Anchors are reliable state transitions (UI fingerprints,
 // named markers); replay matches them in recorded order and schedules each pad change at
-// live anchor guest time + gdt_us. Speed changes (turbo) are recorded as "speed" events, never replayed.
+// live anchor guest time + gdt_us. Speed changes (turbo, slow mode) are recorded as "speed" events, never replayed.
 // Schema 1 recordings (host time only) replay with dt_us as guest time (exact at 1x only).
 #include <algorithm>
 #include <chrono>
@@ -216,7 +216,7 @@ class Journal {
     std::ostringstream s;
     s<<"{\"version\":"<<Quote(BuildVersion())<<",\"save\":"<<env("FABLE2_RECORD_INPUT_SAVE")
      <<",\"res_scale\":"<<env("FABLE2_RES_SCALE")<<",\"fps_60\":"<<env("FABLE2_FPS_60")
-     <<",\"vsync\":"<<env("REX_VSYNC")<<",\"turbo_speed\":"<<env("FABLE2_TURBO_SPEED")
+     <<",\"vsync\":"<<env("REX_VSYNC")<<",\"turbo_speed\":"<<env("FABLE2_TURBO_SPEED")<<",\"slow_speed\":"<<env("FABLE2_SLOW_SPEED")
      <<",\"boot_save\":"<<env("FABLE2_BOOT_SAVE")<<",\"instance\":"<<env("FABLE2_INSTANCE_ID")<<'}';
     return s.str();
   }

@@ -16,7 +16,7 @@
 //   "Fable II Dev Launcher.app/Contents/MacOS/FableIIDevLauncher" --launch
 //       [--pick title|live:Hero000|library:NAME] [--no-skip-intro] [--no-boot]
 //       [--target-slot HeroNNN|none] [--test-control] [--fps settings|auto|30|60|uncapped]
-//       [--turbo-notice overlay|game] [--turbo-speed 1.1-4.0] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
+//       [--turbo-notice overlay|game] [--turbo-speed 1.1-4.0] [--slow-speed 0.25-0.9] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
 //       [--resolution auto|native|2|3] [--upscaling off|metalfx-spatial] [--effects original|full]
 //       [--display windowed|fullscreen] [--build playtest|latest] [--extra-env "NAME=VALUE ..."]
 //       [--<switch>|--no-<switch>] for every on/off setting (LaunchSettings.flags: fur-fix,
@@ -898,6 +898,11 @@ func cliLaunch(_ argv: [String]) -> Int32 {
         return fail("--turbo-speed expects 1.1 to 4.0")
       }
       s.turboSpeed = TurboSpeed.clean(v); i += 1
+    case "--slow-speed":
+      guard let v = value.flatMap(Double.init), SlowSpeed.range.contains(v) else {
+        return fail("--slow-speed expects 0.25 to 0.9")
+      }
+      s.slowSpeed = SlowSpeed.clean(v); i += 1
     case "--turbo-audio":
       guard let v = value.flatMap(TurboAudio.init(rawValue:)) else {
         return fail("--turbo-audio expects natural, high-pitch or normal")

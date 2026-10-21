@@ -263,6 +263,21 @@ enum TurboSpeed {
   static func label(_ value: Double) -> String { String(format: "%.1f×", value) }
 }
 
+/// Slow-motion speed (FABLE2_SLOW_SPEED, [patches] slow_scale): 0.25x to 0.9x in 0.05 steps (F8).
+enum SlowSpeed {
+  static let range: ClosedRange<Double> = 0.25...0.9
+  static let defaultValue = 0.5
+  /// Clamped to the range and rounded to twentieths (the game rounds the same way).
+  static func clean(_ value: Double) -> Double {
+    (min(max(value, range.lowerBound), range.upperBound) * 20).rounded() / 20
+  }
+  static func saved(in defaults: SettingsStore) -> Double {
+    guard let value = defaults.object(forKey: "slowSpeed") as? Double else { return defaultValue }
+    return clean(value)
+  }
+  static func label(_ value: Double) -> String { String(format: "%.2f×", value) }
+}
+
 /// Internal resolution (FABLE2_RES_SCALE; game config [graphics] resolution_scale,
 /// docs/resolution-scale.md). Always passed explicitly so the launcher, not the TOML, decides.
 enum InternalResolution: String, CaseIterable, Identifiable {
@@ -477,6 +492,7 @@ struct LaunchSettings: Equatable {
   var characterEditor = false
   var turboNotice = TurboNotice.overlay
   var turboSpeed = TurboSpeed.defaultValue
+  var slowSpeed = SlowSpeed.defaultValue
   var turboAudio = TurboAudio.natural
   // Display
   var frameRate = FrameRate.auto
@@ -903,6 +919,7 @@ struct LaunchSettings: Equatable {
     }
     s.turboNotice = TurboNotice.saved(in: defaults)
     s.turboSpeed = TurboSpeed.saved(in: defaults)
+    s.slowSpeed = SlowSpeed.saved(in: defaults)
     s.turboAudio = TurboAudio.saved(in: defaults)
     s.frameRate = FrameRate.saved(in: defaults)
     s.resolution = InternalResolution.saved(in: defaults)
@@ -926,6 +943,7 @@ struct LaunchSettings: Equatable {
     }
     put(turboNotice, old.turboNotice, "turboNotice", turboNotice.rawValue)
     put(turboSpeed, old.turboSpeed, "turboSpeed", turboSpeed)
+    put(slowSpeed, old.slowSpeed, "slowSpeed", slowSpeed)
     put(turboAudio, old.turboAudio, "turboAudio", turboAudio.rawValue)
     put(frameRate, old.frameRate, "frameRate", frameRate.rawValue)
     put(resolution, old.resolution, "resolutionScale", resolution.rawValue)
@@ -976,6 +994,8 @@ extension LaunchSettings {
     // Turbo speed (F7) and audio during turbo (docs/turbo.md). Always explicit so the launcher, not
     // [patches] turbo_scale / turbo_audio in the TOML, decides; FABLE2_TURBO_SPEED does not start turbo on.
     env.append("FABLE2_TURBO_SPEED=\(String(format: "%.1f", TurboSpeed.clean(turboSpeed)))")
+    // Slow-motion speed (F8, docs/turbo.md "Slow mode"); does not start slow mode on.
+    env.append("FABLE2_SLOW_SPEED=\(String(format: "%.2f", SlowSpeed.clean(slowSpeed)))")
     env.append("FABLE2_TURBO_AUDIO=\(turboAudio.rawValue)")
     // Collector's Edition + website items (docs/patches.md). Always explicit so the toggle,
     // not [patches] unlock_ce / unlock_website in the TOML, decides.

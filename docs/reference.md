@@ -165,22 +165,23 @@ environment route (below).
 - **Hotkeys:** the SDK overlay keys are cvars and can be rebound here: console (`bind_console`, Backtick),
   settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
   overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 8); **None** unbinds. Fixed in code
-  and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F9 FPS counter, ⌃⌘F full screen
+  and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F8 slow motion, F9 FPS counter, ⌃⌘F full screen
   (SDL's window menu), ⌘Q quit; the controller hotkeys show their button next to the keys.
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
-  controllers (GameController framework), the controller hotkeys (**Turbo**, **Quick save**, **Screenshot**:
-  None / View / Share / Left stick click / Right stick click; see "Controller hotkeys" below) and
+  controllers (GameController framework), the controller hotkeys
+  (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
+  click; see "Controller hotkeys" below) and
   **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
-settings key); a changed controller hotkey adds all three `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
-`mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padQuickSave`, `padScreenshot`
+settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
+`mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
-`--view-button-to-game`, `--pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`.
+`--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`.
 
 ### Mouse look (right stick)
 
@@ -244,11 +245,12 @@ string-build + `RunScript` call in `src/core/fable2_f5_lua.h`.
 
 ### Controller hotkeys
 
-Three actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = stick clicks):
+Four actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = stick clicks):
 
 | Action | Env | Default |
 |---|---|---|
 | Turbo on/off (same as F7) | `FABLE2_PAD_TURBO` | none |
+| Slow motion on/off (same as F8) | `FABLE2_PAD_SLOW` | none |
 | Quick save (same as F5) | `FABLE2_PAD_QUICKSAVE` | share |
 | Screenshot | `FABLE2_PAD_SCREENSHOT` | view |
 
@@ -278,13 +280,18 @@ Front-end audio preloading uses a 10 ms yield between banks instead of the origi
 
 **F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** 1.1×–4.0×, default 2.0×; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
 
+**F8** toggles **slow motion**: the whole game runs at a fraction of normal speed (default 0.5x; launcher
+**Slow speed** 0.25×–0.9× in 0.05 steps, `FABLE2_SLOW_SPEED`, `[patches] slow_scale`). The frame rate stays at
+the cap (60 or 30) or uncapped. Turbo and slow motion turn each other off. Audio follows with the turbo audio
+setting. Details: [docs/turbo.md](turbo.md) "Slow mode".
+
 ### FPS counter (macOS)
 
 **F9** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
 rate and average frame time over the last ~0.5 s (guest swaps, e.g. `52 FPS · 19.2 ms`). Extra fields, in
 order: `display N`, the presented rate, always shown (while any overlay is shown, this one included, the
 presenter repaints every UI tick, so the presented rate tends toward the display refresh), `2× res` at a
-higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on, and the upscaling filter in
+higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on (`slow 0.5x` in slow motion), and the upscaling filter in
 use for presenting, `Bilinear` or `MetalFX` (MetalFX only when it is actually applied: the window must be
 larger than the internal size, otherwise the presenter logs `[metalfx] not applied` and uses bilinear; read
 from the Metal plugin's `fable2_present_filter` export). Example: `52 FPS · 19.2 ms · display 120 · 2× res ·
@@ -363,8 +370,8 @@ Normal launcher play retains in-game subtitles and audio preferences across laun
 `tools/macos/build_dev_launcher.sh [--install]`; named "Fable II Dev Launcher" before 2026-10-15) picks a save and
 boots straight into it. Opening `Fable II.app`, `fable_2` or `run_macos_*.command` directly still works (advanced).
 The front page (2026-10-19, docs/player-app.md): **Start at Title Screen** and **Load Saved Game** (the default
-button, boots straight in), the save menu (newest first), **Resolution** and **Frame rate**, **Skip intro movies**, **Turbo speed**
-and **Turbo audio**, then the running
+button, boots straight in), the save menu (newest first), **Resolution** and **Frame rate**, **Skip intro movies**, **Turbo speed**,
+**Slow speed** and **Turbo audio**, then the running
 status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when
 shown). When a game ends the launcher comes back to the front; after a crash it shows a note with **Show Logs**.
 **Settings** is a page of the same window (the Settings / Launcher button, bottom-left on both pages; ⌘,), with these
@@ -410,7 +417,7 @@ prints the backend arguments without launching.
   (then `tools/fable2_test_control.py capture|press|close <session>`). `--test-control` turns on
   **background test mode** (`FABLE2_TEST_BACKGROUND=1`, launched with `open -g`): the game opens
   behind the frontmost app and never takes the keyboard/mouse; test `press` keys (including
-  F5/F6/F7/F9/5/6/7/8) go through the app's own test channel and work without focus, while real
+  F5/F6/F7/F8/F9/5/6/7/8) go through the app's own test channel and work without focus, while real
   keyboard/mouse input stays focus-gated; an App Nap exemption keeps frames at full rate when the
   window is covered. Background test launches are also muted (`--audio_mute=true`).
   Normal Launcher play does not set either. `fable2_test_control.py launch|replay`

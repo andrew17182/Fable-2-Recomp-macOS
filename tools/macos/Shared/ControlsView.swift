@@ -9,11 +9,11 @@
 // - Mouse look: the mouse_look / mouse_look_scale cvars (REX_MOUSE_LOOK, REX_MOUSE_LOOK_SCALE).
 // - Hotkeys: the SDK overlay binds are cvars (bind_console, bind_settings, bind_debug_overlay,
 //   bind_achievements; recomp defaults in src/input/recomp_hotkeys.h), so they are rebindable here
-//   (REX_BIND_*; the settings key is also mouse_unlock_key). F5/F6/F7/F9 and 5/6/7 are fixed in
+//   (REX_BIND_*; the settings key is also mouse_unlock_key). F5/F6/F7/F8/F9 and 5/6/7 are fixed in
 //   src/input/window_keyboard_mouse.h and only listed.
 // - Controllers: macOS remaps controller buttons system-wide (System Settings > Game Controllers); this
 //   tab links there and lists connected controllers (GameController framework). Controller hotkeys
-//   (turbo, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_QUICKSAVE,
+//   (turbo, slow, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_SLOW, FABLE2_PAD_QUICKSAVE,
 //   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h);
 //   "Works in background": FABLE2_PAD_BACKGROUND=0 when off (default on, src/input/test_background.h).
 import AppKit
@@ -258,18 +258,19 @@ enum PadButton: String, CaseIterable, Identifiable {
 
 /// Controller hotkeys: one button each (FABLE2_PAD_*).
 enum PadAction: String, CaseIterable, Identifiable {
-  case turbo, quickSave, screenshot
+  case turbo, slow, quickSave, screenshot
   var id: String { rawValue }
   var title: String {
     switch self {
     case .turbo: return "Turbo"
+    case .slow: return "Slow motion"
     case .quickSave: return "Quick save"
     case .screenshot: return "Screenshot"
     }
   }
   var defaultButton: PadButton {
     switch self {
-    case .turbo: return .none
+    case .turbo, .slow: return .none
     case .quickSave: return .share
     case .screenshot: return .view
     }
@@ -277,6 +278,7 @@ enum PadAction: String, CaseIterable, Identifiable {
   var envName: String {
     switch self {
     case .turbo: return "FABLE2_PAD_TURBO"
+    case .slow: return "FABLE2_PAD_SLOW"
     case .quickSave: return "FABLE2_PAD_QUICKSAVE"
     case .screenshot: return "FABLE2_PAD_SCREENSHOT"
     }
@@ -285,6 +287,7 @@ enum PadAction: String, CaseIterable, Identifiable {
   var cliFlag: String {
     switch self {
     case .turbo: return "--pad-turbo"
+    case .slow: return "--pad-slow"
     case .quickSave: return "--pad-quicksave"
     case .screenshot: return "--pad-screenshot"
     }
@@ -304,7 +307,8 @@ enum Hotkeys {
   static let fixed: [Hotkey] = [
     Hotkey(title: "Quick save", keys: "F5 or 5", detail: "Same as Save and Continue in the pause menu.", pad: .quickSave),
     Hotkey(title: "Lua script menu", keys: "F6 or 6", detail: "Opens the script selector (or runs f6_lua_path)."),
-    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (General > Turbo speed, Turbo audio, Turbo notice).", pad: .turbo),
+    Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (Turbo speed on the launcher page).", pad: .turbo),
+    Hotkey(title: "Slow motion on/off", keys: "F8", detail: "The whole game runs slower (Slow speed on the launcher page).", pad: .slow),
     Hotkey(title: "FPS counter", keys: "F9", detail: "Shows or hides the frame-rate counter."),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
     Hotkey(title: "Quit", keys: "⌘Q", detail: "Closes the game (it does not save)."),
@@ -313,7 +317,7 @@ enum Hotkeys {
   /// Keys the game also uses as fixed hotkeys (number keys only while no overlay is open).
   static let fixedKeys: [String: String] = [
     "F5": "Quick save", "5": "Quick save", "F6": "Lua script menu", "6": "Lua script menu",
-    "F7": "Turbo", "7": "Turbo", "F9": "FPS counter",
+    "F7": "Turbo", "7": "Turbo", "F8": "Slow motion", "F9": "FPS counter",
   ]
 }
 
@@ -404,7 +408,7 @@ struct ControlSettings: Equatable {
 
   /// Dev Launcher --launch options: --keyboard-map MAP, --mouse-look / --no-mouse-look, --mouse-look-scale N,
   /// --bind CVAR=KEY (bind_console, bind_settings, bind_debug_overlay, bind_achievements),
-  /// --view-button-to-game / --no-view-button-to-game, --pad-background / --no-pad-background, --pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs.
+  /// --view-button-to-game / --no-view-button-to-game, --pad-background / --no-pad-background, --pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs.
   mutating func applyCLI(_ arg: String, _ value: String?) -> CLIResult {
     switch arg {
     case "--keyboard-map":

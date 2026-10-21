@@ -12,6 +12,7 @@ A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, wit
 ## Features beyond the original game
 
 - **Turbo mode** (F7, up to 4×)
+- **Slow motion** (F8, down to 0.25×)
 - **Quick save** (F5)
 - **Load any save from the launcher**
 - **Faster loading**

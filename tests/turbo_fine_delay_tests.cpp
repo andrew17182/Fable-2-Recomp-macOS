@@ -4,7 +4,8 @@
 // period at 2x truncated to 0 (a yield, a poll, a one-shot timer) and guest sleep loops spun.
 // Checks: the scaling helper (0 = poll, infinite unscaled, at least 1 us, 1x unscaled), the
 // microsecond waits really block for a sub-millisecond timeout (plain, alertable, multiple), and a
-// sub-millisecond timer period stays periodic. Skips itself on SDK headers without the patch.
+// sub-millisecond timer period stays periodic. Slow mode (speed < 1) scales longer without
+// truncating, and the clock ratio is exact in thousandths (clock-scalar-precision.patch). Skips itself on SDK headers without the patch.
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -88,6 +89,33 @@ int main() {
   }
   timer->Cancel();
   assert(fired >= 3);  // a one-shot fires once; loose for a loaded build machine
+
+  // Slow mode (speed < 1): durations get longer, still in microseconds, nothing truncates.
+  Clock::set_guest_time_scalar(0.5);
+  assert(Clock::fine_guest_durations());
+  assert(Clock::ScaleGuestDurationMillisToMicros(1) == 2000);
+  assert(Clock::ScaleGuestDurationMillis(1) == 2);
+  assert(Clock::ScaleGuestDurationMillisToMicros(kInfinite) == uint64_t(kInfinite) * 1000);
+  assert(Clock::ScaleGuestDurationMillis(kInfinite - 1) == kInfinite);  // saturates (= infinite)
+  Clock::set_guest_time_scalar(0.25);
+  assert(Clock::ScaleGuestDurationMillisToMicros(3) == 12000);
+  assert(Clock::ScaleGuestDurationMillisToMicros(kInfinite - 1) == uint64_t(kInfinite - 1) * 4000);
+
+  // Clock ratio exact in thousandths (patches/sdk/clock-scalar-precision.patch): guest/host tick
+  // ratio = speed x guest frequency / host frequency. Before it, 0.75 ran at 10/13 = 0.769.
+  for (double speed : {0.25, 0.35, 0.5, 0.75, 0.8, 0.9, 1.0, 1.1, 2.0, 2.3, 4.0}) {
+    Clock::set_guest_time_scalar(speed);
+    const auto ratio = Clock::guest_tick_ratio();
+    const uint64_t milli = uint64_t(speed * 1000.0 + 0.5);
+    // first / second == milli/1000 * guest_freq / host_freq, cross-multiplied.
+    const unsigned __int128 lhs = (unsigned __int128)ratio.first * Clock::QueryHostTickFrequency() * 1000;
+    const unsigned __int128 rhs = (unsigned __int128)ratio.second * Clock::guest_tick_frequency() * milli;
+    if (lhs != rhs) {
+      std::printf("clock ratio for speed %.2f: %llu/%llu\n", speed, (unsigned long long)ratio.first,
+                  (unsigned long long)ratio.second);
+      assert(false);
+    }
+  }
 
   Clock::set_guest_time_scalar(1.0);
   std::printf("turbo fine delay: ok (timer fired %d times in 50 ms at a 500 us period)\n", fired);

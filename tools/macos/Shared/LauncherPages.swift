@@ -135,7 +135,8 @@ struct RecordingBadge: View {
   }
 }
 
-/// Resolution and Frame rate (one section), Skip intro movies (its own section), then Turbo speed and Turbo audio.
+/// Resolution and Frame rate (one section), Skip intro movies (its own section), then Turbo speed, Slow speed and
+/// Turbo audio.
 struct FrontPageOptions: View {
   @ObservedObject var model: SettingsModel
   var body: some View {
@@ -163,8 +164,8 @@ struct FrontPageOptions: View {
   }
 }
 
-/// Turbo speed (slider and stepper) and Turbo audio: on the front page since 2026-10-19 (were in Settings >
-/// General; Turbo notice stays there).
+/// Turbo speed (slider and stepper), Slow speed (2026-10-21) and Turbo audio: on the front page since 2026-10-19
+/// (were in Settings > General; Turbo notice stays there).
 struct TurboControls: View {
   @ObservedObject var model: SettingsModel
   var body: some View {
@@ -177,10 +178,19 @@ struct TurboControls: View {
       }
     }
     .help("Game speed while turbo is on. F7 or 7 toggles turbo; a controller button can too (Controls).")
+    let slow = Binding(get: { model.settings.slowSpeed }, set: { model.settings.slowSpeed = SlowSpeed.clean($0) })
+    LabeledContent("Slow speed") {
+      HStack {
+        Slider(value: slow, in: SlowSpeed.range, step: 0.05)
+        Stepper(SlowSpeed.label(model.settings.slowSpeed), value: slow, in: SlowSpeed.range, step: 0.05)
+          .monospacedDigit()
+      }
+    }
+    .help("F8 toggles slow motion; a controller button can too (Controls).")
     FixedPicker("Turbo audio", selection: $model.settings.turboAudio) {
       ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
     }
-    .help("Sound while turbo is on.")
+    .help("Sound while turbo or slow motion is on.")
   }
 }
 

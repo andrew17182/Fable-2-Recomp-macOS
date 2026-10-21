@@ -69,6 +69,7 @@ struct Values {
   bool fps_60 = false;
   bool fps_60_auto = true;
   double turbo_scale = 2.0; // F7 turbo speed (1.0 disables); see fable2_turbo.h.
+  double slow_scale = 0.5;  // F8 slow-motion speed (0.25..0.9; 1.0 disables); see fable2_turbo.h.
   // Audio while turbo is on (docs/turbo.md, "Turbo audio"): "natural" = sped up
   // with natural pitch (Apple AUNewTimePitch), "high-pitch" = sped up and
   // higher (AUVarispeed), "normal" = 1x (guest audio paced at real time).

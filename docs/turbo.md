@@ -1,4 +1,4 @@
-# Turbo mode (macOS)
+# Turbo and slow mode (macOS)
 
 Emulator-style speed-up: the whole game (simulation, animation, AI, timers,
 cutscenes) runs faster while the screen stays at ~30 FPS.
@@ -9,6 +9,7 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   menus and gameplay, 7 is ignored while an overlay captures typing). The SDK
   achievements overlay moved from 7 to 8. Turbo is **off** at every start. A toggle shows "Turbo 2x on" /
   "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
+- **F8** toggles slow motion (below 1x; see "Slow mode").
 - Controller: Settings > Controls > Game controllers > **Turbo** puts the same toggle on View, Share or a
   stick click (`FABLE2_PAD_TURBO=view|share|ls|rs`, default none; docs/reference.md "Controller hotkeys").
 - Speed: launcher front page → **Turbo speed** (slider and stepper, 1.1× to 4.0×
@@ -27,6 +28,54 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
   (guest clock rate against real time) for validation.
 
 Turbo overrides `fps_60`.
+
+## Slow mode (2026-10-21)
+
+Turbo below 1x: the whole game runs slower while the screen keeps its frame rate.
+
+- **F8** toggles it (number-row 8 stays the achievements overlay). Off at every start. Notice "Slow 0.5x on/off",
+  F9 counter field `slow 0.5x`. Controller: Settings > Controls > Game controllers > **Slow motion**
+  (`FABLE2_PAD_SLOW=view|share|ls|rs`, default none). Test channel key `f8`.
+- Speed: launcher front page **Slow speed** (0.25× to 0.9× in 0.05 steps, default 0.5×; `FABLE2_SLOW_SPEED`), or
+  `[patches] slow_scale` (same range; 1.0 disables F8). `FABLE2_SLOW_SCALE=<x>` also starts it on (tests).
+- Turbo and slow mode are one speed setting (`fable2::turbo::SetMode`): turning one on turns the other off; F7 in
+  slow mode goes straight to turbo.
+- Clock: the same `set_guest_time_scalar`, below 1. The SDK kept the scalar as tenths above 1 and as
+  `10 / trunc(10 / s)` below 1, so 0.75 ran at 0.769 and 0.9 at 0.909;
+  `patches/sdk/clock-scalar-precision.patch` makes it `llround(s x 1000) / 1000` for every scalar (turbo's tenths
+  reduce to the same ratio as before). Guest sleeps and waits get longer (`Sleep(1)` at 0.5x = 2 ms, still in
+  microseconds, see "Precise sleeps"); nothing truncates, and a millisecond duration that would pass `UINT32_MAX`
+  saturates to infinite, as before.
+- Frames: vblanks follow the guest clock, so at 0.5x a 60 cap (one vblank per frame) would show 30 FPS. At a cap
+  (`vsync` on), the frame-dispatch hook (`fable2_hook_fps_60`) asks for an immediate present (interval 0, the
+  game's own `PRESENT_INTERVAL_IMMEDIATE` value) and paces frames by real time to 60 (or 30 with `fps_60` off):
+  `SlowPaceFrame`, a kqueue timer sleep on the guest render thread, no spin; a frame later than one period
+  re-anchors. Uncapped (`vsync` off: 1 kHz guest vblanks) runs as at 1x.
+- Audio: the turbo audio stage at rate s < 1 (`natural` = AUNewTimePitch, slower at the same pitch;
+  `high-pitch` = AUVarispeed, slower and lower, rate clamped to its 0.25 minimum; `normal` = 1x, the old path).
+  The guest credit stays at the 1x base (`audio_maxqframes` x s x headroom is below it). Turbo -> slow drops the
+  turbo backlog beyond the new credit, as turning turbo off does.
+
+**Measured 2026-10-21** (Bower Lake dog save, muted background test sessions, 2x resolution, M5 Max, perf lock, no
+contention; 15 s still then 6 s walking with a camera turn; process CPU in % of one core; frame interval = guest
+swaps):
+
+| Arm | Clock (guest/real, every 5 s window) | FPS still / move | p99 / max frame (ms) | CPU still / move | Audio (5 s windows) |
+|---|---|---|---|---|---|
+| 1x, 60 cap | 1.0000 | 60.0 / 60.0 | 18.3 / 19.1 | 119 / 120 | direct |
+| 0.75x, 60 cap | 0.7500 | 60.0 / 60.0 | 16.9 / 18.3 | 119 / 122 | 0.750x in and out, 0 starved |
+| 0.5x, 60 cap | 0.5000 | 60.0 / 60.0 | 16.9 / 17.2 | 111 / 114 | 0.500x, 0 starved |
+| 0.25x, 60 cap | 0.2500 | 60.0 / 60.0 | 17.0 / 17.4 | 105 / 107 | 0.250x, 0 starved |
+| 0.5x, 30 cap | 0.5000 | 30.0 / 30.0 | 33.6 / 33.7 | 72 / 72 | 0.500x, 0 starved |
+| 1x, uncapped | 1.0000 | 81.0 / 81.3 | 13.4 / 14.4 | 152 / 156 | direct |
+| 0.5x, uncapped | 0.5000 | 80.6 / 80.9 | 13.1 / 13.3 | 145 / 136 | 0.500x, 0 starved |
+| 0.25x, uncapped | 0.2500 | 79.8 / 80.7 | 13.3 / 14.0 | 138 / 139 | 0.250x, 0 starved |
+
+Pacing at the cap is steadier than at 1x (p95 16.8 against 17.9 ms), because the frame waits on a real-time
+deadline instead of the vblank thread's 1 ms sleep loop. Toggles (F8 -> F7 -> F8 -> F8 through the test channel,
+60 cap): 60.0 / 30.0 (turbo, clock 2.0000) / 60.0 / 60.0 FPS, guest ticks continuous across each change, no
+silent chunks. Evidence: `out/validation/f2diag/slow-mode-20261021/` (one `arm.json` per arm). Not checked yet: by
+ear on speakers, a pad bound to Slow motion (the dispatch path is the turbo one).
 
 ## Turbo audio
 

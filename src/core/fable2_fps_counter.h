@@ -7,7 +7,7 @@
 // this one included, is shown, so it tends toward the display refresh) is always
 // shown. Digits are tabular, so the width changes only with the digit count.
 // Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x"
-// while turbo is on, and the upscaling filter in use for presenting
+// while turbo is on ("slow 0.5x" in slow mode), and the upscaling filter in use for presenting
 // ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter
 // export, MetalFX only when it is actually applied). The text uses the game's
 // UI font (src/core/fable2_turbo_notice.h) and falls back to the ImGui font.
@@ -105,6 +105,7 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     append("%sdisplay %.0f", sep, display_fps);
     if (res_scale_ > 1) append("%s%d%s res", sep, res_scale_, times_);
     if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::ConfiguredScale());
+    if (fable2::turbo::SlowActive()) append("%sslow %gx", sep, fable2::turbo::SlowScale());
     switch (PresentFilter()) {
       case 1: append("%sBilinear", sep); break;
       case 2: append("%sMetalFX", sep); break;

@@ -22,6 +22,16 @@
 //
 // A toggle only changes the guest/host tick ratio; the accumulated guest tick
 // count is kept, so the guest clock does not jump (src/core/fable2_guest_clock.h).
+//
+// Slow mode (docs/turbo.md "Slow mode"): the same clock scalar below 1. F8 toggles it
+// (keyboard_gamepad.h; test channel key "f8"; controller FABLE2_PAD_SLOW). [patches]
+// slow_scale is the speed while on (default 0.5; 0.25..0.9 in 0.05 steps, exact since
+// patches/sdk/clock-scalar-precision.patch; 1.0 disables F8). FABLE2_SLOW_SPEED=<x>
+// (launcher "Slow speed") overrides it, FABLE2_SLOW_SCALE=<x> overrides it AND starts slow
+// mode on (tests). Turbo and slow mode are one speed setting: turning one on turns the
+// other off. Audio uses the turbo audio stage at the slow rate. Frames: vblanks arrive
+// slower, so at the 60 or 30 cap the frame-dispatch hook presents immediately and paces
+// frames by real time (SlowPaceFrame) instead; uncapped runs as it does at 1x.
 #pragma once
 #include <algorithm>
 #include <atomic>
@@ -33,6 +43,9 @@
 #include <string>
 #include <thread>
 #include <rex/chrono/clock.h>
+#ifdef __APPLE__
+#include <sys/event.h>
+#endif
 #if __has_include(<rex/audio/downmix.h>)
 #include <rex/audio/downmix.h>
 #endif
@@ -76,6 +89,41 @@ inline double ConfiguredScale() {
   return scale;
 }
 
+inline const char* EnvSlowScale() {
+  const char* env = std::getenv("FABLE2_SLOW_SCALE");
+  return env && *env ? env : nullptr;
+}
+
+// Slow-mode speed: 0.25..0.9 in 0.05 steps; 1.0 = slow mode disabled.
+inline double ParseSlowScale(double value) {
+  const double rounded = std::round(value * 20.0) / 20.0;
+  if (rounded == 1.0) return 1.0;
+  if (!(rounded >= 0.25 && rounded <= 0.9)) return -1.0;  // invalid
+  return rounded;
+}
+
+inline double SlowScale() {
+  static const double scale = [] {
+    double value = fable2::config::Get().slow_scale;
+    // FABLE2_SLOW_SPEED (launcher setting) then FABLE2_SLOW_SCALE (tests) override the TOML.
+    for (const char* name : {"FABLE2_SLOW_SPEED", "FABLE2_SLOW_SCALE"}) {
+      const char* env = std::getenv(name);
+      if (!env || !*env) continue;
+      char* end = nullptr;
+      const double parsed = std::strtod(env, &end);
+      if (end && !*end) value = parsed;
+      else REXSYS_WARN("[turbo] ignoring invalid {}='{}'", name, env);
+    }
+    const double scale = ParseSlowScale(value);
+    if (scale < 0) {
+      REXSYS_WARN("[turbo] slow speed {} outside 0.25..0.9; slow mode disabled", value);
+      return 1.0;
+    }
+    return scale;
+  }();
+  return scale;
+}
+
 // Audio while turbo is on: [patches] turbo_audio, FABLE2_TURBO_AUDIO overrides.
 inline fable2::config::Values::TurboAudio AudioMode() {
   static const auto mode = [] {
@@ -112,16 +160,66 @@ inline bool AudioFollows() {
 #endif
 }
 
-inline std::atomic<bool>& ActiveFlag() {
-  static std::atomic<bool> active{false};
-  return active;
+// Guest speed mode: off (1x), turbo (ConfiguredScale) or slow (SlowScale). One at a time.
+enum class Mode : int { kOff = 0, kTurbo = 1, kSlow = 2 };
+
+inline std::atomic<int>& ModeFlag() {
+  static std::atomic<int> mode{0};
+  return mode;
 }
 
-inline bool Active() { return ActiveFlag().load(std::memory_order_relaxed); }
+inline Mode CurrentMode() { return Mode(ModeFlag().load(std::memory_order_relaxed)); }
+// Turbo on.
+inline bool Active() { return CurrentMode() == Mode::kTurbo; }
+// Slow mode on.
+inline bool SlowActive() { return CurrentMode() == Mode::kSlow; }
 
 // Vblanks to wait per frame while turbo is active (original pacing is 2).
 inline uint64_t FrameInterval() {
   return uint64_t(std::max(1L, std::lround(2.0 * ConfiguredScale())));
+}
+
+// Slow mode at a frame cap: real-time frame pacing in the frame-dispatch hook (fable2_hook_fps_60),
+// which then asks for an immediate present. Vblanks follow the guest clock, so at 0.5x a
+// one-vblank (60) cap would give 30 real FPS; this holds `fps` real frames per second instead.
+// A frame later than one period re-anchors (no catch-up burst). Guest render thread only.
+inline void PaceSleepUs(int64_t us) {
+  if (us <= 0) return;
+#ifdef __APPLE__
+  thread_local int kq = kqueue();
+  if (kq >= 0) {
+    struct kevent ev;
+    EV_SET(&ev, 1, EVFILT_TIMER, EV_ADD | EV_ONESHOT, NOTE_USECONDS | NOTE_CRITICAL, us, nullptr);
+    struct kevent out;
+    if (kevent(kq, &ev, 1, &out, 1, nullptr) >= 0) return;
+  }
+#endif
+  std::this_thread::sleep_for(std::chrono::microseconds(us));
+}
+
+inline std::atomic<uint32_t>& SlowPaceEpoch() {  // bumped on each mode change: re-anchor
+  static std::atomic<uint32_t> epoch{0};
+  return epoch;
+}
+
+inline void SlowPaceFrame(double fps) {
+  using SteadyClock = std::chrono::steady_clock;
+  thread_local SteadyClock::time_point next{};
+  thread_local uint32_t epoch = ~0u;
+  const auto period = std::chrono::duration_cast<SteadyClock::duration>(std::chrono::duration<double>(1.0 / fps));
+  const uint32_t now_epoch = SlowPaceEpoch().load(std::memory_order_relaxed);
+  auto now = SteadyClock::now();
+  if (epoch != now_epoch || now > next + period) {
+    epoch = now_epoch;
+    next = now + period;
+    return;
+  }
+  if (next > now) {
+    const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(next - now).count();
+    // kqueue timer with NOTE_CRITICAL (fable2_spin_wait.h PreciseSleepUs): ~10-50 us late, no spin.
+    PaceSleepUs(us);
+  }
+  next += period;
 }
 
 // Optional on-screen notice, installed by the app (src/core/fable2_turbo_notice.h).
@@ -158,9 +256,10 @@ inline std::atomic<int>& SdkDividesFlag() {
   return state;
 }
 
-inline bool ProbeSdkDividesDurations() {
+inline bool ProbeSdkDividesDurations(double speed) {
   const uint32_t host_ms = rex::chrono::Clock::ScaleGuestDurationMillis(1000);
-  const bool divides = host_ms < 1000;
+  // Fixed: 1000 / speed (500 at 2x, 2000 at 0.5x). Prebuilt: 1000 x speed.
+  const bool divides = speed > 1.0 ? host_ms < 1000 : host_ms > 1000;
   SdkDividesFlag().store(divides ? 1 : 0, std::memory_order_relaxed);
   return divides;
 }
@@ -170,46 +269,80 @@ inline std::mutex& ToggleMutex() {
   return m;
 }
 
-inline void SetActive(bool on) {
+inline double ModeSpeed(Mode mode) {
+  return mode == Mode::kTurbo ? ConfiguredScale() : mode == Mode::kSlow ? SlowScale() : 1.0;
+}
+
+inline const char* ModeName(Mode mode) {
+  return mode == Mode::kTurbo ? "turbo" : mode == Mode::kSlow ? "slow" : "off";
+}
+
+// Switches the guest speed mode (turbo, slow or off). Turning turbo on turns slow mode off and
+// the other way round. A mode whose speed is 1.0 (disabled) is refused and the current mode kept.
+inline void SetMode(Mode want) {
   std::lock_guard lock(ToggleMutex());
-  const double scale = ConfiguredScale();
-  if (scale <= 1.0) {
-    if (on) REXSYS_INFO("[turbo] turbo_scale is 1.0; turbo disabled (set [patches] turbo_scale)");
-    on = false;
+  const Mode was = CurrentMode();
+  if (want != Mode::kOff && ModeSpeed(want) == 1.0) {
+    if (want == Mode::kTurbo)
+      REXSYS_INFO("[turbo] turbo_scale is 1.0; turbo disabled (set [patches] turbo_scale)");
+    else
+      REXSYS_INFO("[turbo] slow_scale is 1.0; slow mode disabled (set [patches] slow_scale)");
+    return;
   }
   if (rex::cvar::GetFlagSource("clock_no_scaling") == rex::cvar::Source::kCommandLine &&
-      REXCVAR_GET(clock_no_scaling) && on) {
-    REXSYS_WARN("[turbo] --clock_no_scaling=true blocks turbo");
-    on = false;
+      REXCVAR_GET(clock_no_scaling) && want != Mode::kOff) {
+    REXSYS_WARN("[turbo] --clock_no_scaling=true blocks turbo and slow mode");
+    return;
   }
+  const double speed = ModeSpeed(want);
   // Guest ticks either side of the ratio change (continuity evidence in logs).
   const uint64_t before = rex::chrono::Clock::QueryGuestTickCount();
-  rex::chrono::Clock::set_guest_time_scalar(on ? scale : 1.0);
-  const bool applied = rex::chrono::Clock::guest_time_scalar() == (on ? scale : 1.0);
+  rex::chrono::Clock::set_guest_time_scalar(speed);
+  const bool applied = rex::chrono::Clock::guest_time_scalar() == speed;
   // Probe before any overwrite: at scalar s the fixed runtime returns 1000/s.
-  if (applied && on) ProbeSdkDividesDurations();
+  if (applied && speed != 1.0) ProbeSdkDividesDurations(speed);
   const bool sdk_fixed = SdkDividesFlag().load(std::memory_order_relaxed) == 1;
-  if (applied && WaitFix() && !sdk_fixed) rex::chrono::guest_time_scalar_ = on ? 1.0 / scale : 1.0;
-  if (applied) fable2::guestspeed::g_speed.store(on ? scale : 1.0, std::memory_order_relaxed);
+  if (applied && WaitFix() && !sdk_fixed) rex::chrono::guest_time_scalar_ = 1.0 / speed;
+  const Mode now = applied ? want : Mode::kOff;
+  if (applied) fable2::guestspeed::g_speed.store(speed, std::memory_order_relaxed);
   const uint64_t after = rex::chrono::Clock::QueryGuestTickCount();
-  ActiveFlag().store(on, std::memory_order_relaxed);
-  if (applied) ApplyAudioRate(on, scale);
-  fable2::fr::SetTag(fable2::fr::kTagTurbo, on ? 1 : 0);
+  ModeFlag().store(int(now), std::memory_order_relaxed);
+  SlowPaceEpoch().fetch_add(1, std::memory_order_relaxed);
+  if (applied) ApplyAudioRate(speed != 1.0, speed);
+  fable2::fr::SetTag(fable2::fr::kTagTurbo, now == Mode::kTurbo ? 1 : 0);
   REXSYS_INFO(
-      "[turbo] {} (scale {:.1f}x, guest speed {:.2f}, duration scalar {:.2f}{}, frame interval {} vblanks, "
+      "[turbo] {} -> {} (speed {:.2f}x, guest speed {:.2f}, duration scalar {:.2f}{}, frame interval {}, "
       "audio {}, guest ticks {} -> {})",
-      on ? "ON" : "off", scale, fable2::guestspeed::Get(), rex::chrono::Clock::guest_time_scalar(),
+      ModeName(was), ModeName(now), speed, fable2::guestspeed::Get(), rex::chrono::Clock::guest_time_scalar(),
       sdk_fixed ? " (SDK divides durations; turbo wait fix not needed)"
       : WaitFix() ? " (turbo wait fix; FABLE2_TURBO_WAIT_FIX=0 disables)"
                   : " (SDK, waits run long)",
-      on ? FrameInterval() : 2,
+      now == Mode::kTurbo  ? std::to_string(FrameInterval()) + " vblanks"
+      : now == Mode::kSlow ? std::string("real-time pacing at the cap")
+                           : std::string("2 vblanks"),
       AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)", before, after);
-  if (g_notice && scale > 1.0) {
-    char text[48];
-    std::snprintf(text, sizeof(text), "Turbo %gx %s", scale, on ? "on" : "off");
-    g_notice(text);
-  }
+  if (!g_notice) return;
+  // One notice per change: what is on now, else what went off.
+  const Mode shown = now != Mode::kOff ? now : was;
+  if (shown == Mode::kOff) return;
+  char text[48];
+  std::snprintf(text, sizeof(text), "%s %gx %s", shown == Mode::kTurbo ? "Turbo" : "Slow",
+                ModeSpeed(shown), now == shown ? "on" : "off");
+  g_notice(text);
 }
+
+// Turbo on/off (off leaves slow mode alone).
+inline void SetActive(bool on) {
+  if (on) SetMode(Mode::kTurbo);
+  else if (Active()) SetMode(Mode::kOff);
+}
+
+inline void SetSlow(bool on) {
+  if (on) SetMode(Mode::kSlow);
+  else if (SlowActive()) SetMode(Mode::kOff);
+}
+
+inline void ToggleSlow() { SetSlow(!SlowActive()); }
 
 inline void Toggle() { SetActive(!Active()); }
 
@@ -233,9 +366,9 @@ inline void StartClockReport() {
       const double real = std::chrono::duration<double>(t1 - t0).count();
       const double total = std::chrono::duration<double>(t1 - tstart).count();
       REXSYS_INFO("[clock-report] guest/real {:.4f} over {:.2f}s (cumulative {:.4f} over {:.1f}s), "
-                  "turbo {}, speed {:.2f}",
+                  "mode {}, speed {:.2f}",
                   (double(g1 - g0) / freq) / real, real,
-                  (double(g1 - gstart) / freq) / total, total, Active() ? "on" : "off",
+                  (double(g1 - gstart) / freq) / total, total, ModeName(CurrentMode()),
                   fable2::guestspeed::Get());
       g0 = g1;
       t0 = t1;
@@ -243,15 +376,20 @@ inline void StartClockReport() {
   }).detach();
 }
 
-// Called once after runtime setup. Turbo starts off unless FABLE2_TURBO_SCALE
-// is set (tests); F7/7 toggles it.
+// Called once after runtime setup. Turbo and slow mode start off unless FABLE2_TURBO_SCALE /
+// FABLE2_SLOW_SCALE is set (tests; turbo wins if both are); F7/7 and F8 toggle them.
 inline void Init() {
   const double scale = ConfiguredScale();
+  const double slow = SlowScale();
   const char* speed_env = std::getenv("FABLE2_TURBO_SPEED");
-  REXSYS_INFO("[turbo] ready: F7/7 toggles {:.1f}x (turbo_scale{}), turbo audio {}", scale,
-              EnvScale() ? ", FABLE2_TURBO_SCALE" : speed_env && *speed_env ? ", FABLE2_TURBO_SPEED" : "",
+  const char* slow_env = std::getenv("FABLE2_SLOW_SPEED");
+  REXSYS_INFO("[turbo] ready: F7/7 toggles {:.1f}x (turbo_scale{}), F8 toggles slow {:.2f}x (slow_scale{}), "
+              "audio {}",
+              scale, EnvScale() ? ", FABLE2_TURBO_SCALE" : speed_env && *speed_env ? ", FABLE2_TURBO_SPEED" : "",
+              slow, EnvSlowScale() ? ", FABLE2_SLOW_SCALE" : slow_env && *slow_env ? ", FABLE2_SLOW_SPEED" : "",
               AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)");
   if (EnvScale() && scale > 1.0) SetActive(true);
+  else if (EnvSlowScale() && slow < 1.0) SetSlow(true);
   StartClockReport();
 }
 

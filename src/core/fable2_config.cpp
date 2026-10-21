@@ -169,6 +169,11 @@ bool Load(const std::filesystem::path& path) {
       else REXSYS_WARN("[fable2-config] [patches] turbo_scale: expected a number; using {}",
                        values.turbo_scale);
     }
+    if (const auto slow = patches_table[toml::path{"slow_scale"}]) {
+      if (auto v = slow.value<double>()) values.slow_scale = *v;
+      else REXSYS_WARN("[fable2-config] [patches] slow_scale: expected a number; using {}",
+                       values.slow_scale);
+    }
     if (const auto audio = patches_table[toml::path{"turbo_audio"}]) {
       const auto str = audio.value_exact<std::string>();
       const auto mode = str ? ParseTurboAudio(*str) : std::nullopt;

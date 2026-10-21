@@ -1,7 +1,8 @@
-// fable_2 - controller hotkeys: bindable turbo / quick save / screenshot.
+// fable_2 - controller hotkeys: bindable turbo / slow / quick save / screenshot.
 //
-// Three actions, each bound to one controller button (or none):
+// Four actions, each bound to one controller button (or none):
 //   FABLE2_PAD_TURBO       default none   - same toggle as F7 (fable2::turbo::Toggle)
+//   FABLE2_PAD_SLOW        default none   - same toggle as F8 (fable2::turbo::ToggleSlow)
 //   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as F5
 //                                           (fable2::quicksave::request, src/core/fable2_quick_save.h)
 //   FABLE2_PAD_SCREENSHOT  default view   - saves the game's rendered frame as a PNG:
@@ -120,13 +121,14 @@ inline bool pad_debug() {
 }
 
 // ---------------------------------------------------------------------------
-// Bindings (FABLE2_PAD_TURBO / FABLE2_PAD_QUICKSAVE / FABLE2_PAD_SCREENSHOT).
-enum class Action : uint8_t { kNone, kTurbo, kQuickSave, kScreenshot };
+// Bindings (FABLE2_PAD_TURBO / FABLE2_PAD_SLOW / FABLE2_PAD_QUICKSAVE / FABLE2_PAD_SCREENSHOT).
+enum class Action : uint8_t { kNone, kTurbo, kQuickSave, kScreenshot, kSlow };
 enum Button : int { kView, kShare, kLeftStick, kRightStick, kButtonCount };
 
 inline const char* ActionName(Action a) {
   switch (a) {
     case Action::kTurbo: return "turbo";
+    case Action::kSlow: return "slow";
     case Action::kQuickSave: return "quick save";
     case Action::kScreenshot: return "screenshot";
     default: return "nothing";
@@ -179,12 +181,14 @@ inline Bindings ResolveBindings() {
     int fallback;
   };
   const Slot slots[] = {{Action::kTurbo, "FABLE2_PAD_TURBO", -1},
+                        {Action::kSlow, "FABLE2_PAD_SLOW", -1},
                         {Action::kQuickSave, "FABLE2_PAD_QUICKSAVE", kShare},
                         {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", kView}};
+  constexpr int kSlots = int(sizeof(slots) / sizeof(slots[0]));
   Bindings out;
-  int chosen[3];
-  bool explicit_set[3];
-  for (int i = 0; i < 3; ++i) {
+  int chosen[kSlots];
+  bool explicit_set[kSlots];
+  for (int i = 0; i < kSlots; ++i) {
     const char* env = std::getenv(slots[i].env);
     explicit_set[i] = env && *env;
     chosen[i] = slots[i].fallback;
@@ -199,7 +203,7 @@ inline Bindings ResolveBindings() {
   }
   // Explicit settings first, then defaults on buttons still free.
   for (int pass = 0; pass < 2; ++pass) {
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kSlots; ++i) {
       if (explicit_set[i] != (pass == 0) || chosen[i] < 0) continue;
       Action& slot = out.by_button[chosen[i]];
       if (slot != Action::kNone) {
@@ -211,7 +215,7 @@ inline Bindings ResolveBindings() {
       slot = slots[i].action;
     }
   }
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < kSlots; ++i) {
     const int b = out.button_of(slots[i].action);
     out.summary += std::format("{}{}={}", i ? ", " : "", ActionName(slots[i].action),
                                b < 0 ? "none" : ButtonName(b));
@@ -543,6 +547,12 @@ inline void Dispatch(Action action, const std::string& what) {
       // Same toggle as F7; its own UI task, outside the SDL event watch.
       if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::Toggle(); }))
         REXLOG_WARN("[pad-hotkeys] turbo skipped: UI thread unavailable");
+      return;
+    case Action::kSlow:
+      REXLOG_INFO("[pad-hotkeys] {} pressed -> slow", what);
+      // Same toggle as F8.
+      if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::ToggleSlow(); }))
+        REXLOG_WARN("[pad-hotkeys] slow skipped: UI thread unavailable");
       return;
     case Action::kQuickSave:
       REXLOG_INFO("[pad-hotkeys] {} pressed -> quick save", what);

@@ -88,7 +88,7 @@ class ControlsSourceTests(unittest.TestCase):
         keys = [entry.split(':')[0] for entry in swift.split(',')]
         names = set(swift_strings(block('sdk-key-names')))
         sdk = sdk_key_names()
-        hotkeys = set(re.findall(r'Hotkey\(title: "[^"]+", keys: "([^"]+)"', SWIFT)) | {'F5', 'F6', 'F7', 'F9', '5', '6', '7'}
+        hotkeys = set(re.findall(r'Hotkey\(title: "[^"]+", keys: "([^"]+)"', SWIFT)) | {'F5', 'F6', 'F7', 'F8', 'F9', '5', '6', '7'}
         for key in keys:
             self.assertIn(key, names)
             if sdk is not None: self.assertIn(key, sdk)
@@ -103,7 +103,7 @@ class ControlsSourceTests(unittest.TestCase):
             self.assertEqual(rebindable.pop(cvar), key)
         self.assertEqual(rebindable, {'bind_console': 'Backtick'})  # the SDK default, kept by the recomp
         keys = (ROOT / 'src/input/window_keyboard_mouse.h').read_text()
-        for key in ('k5', 'kF5', 'k6', 'kF6', 'k7', 'kF7', 'kF9'): self.assertIn('K::%s)' % key, keys)
+        for key in ('k5', 'kF5', 'k6', 'kF6', 'k7', 'kF7', 'kF8', 'kF9'): self.assertIn('K::%s)' % key, keys)
 
     def test_registered_in_both_apps(self):
         self.assertIn('case general, display, controls,', (ROOT / 'tools/macos/Shared/LaunchSettings.swift').read_text())
@@ -234,19 +234,19 @@ class ControlsHarnessTests(unittest.TestCase):
         self.assertEqual(self.out['envCLI'], [
             'REX_KEYBOARD_GAMEPAD_MAP=Return:pause', 'REX_MOUSE_LOOK=true', 'REX_MOUSE_LOOK_SCALE=700',
             'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1',
-            'FABLE2_PAD_TURBO=view', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none'])
+            'FABLE2_PAD_TURBO=view', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none'])
 
     def test_controller_hotkeys(self):
         self.assertEqual(self.out['padDefault'], [])
-        self.assertEqual(self.out['padLs'], ['FABLE2_PAD_TURBO=ls', 'FABLE2_PAD_QUICKSAVE=share',
+        self.assertEqual(self.out['padLs'], ['FABLE2_PAD_TURBO=ls', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share',
                                              'FABLE2_PAD_SCREENSHOT=view'])
-        self.assertEqual(self.out['padMove'], ['FABLE2_PAD_TURBO=share', 'FABLE2_PAD_QUICKSAVE=none',
+        self.assertEqual(self.out['padMove'], ['FABLE2_PAD_TURBO=share', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=none',
                                                'FABLE2_PAD_SCREENSHOT=view'])
         self.assertEqual(self.out['padBack'], ['empty'])
 
     def test_game_reads_launcher_names(self):
         header = (ROOT / 'src/input/controller_hotkeys.h').read_text()
-        for name in ('FABLE2_PAD_TURBO', 'FABLE2_PAD_QUICKSAVE', 'FABLE2_PAD_SCREENSHOT'):
+        for name in ('FABLE2_PAD_TURBO', 'FABLE2_PAD_SLOW', 'FABLE2_PAD_QUICKSAVE', 'FABLE2_PAD_SCREENSHOT'):
             self.assertIn('"%s"' % name, header)
         for value in ('none', 'view', 'share', 'ls', 'rs'):
             self.assertIn('"%s"' % value, header)

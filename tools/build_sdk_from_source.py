@@ -60,6 +60,7 @@ SDK_BEHAVIOUR_PATCHES = [
     'patches/sdk/codegen-graph-index.patch',  # codegen: indexed pending-jump and GAP_FILL lookups (same output, 4.5x faster)
     'patches/sdk/audio-playback-rate.patch',  # turbo audio: output consumes guest audio at the turbo rate
     'patches/sdk/turbo-fine-delay.patch',  # turbo: Delay/wait/timer durations scaled in us (no sub-ms spin)
+    'patches/sdk/clock-scalar-precision.patch',  # slow mode: clock scalar exact in thousandths (0.75 was 0.769)
 ]
 # sdk-metal.patch adapts the graphics sources for the Metal plugin, which compiles them itself
 # with backends/metal/compat.h and its port/ headers; the Vulkan plugin (rexgpu-xenos) cannot

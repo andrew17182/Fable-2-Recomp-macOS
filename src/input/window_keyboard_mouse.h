@@ -132,9 +132,11 @@ class WindowKeyboardMouse final
       if (key == uint16_t(K::k6) || key == uint16_t(K::kF6)) request_lua_(6);
       if (key == uint16_t(K::k7)) request_lua_(7);
     }
-    // F7 = turbo toggle (src/core/fable2_turbo.h), F9 = FPS counter
-    // (src/core/fable2_fps_counter.h); function keys, never typed text.
+    // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h; number-row 8 stays
+    // the SDK achievements overlay), F9 = FPS counter (src/core/fable2_fps_counter.h);
+    // function keys, never typed text.
     if (key == uint16_t(K::kF7)) request_lua_(7);
+    if (key == uint16_t(K::kF8)) request_lua_(8);
     if (key == uint16_t(K::kF9)) request_lua_(9);
     if (key && key == options_().unlock_key) {
       manual_release_ = !manual_release_;
@@ -195,6 +197,7 @@ class WindowKeyboardMouse final
       if (key == uint16_t(K::k7)) self->request_lua_(7);
     }
     if (key == uint16_t(K::kF7)) self->request_lua_(7);
+    if (key == uint16_t(K::kF8)) self->request_lua_(8);
     if (key == uint16_t(K::kF9)) self->request_lua_(9);
     return true;
   }

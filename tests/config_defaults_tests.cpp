@@ -56,6 +56,7 @@ const std::set<std::string> kExpectedKeys = {
     "input.mouse_look_scale",
     "patches.fps_60",
     "patches.turbo_scale",
+    "patches.slow_scale",
     "patches.turbo_audio",
     "patches.unlock_website",
     "patches.unlock_ce",

@@ -1,0 +1,40 @@
+SDK clock: the guest time scalar as an exact rational in thousandths (fable2 slow mode,
+docs/turbo.md "Slow mode"). Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES).
+RecomputeGuestTickScalar kept tenths above 1 (turbo) and 10 / trunc(10 / s) below 1, so a
+slow speed ran at the nearest 10/n: 0.75 -> 0.769, 0.8 -> 0.833, 0.9 -> 0.909 (0.5, 0.25
+and 0.2 were exact). Now llround(s x 1000) / 1000 for every scalar. Turbo's tenths reduce
+to the same ratio as before (2.0 -> 2000/1000 = 2/1), and 1.0 stays 1/1.
+
+--- a/src/core/clock.cpp
++++ b/src/core/clock.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <cstdlib>
+ #include <limits>
+ 
+@@ -66,15 +67,13 @@
+ void RecomputeGuestTickScalar() {
+   // Create a rational number with numerator (first) and denominator (second)
+   auto frac = std::make_pair(guest_tick_frequency_, Clock::QueryHostTickFrequency());
+-  // Doing it this way ensures we don't mess up our frequency scaling and
+-  // precisely controls the precision the guest_time_scalar_ can have.
+-  if (guest_time_scalar_ > 1.0) {
+-    frac.first *= static_cast<uint64_t>(guest_time_scalar_ * 10.0);
+-    frac.second *= 10;
+-  } else {
+-    frac.first *= 10;
+-    frac.second *= static_cast<uint64_t>(10.0 / guest_time_scalar_);
+-  }
++  // The scalar as an exact rational in thousandths (fable2 slow mode). The old
++  // code kept tenths above 1 and 10 / trunc(10 / s) below 1, so 0.75 ran at
++  // 0.769 and 0.9 at 0.909; tenths above 1 (turbo) reduce to the same ratio.
++  const uint64_t milli =
++      static_cast<uint64_t>(std::max<long long>(1, std::llround(guest_time_scalar_ * 1000.0)));
++  frac.first *= milli;
++  frac.second *= 1000;
+   // Keep this a rational calculation and reduce the fraction
+   reduce_fraction(frac);
+ 

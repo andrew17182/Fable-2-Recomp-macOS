@@ -11,7 +11,7 @@ what was decided, the rest is the evidence. Finished, superseded investigations 
 | [player-app.md](player-app.md) | The launcher (front page, Settings, Dev Options), shared by the release app and the repo's `Fable II Launcher.app` |
 | [release-app.md](release-app.md) | The public release: one `Fable II.app` that builds the game on the player's Mac (packager, first-launch build, Gatekeeper, Import Saves, Start Fresh, measurements) |
 | [portable-build.md](portable-build.md) | Zippable app for another Mac (no-converter release build; asks for the disc image on first launch) |
-| [turbo.md](turbo.md) | Turbo mode (F7) |
+| [turbo.md](turbo.md) | Turbo mode (F7) and slow motion (F8) |
 | [character-editor.md](character-editor.md) | Character Editor mod (opt-in, F6 menu): morality, purity, gold, renown, body morph through the game's own API; save backed up first |
 | [reference.md](reference.md) | Full reference: config, controls, F5/F6 Lua, tracing, Windows/Vulkan notes |
 

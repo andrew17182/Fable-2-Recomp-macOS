@@ -229,8 +229,9 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
       }
       return options;
     }, [](int key) {
-      // 7 = F7 turbo toggle, 9 = F9 FPS counter (UI thread); 5/6 = quick save / Lua.
+      // 7 = F7 turbo toggle, 8 = F8 slow mode, 9 = F9 FPS counter (UI thread); 5/6 = quick save / Lua.
       if (key == 7) fable2::turbo::Toggle();
+      else if (key == 8) fable2::turbo::ToggleSlow();
       else if (key == 9) { if (fable2::hotkey_hooks::g_toggle_fps) fable2::hotkey_hooks::g_toggle_fps(); }
       else fable2::f5lua::request_run(key);
     });

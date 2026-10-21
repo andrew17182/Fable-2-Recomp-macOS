@@ -30,9 +30,11 @@ CASES = [
     ({'resolutionScale': '2', 'frameRate': '30', 'fpsCounter': True, 'skipIntro': True},
      ['--resolution', '2', '--fps', '30', '--fps-counter', '--skip-intro']),
     ({'resolutionScale': 'auto', 'frameRate': 'uncapped', 'displayMode': 'fullscreen', 'upscaling': 'metalfx-spatial',
-      'effectsSize': 'full', 'turboNotice': 'game', 'turboSpeed': 3.5, 'turboAudio': 'high-pitch', 'skipIntro': False},
+      'effectsSize': 'full', 'turboNotice': 'game', 'turboSpeed': 3.5, 'slowSpeed': 0.35, 'turboAudio': 'high-pitch',
+      'skipIntro': False},
      ['--resolution', 'auto', '--fps', 'uncapped', '--display', 'fullscreen', '--upscaling', 'metalfx-spatial',
-      '--effects', 'full', '--turbo-notice', 'game', '--turbo-speed', '3.5', '--turbo-audio', 'high-pitch',
+      '--effects', 'full', '--turbo-notice', 'game', '--turbo-speed', '3.5', '--slow-speed', '0.35',
+      '--turbo-audio', 'high-pitch',
       '--no-skip-intro']),
     ({'frameRate': '60', 'furFix': False, 'nativeShaders': False, 'rttVerify': True, 'tracePreset': 'gpu',
       'portableShaderCache': False, 'hitchTrace': False, 'extraEnv': 'FABLE2_SYNC_TEST=1 REX_SYNC_TEST=x'},
@@ -55,6 +57,7 @@ CASES = [
     ({'recordInput': True}, ['--record-input']),
     # Controller hotkeys (FABLE2_PAD_*).
     ({'padTurbo': 'rs', 'padScreenshot': 'none'}, ['--pad-turbo', 'rs', '--pad-screenshot', 'none']),
+    ({'padSlow': 'ls'}, ['--pad-slow', 'ls']),
 ]
 # Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.
 PLAYER_ONLY = {'FABLE2_PLAYER_LAUNCH': '1'}
