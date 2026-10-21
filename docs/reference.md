@@ -311,7 +311,9 @@ higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on (`s
 use for presenting, `Bilinear` or `MetalFX` (MetalFX only when it is actually applied: the window must be
 larger than the internal size, otherwise the presenter logs `[metalfx] not applied` and uses bilinear; read
 from the Metal plugin's `fable2_present_filter` export). Example: `52 FPS · 19.2 ms · display 120 · 2× res ·
-turbo 2.5x · MetalFX`. Digits are tabular, so the box width changes only with the digit count. It uses the
+turbo 2.5x · MetalFX · M3 Pro`; the last field is always this Mac's chip (`machdep.cpu.brand_string` without
+"Apple "). Digits are tabular, so the box width changes only with the digit count. The backing is a soft dark
+band (0.45 alpha behind the text) that fades out on all four edges. It uses the
 game's UI font (the monospaced ImGui font as fallback) and is off by
 default: `[graphics] fps_counter = true` in `fable2_config.toml`, `FABLE2_FPS_COUNTER=1|0`, or the
 Launcher's **Show FPS counter** sets the start state. Code: `src/core/fable2_fps_counter.h`.
