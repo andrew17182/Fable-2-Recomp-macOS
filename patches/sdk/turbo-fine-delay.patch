@@ -1,0 +1,590 @@
+SDK turbo: guest durations scaled in microseconds, so sub-millisecond waits do not spin
+(docs/turbo.md "Precise sleeps"). Applied by tools/build_sdk_from_source.py (SDK_BEHAVIOUR_PATCHES).
+FABLE2_TURBO_FINE_DELAY (default on; =0 restores the millisecond path).
+
+XThread::Delay (KeDelayExecutionThread), the XObject Wait / SignalAndWait / WaitMultiple
+timeouts and the XTimer period converted the guest duration to whole milliseconds and then
+divided by the turbo speed (Clock::ScaleGuestDurationMillis), truncating again. Under turbo a
+guest Delay(1 ms) became 0.5 -> 0 ms, a yield, so five Fable II workers that sleep 1 ms in a
+loop each spun a core (~580% process CPU at 2x/60 vs ~120% at 1x); a 1 ms wait timeout became
+a poll that returned X_STATUS_TIMEOUT at once; a 1 ms timer period became 0, a one-shot timer.
+Now, while durations are scaled (scalar != 1, clock_no_scaling off) and the switch is on, they
+are scaled to microseconds (at least 1 us; 0 stays a poll, UINT32_MAX ms stays infinite):
+Delay sleeps in microseconds; waits go through new rex::thread::WaitMicros /
+SignalAndWaitMicros / WaitMultipleMicros (the posix wait internals are templated on the
+duration type; the millisecond instantiation is the old code); Timer periods are microseconds
+(milliseconds convert exactly). At 1x every caller takes the millisecond path unchanged.
+Defines REX_THREAD_WAIT_MICROS in rex/thread.h.
+
+--- a/include/rex/chrono/clock.h
++++ b/include/rex/chrono/clock.h
+@@ -85,6 +85,15 @@
+ 
+   // Scales a time duration in milliseconds, from guest time.
+   static uint32_t ScaleGuestDurationMillis(uint32_t guest_ms);
++  // fable2 turbo (FABLE2_TURBO_FINE_DELAY, default on; =0 restores the old path): true
++  // while durations are scaled (scalar != 1, clock_no_scaling off) and the switch is on.
++  // Delay, waits and timer periods then scale in microseconds, so a sub-millisecond
++  // scaled duration is not truncated to 0 (a poll or yield, i.e. a spin). At 1x it is
++  // false and callers keep the millisecond path unchanged.
++  static bool fine_guest_durations();
++  // Scales a guest duration in milliseconds to host microseconds: 0 stays 0 (poll),
++  // UINT32_MAX ms (infinite) is not scaled, anything else is at least 1 us.
++  static uint64_t ScaleGuestDurationMillisToMicros(uint32_t guest_ms);
+   // Scales a time duration in 100ns ticks like FILETIME, from guest time.
+   static int64_t ScaleGuestDurationFileTime(int64_t guest_file_time);
+   // Scales a time duration represented as a timeval, from guest time.
+--- a/include/rex/thread.h
++++ b/include/rex/thread.h
+@@ -260,6 +260,20 @@
+   return WaitAny(wait_handles.data(), wait_handles.size(), is_alertable, timeout);
+ }
+ 
++// The same waits with a microsecond timeout (fable2 turbo, FABLE2_TURBO_FINE_DELAY: a
++// guest timeout scaled by the turbo speed can be shorter than a millisecond). Zero
++// polls; there is no infinite value (use the millisecond overloads with max()).
++#define REX_THREAD_WAIT_MICROS 1
++WaitResult WaitMicros(WaitHandle* wait_handle, bool is_alertable,
++                      std::chrono::microseconds timeout);
++WaitResult SignalAndWaitMicros(WaitHandle* wait_handle_to_signal,
++                               WaitHandle* wait_handle_to_wait_on, bool is_alertable,
++                               std::chrono::microseconds timeout);
++std::pair<WaitResult, size_t> WaitMultipleMicros(WaitHandle* wait_handles[],
++                                                 size_t wait_handle_count, bool wait_all,
++                                                 bool is_alertable,
++                                                 std::chrono::microseconds timeout);
++
+ // Models a Win32-like event object.
+ // https://msdn.microsoft.com/en-us/library/windows/desktop/ms682396(v=vs.85).aspx
+ class Event : public WaitHandle {
+@@ -358,12 +372,14 @@
+   // completion routine. A periodic timer automatically reactivates each time
+   // the period elapses, until the timer is canceled or reset.
+   // Returns true on success.
++  // The period is in microseconds (fable2 turbo: a scaled guest period can be shorter
++  // than a millisecond); milliseconds convert to it exactly.
+   virtual bool SetRepeatingAfter(rex::chrono::hundrednanoseconds rel_time,
+-                                 std::chrono::milliseconds period,
++                                 std::chrono::microseconds period,
+                                  std::function<void()> opt_callback = nullptr) = 0;
+-  virtual bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::milliseconds period,
++  virtual bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::microseconds period,
+                               std::function<void()> opt_callback = nullptr) = 0;
+-  virtual bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::milliseconds period,
++  virtual bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::microseconds period,
+                               std::function<void()> opt_callback = nullptr) = 0;
+ 
+   // Stops the timer before it can be set to the signaled state and cancels
+--- a/src/core/clock.cpp
++++ b/src/core/clock.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <limits>
+ #include <mutex>
+ 
+@@ -239,6 +240,25 @@
+   uint64_t scaled_ms =
+       static_cast<uint64_t>((static_cast<uint64_t>(guest_ms) / guest_time_scalar_));
+   return static_cast<uint32_t>(std::min(scaled_ms, max));
++}
++
++bool Clock::fine_guest_durations() {
++  static const bool on = [] {
++    const char* v = std::getenv("FABLE2_TURBO_FINE_DELAY");
++    return !(v && v[0] == '0' && v[1] == 0);
++  }();
++  return on && guest_time_scalar_ != 1.0 && !REXCVAR_GET(clock_no_scaling);
++}
++
++uint64_t Clock::ScaleGuestDurationMillisToMicros(uint32_t guest_ms) {
++  constexpr uint32_t max = std::numeric_limits<uint32_t>::max();
++  if (!guest_ms) {
++    return 0;
++  } else if (guest_ms == max || REXCVAR_GET(clock_no_scaling)) {
++    return uint64_t(guest_ms) * 1000;
++  }
++  const uint64_t scaled_us = static_cast<uint64_t>(double(guest_ms) * 1000.0 / guest_time_scalar_);
++  return std::max<uint64_t>(1, scaled_us);
+ }
+ 
+ int64_t Clock::ScaleGuestDurationFileTime(int64_t guest_file_time) {
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -370,7 +370,10 @@
+   virtual ~PosixConditionBase() = default;
+   virtual bool Signal() = 0;
+ 
+-  WaitResult Wait(std::chrono::milliseconds timeout) {
++  // Duration: std::chrono::milliseconds (max() = no timeout) or microseconds
++  // (FABLE2_TURBO_FINE_DELAY waits).
++  template <typename Duration>
++  WaitResult Wait(Duration timeout) {
+     bool executed;
+     auto predicate = [this] { return this->signaled(); };
+ #if REX_PLATFORM_LINUX
+@@ -388,7 +391,7 @@
+     if (predicate()) {
+       executed = true;
+     } else {
+-      if (timeout == std::chrono::milliseconds::max()) {
++      if (timeout == Duration::max()) {
+         cond_.wait(lock, predicate);
+         executed = true;  // Did not time out;
+       } else {
+@@ -403,9 +406,9 @@
+     }
+   }
+ 
++  template <typename Duration>
+   static std::pair<WaitResult, size_t> WaitMultiple(std::vector<PosixConditionBase*>&& handles,
+-                                                    bool wait_all,
+-                                                    std::chrono::milliseconds timeout) {
++                                                    bool wait_all, Duration timeout) {
+     assert_true(!handles.empty());
+ 
+     if (handles.size() == 1) {
+@@ -417,7 +420,7 @@
+     }
+ 
+     auto start_time = std::chrono::steady_clock::now();
+-    auto end_time = (timeout == std::chrono::milliseconds::max())
++    auto end_time = (timeout == Duration::max())
+                         ? std::chrono::steady_clock::time_point::max()
+                         : start_time + timeout;
+ 
+@@ -516,11 +519,11 @@
+   }
+ 
+   // The original implementation, kept behind the wait_multiple_polling cvar.
++  template <typename Duration>
+   static std::pair<WaitResult, size_t> WaitMultiplePolling(
+-      std::vector<PosixConditionBase*>&& handles, bool wait_all,
+-      std::chrono::milliseconds timeout) {
++      std::vector<PosixConditionBase*>&& handles, bool wait_all, Duration timeout) {
+     auto start_time = std::chrono::steady_clock::now();
+-    auto end_time = (timeout == std::chrono::milliseconds::max())
++    auto end_time = (timeout == Duration::max())
+                         ? std::chrono::steady_clock::time_point::max()
+                         : start_time + timeout;
+ 
+@@ -600,11 +603,11 @@
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
++      if (timeout == Duration::max()) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+       } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
++        auto remaining = std::chrono::duration_cast<Duration>(end_time - now);
++        auto sleep_time = std::min<Duration>(remaining, std::chrono::milliseconds(1));
+         std::this_thread::sleep_for(sleep_time);
+       }
+     }
+@@ -768,7 +771,7 @@
+   }
+ 
+   void SetRepeating(std::chrono::steady_clock::time_point due_time,
+-                    std::chrono::milliseconds period, std::function<void()> opt_callback) {
++                    std::chrono::microseconds period, std::function<void()> opt_callback) {
+     Cancel();
+ 
+     std::lock_guard<std::mutex> lock(mutex_);
+@@ -1354,8 +1357,9 @@
+   bool alertable_;
+ };
+ 
+-std::chrono::steady_clock::time_point ComputeAlertableDeadline(std::chrono::milliseconds timeout) {
+-  if (timeout == std::chrono::milliseconds::max()) {
++template <typename Duration>
++std::chrono::steady_clock::time_point ComputeAlertableDeadline(Duration timeout) {
++  if (timeout == Duration::max()) {
+     return std::chrono::steady_clock::time_point::max();
+   }
+   return std::chrono::steady_clock::now() + timeout;
+@@ -1366,17 +1370,19 @@
+          std::chrono::steady_clock::now() >= deadline;
+ }
+ 
+-std::chrono::milliseconds ComputeAlertableWaitTimeout(
+-    std::chrono::steady_clock::time_point deadline) {
++// Duration: the caller's timeout type. Milliseconds truncate the remaining time as
++// before; microseconds (FABLE2_TURBO_FINE_DELAY) keep a sub-millisecond remainder.
++template <typename Duration>
++Duration ComputeAlertableWaitTimeout(std::chrono::steady_clock::time_point deadline) {
+   if (deadline == std::chrono::steady_clock::time_point::max()) {
+     return kAlertablePollSlice;
+   }
+-  auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
++  auto remaining = std::chrono::duration_cast<Duration>(
+       deadline - std::chrono::steady_clock::now());
+-  if (remaining <= std::chrono::milliseconds::zero()) {
+-    return std::chrono::milliseconds::zero();
++  if (remaining <= Duration::zero()) {
++    return Duration::zero();
+   }
+-  return std::min(remaining, kAlertablePollSlice);
++  return std::min<Duration>(remaining, kAlertablePollSlice);
+ }
+ 
+ }  // namespace
+@@ -1419,7 +1425,10 @@
+ template <>
+ PosixConditionHandle<Thread>::PosixConditionHandle(pthread_t thread) : handle_(thread) {}
+ 
+-WaitResult Wait(WaitHandle* wait_handle, bool is_alertable, std::chrono::milliseconds timeout) {
++namespace {
++
++template <typename Duration>
++WaitResult WaitImpl(WaitHandle* wait_handle, bool is_alertable, Duration timeout) {
+   auto posix_wait_handle = dynamic_cast<PosixWaitHandle*>(wait_handle);
+   if (posix_wait_handle == nullptr) {
+     return WaitResult::kFailed;
+@@ -1438,15 +1447,17 @@
+     if (HasAlertableTimeoutElapsed(deadline)) {
+       return WaitResult::kTimeout;
+     }
+-    auto result = posix_wait_handle->condition().Wait(ComputeAlertableWaitTimeout(deadline));
++    auto result =
++        posix_wait_handle->condition().Wait(ComputeAlertableWaitTimeout<Duration>(deadline));
+     if (result != WaitResult::kTimeout) {
+       return result;
+     }
+   }
+ }
+ 
+-WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_handle_to_wait_on,
+-                         bool is_alertable, std::chrono::milliseconds timeout) {
++template <typename Duration>
++WaitResult SignalAndWaitImpl(WaitHandle* wait_handle_to_signal, WaitHandle* wait_handle_to_wait_on,
++                             bool is_alertable, Duration timeout) {
+   auto result = WaitResult::kFailed;
+   auto posix_wait_handle_to_signal = dynamic_cast<PosixWaitHandle*>(wait_handle_to_signal);
+   auto posix_wait_handle_to_wait_on = dynamic_cast<PosixWaitHandle*>(wait_handle_to_wait_on);
+@@ -1470,16 +1481,17 @@
+     if (HasAlertableTimeoutElapsed(deadline)) {
+       return WaitResult::kTimeout;
+     }
+-    result = posix_wait_handle_to_wait_on->condition().Wait(ComputeAlertableWaitTimeout(deadline));
++    result = posix_wait_handle_to_wait_on->condition().Wait(
++        ComputeAlertableWaitTimeout<Duration>(deadline));
+     if (result != WaitResult::kTimeout) {
+       return result;
+     }
+   }
+ }
+ 
+-std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wait_handle_count,
+-                                           bool wait_all, bool is_alertable,
+-                                           std::chrono::milliseconds timeout) {
++template <typename Duration>
++std::pair<WaitResult, size_t> WaitMultipleImpl(WaitHandle* wait_handles[], size_t wait_handle_count,
++                                               bool wait_all, bool is_alertable, Duration timeout) {
+   std::vector<PosixConditionBase*> conditions;
+   conditions.reserve(wait_handle_count);
+   for (size_t i = 0u; i < wait_handle_count; ++i) {
+@@ -1503,13 +1515,49 @@
+       return std::make_pair(WaitResult::kTimeout, 0);
+     }
+     auto result = PosixConditionBase::WaitMultiple(std::vector<PosixConditionBase*>(conditions),
+-                                                   wait_all, ComputeAlertableWaitTimeout(deadline));
++                                                   wait_all,
++                                                   ComputeAlertableWaitTimeout<Duration>(deadline));
+     if (result.first != WaitResult::kTimeout) {
+       return result;
+     }
+   }
+ }
+ 
++}  // namespace
++
++WaitResult Wait(WaitHandle* wait_handle, bool is_alertable, std::chrono::milliseconds timeout) {
++  return WaitImpl(wait_handle, is_alertable, timeout);
++}
++
++WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_handle_to_wait_on,
++                         bool is_alertable, std::chrono::milliseconds timeout) {
++  return SignalAndWaitImpl(wait_handle_to_signal, wait_handle_to_wait_on, is_alertable, timeout);
++}
++
++std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wait_handle_count,
++                                           bool wait_all, bool is_alertable,
++                                           std::chrono::milliseconds timeout) {
++  return WaitMultipleImpl(wait_handles, wait_handle_count, wait_all, is_alertable, timeout);
++}
++
++WaitResult WaitMicros(WaitHandle* wait_handle, bool is_alertable,
++                      std::chrono::microseconds timeout) {
++  return WaitImpl(wait_handle, is_alertable, timeout);
++}
++
++WaitResult SignalAndWaitMicros(WaitHandle* wait_handle_to_signal,
++                               WaitHandle* wait_handle_to_wait_on, bool is_alertable,
++                               std::chrono::microseconds timeout) {
++  return SignalAndWaitImpl(wait_handle_to_signal, wait_handle_to_wait_on, is_alertable, timeout);
++}
++
++std::pair<WaitResult, size_t> WaitMultipleMicros(WaitHandle* wait_handles[],
++                                                 size_t wait_handle_count, bool wait_all,
++                                                 bool is_alertable,
++                                                 std::chrono::microseconds timeout) {
++  return WaitMultipleImpl(wait_handles, wait_handle_count, wait_all, is_alertable, timeout);
++}
++
+ class PosixEvent : public PosixConditionHandle<Event> {
+  public:
+   PosixEvent(bool manual_reset, bool initial_state)
+@@ -1588,16 +1636,16 @@
+     return true;
+   }
+ 
+-  bool SetRepeatingAfter(rex::chrono::hundrednanoseconds rel_time, std::chrono::milliseconds period,
++  bool SetRepeatingAfter(rex::chrono::hundrednanoseconds rel_time, std::chrono::microseconds period,
+                          std::function<void()> opt_callback = nullptr) override {
+     return SetRepeatingAt(GClock_::now() + rel_time, period, std::move(opt_callback));
+   }
+-  bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::milliseconds period,
++  bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::microseconds period,
+                       std::function<void()> opt_callback = nullptr) override {
+     return SetRepeatingAt(std::chrono::clock_cast<GClock_>(due_time), period,
+                           std::move(opt_callback));
+   }
+-  bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::milliseconds period,
++  bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::microseconds period,
+                       std::function<void()> opt_callback = nullptr) override {
+     handle_.SetRepeating(due_time, period, std::move(opt_callback));
+     return true;
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -204,6 +204,31 @@
+   }
+ }
+ 
++// Win32 waits take whole milliseconds: round a microsecond timeout up (0 still polls).
++static std::chrono::milliseconds CeilMillis(std::chrono::microseconds timeout) {
++  return std::chrono::ceil<std::chrono::milliseconds>(timeout);
++}
++
++WaitResult WaitMicros(WaitHandle* wait_handle, bool is_alertable,
++                      std::chrono::microseconds timeout) {
++  return Wait(wait_handle, is_alertable, CeilMillis(timeout));
++}
++
++WaitResult SignalAndWaitMicros(WaitHandle* wait_handle_to_signal,
++                               WaitHandle* wait_handle_to_wait_on, bool is_alertable,
++                               std::chrono::microseconds timeout) {
++  return SignalAndWait(wait_handle_to_signal, wait_handle_to_wait_on, is_alertable,
++                       CeilMillis(timeout));
++}
++
++std::pair<WaitResult, size_t> WaitMultipleMicros(WaitHandle* wait_handles[],
++                                                 size_t wait_handle_count, bool wait_all,
++                                                 bool is_alertable,
++                                                 std::chrono::microseconds timeout) {
++  return WaitMultiple(wait_handles, wait_handle_count, wait_all, is_alertable,
++                      CeilMillis(timeout));
++}
++
+ class Win32Event : public Win32Handle<Event> {
+  public:
+   explicit Win32Event(HANDLE handle) : Win32Handle(handle) {}
+@@ -297,16 +322,16 @@
+                                                                                        : false;
+   }
+ 
+-  bool SetRepeatingAfter(rex::chrono::hundrednanoseconds rel_time, std::chrono::milliseconds period,
++  bool SetRepeatingAfter(rex::chrono::hundrednanoseconds rel_time, std::chrono::microseconds period,
+                          std::function<void()> opt_callback = nullptr) override {
+     return SetRepeatingAt(WClock_::now() + rel_time, period, std::move(opt_callback));
+   }
+-  bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::milliseconds period,
++  bool SetRepeatingAt(GClock_::time_point due_time, std::chrono::microseconds period,
+                       std::function<void()> opt_callback = nullptr) {
+     return SetRepeatingAt(std::chrono::clock_cast<WClock_>(due_time), period,
+                           std::move(opt_callback));
+   }
+-  bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::milliseconds period,
++  bool SetRepeatingAt(WClock_::time_point due_time, std::chrono::microseconds period,
+                       std::function<void()> opt_callback) override {
+     std::lock_guard<std::mutex> lock(mutex_);
+     callback_ = std::move(opt_callback);
+@@ -314,7 +339,10 @@
+     due_time_li.QuadPart = WClock_::to_file_time(due_time);
+     auto completion_routine =
+         callback_ ? reinterpret_cast<PTIMERAPCROUTINE>(CompletionRoutine) : NULL;
+-    return SetWaitableTimer(handle_, &due_time_li, int32_t(period.count()), completion_routine,
++    // Whole milliseconds; a nonzero sub-millisecond period stays periodic (1 ms).
++    const int32_t period_ms =
++        int32_t(std::chrono::ceil<std::chrono::milliseconds>(period).count());
++    return SetWaitableTimer(handle_, &due_time_li, period_ms, completion_routine,
+                             this, FALSE)
+                ? true
+                : false;
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <optional>
+ #include <vector>
+ 
+ #include <rex/chrono/clock.h>
+@@ -200,6 +201,18 @@
+   }
+ }
+ 
++// Under turbo (FABLE2_TURBO_FINE_DELAY, default on) a guest timeout is scaled in
++// microseconds: in milliseconds a 1 ms timeout at 2x truncated to 0, a poll that returned
++// X_STATUS_TIMEOUT at once, so a guest wait loop spun a core. No value: the millisecond
++// path (1x, the switch off, or no timeout = infinite). 0 stays a poll.
++static std::optional<std::chrono::microseconds> FineTimeoutMicros(const uint64_t* opt_timeout,
++                                                                  uint32_t guest_ms) {
++  if (!opt_timeout || !chrono::Clock::fine_guest_durations()) {
++    return std::nullopt;
++  }
++  return std::chrono::microseconds(chrono::Clock::ScaleGuestDurationMillisToMicros(guest_ms));
++}
++
+ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t alertable,
+                        uint64_t* opt_timeout) {
+   auto wait_handle = GetWaitHandle();
+@@ -211,9 +224,12 @@
+   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
++  const auto fine_us =
++      FineTimeoutMicros(opt_timeout, opt_timeout ? TimeoutTicksToMs(*opt_timeout) : 0);
+ 
+   XThread::CheckTitleTermination();
+-  auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  auto result = fine_us ? rex::thread::WaitMicros(wait_handle, alertable ? true : false, *fine_us)
++                        : rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
+   XThread::CheckTitleTermination();
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+@@ -238,10 +254,16 @@
+   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
++  const auto fine_us =
++      FineTimeoutMicros(opt_timeout, opt_timeout ? TimeoutTicksToMs(*opt_timeout) : 0);
+ 
+   auto result =
+-      rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
+-                                 alertable ? true : false, timeout_ms);
++      fine_us ? rex::thread::SignalAndWaitMicros(signal_object->GetWaitHandle(),
++                                                 wait_object->GetWaitHandle(),
++                                                 alertable ? true : false, *fine_us)
++              : rex::thread::SignalAndWait(signal_object->GetWaitHandle(),
++                                           wait_object->GetWaitHandle(), alertable ? true : false,
++                                           timeout_ms);
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+       wait_object->WaitCallback();
+@@ -271,11 +293,16 @@
+   auto timeout_ms = opt_timeout ? std::chrono::milliseconds(chrono::Clock::ScaleGuestDurationMillis(
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
++  const auto fine_us =
++      FineTimeoutMicros(opt_timeout, opt_timeout ? TimeoutTicksToMs(*opt_timeout) : 0);
+ 
+   XThread::CheckTitleTermination();
+   if (wait_type) {
+-    auto result =
+-        rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    auto result = fine_us ? rex::thread::WaitMultipleMicros(wait_handles.data(),
++                                                            wait_handles.size(), false,
++                                                            alertable ? true : false, *fine_us)
++                          : rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false,
++                                                 timeout_ms);
+     XThread::CheckTitleTermination();
+     switch (result.first) {
+       case rex::thread::WaitResult::kSuccess:
+@@ -295,8 +322,12 @@
+         return X_STATUS_UNSUCCESSFUL;
+     }
+   } else {
+-    auto result =
+-        rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    auto result = fine_us ? rex::thread::WaitMultipleMicros(wait_handles.data(),
++                                                            wait_handles.size(), true,
++                                                            alertable ? true : false, *fine_us)
++                                .first
++                          : rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false,
++                                                 timeout_ms);
+     XThread::CheckTitleTermination();
+     switch (result) {
+       case rex::thread::WaitResult::kSuccess:
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -1019,10 +1019,16 @@
+   } else {
+     timeout_ms = 0;
+   }
+-  timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
++  // Host sleep in microseconds. Under turbo (FABLE2_TURBO_FINE_DELAY, default on) the guest
++  // milliseconds are scaled in microseconds: a Delay(1 ms) at 2x sleeps 500 us instead of
++  // truncating to 0 ms (a yield, so the caller's sleep loop spun a core). At 1x, and with
++  // the switch off, this is the millisecond value as before.
++  const uint64_t timeout_us = chrono::Clock::fine_guest_durations()
++                                  ? chrono::Clock::ScaleGuestDurationMillisToMicros(timeout_ms)
++                                  : uint64_t(chrono::Clock::ScaleGuestDurationMillis(timeout_ms)) * 1000;
+   CheckTitleTermination();
+   if (alertable) {
+-    auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
++    auto result = rex::thread::AlertableSleep(std::chrono::microseconds(timeout_us));
+     CheckTitleTermination();
+     switch (result) {
+       default:
+@@ -1032,14 +1038,14 @@
+         return X_STATUS_USER_APC;
+     }
+   } else {
+-    if (timeout_ms == 0) {
++    if (timeout_us == 0) {
+       if (priority_ <= rex::thread::ThreadPriority::kBelowNormal) {
+         rex::thread::Sleep(std::chrono::microseconds(100));
+       } else {
+         rex::thread::MaybeYield();
+       }
+     } else {
+-      rex::thread::Sleep(std::chrono::milliseconds(timeout_ms));
++      rex::thread::Sleep(std::chrono::microseconds(timeout_us));
+     }
+     CheckTitleTermination();
+   }
+--- a/src/system/xtimer.cpp
++++ b/src/system/xtimer.cpp
+@@ -46,7 +46,12 @@
+     return X_STATUS_TIMER_RESUME_IGNORED;
+   }
+ 
+-  period_ms = chrono::Clock::ScaleGuestDurationMillis(period_ms);
++  // Under turbo (FABLE2_TURBO_FINE_DELAY, default on) the period is scaled in microseconds:
++  // in milliseconds a 1 ms period at 2x truncated to 0 and the timer became a one-shot.
++  const std::chrono::microseconds period(
++      chrono::Clock::fine_guest_durations()
++          ? chrono::Clock::ScaleGuestDurationMillisToMicros(period_ms)
++          : uint64_t(chrono::Clock::ScaleGuestDurationMillis(period_ms)) * 1000);
+   WinSystemClock::time_point due_tp;
+   if (due_time < 0) {
+     // Any timer implementation uses absolute times eventually, convert as early
+@@ -78,11 +83,10 @@
+   }
+ 
+   bool result;
+-  if (!period_ms) {
++  if (period == std::chrono::microseconds::zero()) {
+     result = timer_->SetOnceAt(due_tp, std::move(callback));
+   } else {
+-    result =
+-        timer_->SetRepeatingAt(due_tp, std::chrono::milliseconds(period_ms), std::move(callback));
++    result = timer_->SetRepeatingAt(due_tp, period, std::move(callback));
+   }
+ 
+   return result ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL;

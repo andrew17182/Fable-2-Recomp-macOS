@@ -202,6 +202,16 @@ if(APPLE AND FABLE2_BUILD_TIME_TESTS)
         COMMENT "Checking guest fctiw/fctid rounding against the Xenon model")
     add_dependencies(fable_2 fable_2_fctiw_tests)
 
+    # Turbo durations in microseconds (patches/sdk/turbo-fine-delay.patch): sub-millisecond waits
+    # block, timer periods stay periodic. Skips itself on SDK headers without the patch.
+    add_executable(fable_2_turbo_fine_delay_tests tests/turbo_fine_delay_tests.cpp)
+    target_compile_options(fable_2_turbo_fine_delay_tests PRIVATE -UNDEBUG)
+    target_link_libraries(fable_2_turbo_fine_delay_tests PRIVATE rex::runtime)
+    add_custom_command(TARGET fable_2_turbo_fine_delay_tests POST_BUILD
+        COMMAND fable_2_turbo_fine_delay_tests
+        COMMENT "Checking turbo sub-millisecond waits and timer periods")
+    add_dependencies(fable_2 fable_2_turbo_fine_delay_tests)
+
     # Flight recorder (telemetry phase 1): FABLE2_TRACE parsing and aliases, ring/stack/text
     # records, dump files, log digest + first-AV trigger, the shared guest stack walker (decisions
     # identical to the old InBootLoader loop) and the per-event emit cost. Runs after it is built,

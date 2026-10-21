@@ -376,7 +376,7 @@ verify modes, extra env, source checkout). The **Tools** menu has Close Game, Re
 Dev Options: Save Library…, Run Benchmark…, Run Flash Kit…, Export Portable Build…, Update Playtest Build and the
 save library / sessions / benchmark report folders. Default-on kill switches
 (`FABLE2_NATIVE_SHADERS`, `FABLE2_NS_SPECIALIZE`, `FABLE2_SHADOWS_NATIVE`, `FABLE2_DEFERRED_CLEARS`, `FABLE2_ALIAS_CLEAR_NATIVE`, `FABLE2_MAIN_DEPTH_NATIVE`, `FABLE2_EFFECTS_FOOTPRINT_VARIANT`, `FABLE2_CLEAR_LOAD_ACTION`, `FABLE2_SSM_STENCIL_FOLD`, `FABLE2_CLEAR_CONST_SOURCE`, `FABLE2_TILE_EDRAM`,
-`FABLE2_RING_REINIT_FIX`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
+`FABLE2_RING_REINIT_FIX`, `FABLE2_TURBO_FINE_DELAY`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
 when turned on (`=1`). Every on/off setting also has `--<name>` / `--no-<name>` for `--launch`, and `--print-args`
 prints the backend arguments without launching.
 
@@ -462,6 +462,7 @@ variable to `0` to restore the old behaviour (env only, no launcher toggles).
 | `FABLE2_PREPARED_DRAW_POOL` | reuse the per-draw `PreparedDraw` record, queue storage and resource-set storage | `metal_command_processor.cc` |
 | `FABLE2_RING_WAIT_NOSPIN` | ring progress is signalled after the read-pointer writeback store; the 3D Engine wait has no yield loop | `metal_command_processor.cc`, `sdk-metal.patch`, `src/core/fable2_spin_wait.h` |
 | `FABLE2_GAME_TICK_FINE` | second precise sleep inside the GameThread tick margin | `src/core/fable2_spin_wait.h` |
+| `FABLE2_TURBO_FINE_DELAY` | under turbo, guest sleeps, wait timeouts and timer periods are scaled in microseconds (a 1 ms sleep at 2x no longer rounds to 0 and spins); launcher Fixes > Turbo: precise sleeps | `patches/sdk/turbo-fine-delay.patch`, `docs/turbo.md` |
 | `FABLE2_TIMER_QUEUE_BLOCKING` | SDK TimerQueue blocks in `kevent` instead of yield/1 ms-sleep spinning | `patches/sdk/timer-queue-blocking.patch` |
 | `FABLE2_GUEST_THREAD_QOS` | user-interactive QoS for the 3D Engine and GameThread | `src/core/fable2_spin_wait.h` |
 | `FABLE2_THREAD_PRIORITY_MAP` | guest thread priorities mapped to SCHED_OTHER levels instead of raw SCHED_FIFO values | `patches/sdk/thread-priority-map.patch` |

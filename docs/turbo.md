@@ -281,7 +281,8 @@ the SDK has the real fix; see "SDK fix" below. The workaround stands down there.
   (`fable2_guest_clock.h`), system time and uptime all come from the tick count. So the guest clock keeps running at `s`.
 - Code that needs the guest speed reads `fable2::guestspeed::Get()` (`src/core/fable2_guest_speed.h`), not `Clock::guest_time_scalar()`
   (which now returns `1/s`). That covers the `FABLE2_GAME_TICK_SLEEP` next-tick math and the turbo and clock-report log lines.
-- `Sleep(1)` under 2x rounds down to 0 ms (a yield), because the SDK converts in whole milliseconds.
+- `Sleep(1)` under 2x rounds down to 0 ms (a yield), because the SDK converts in whole milliseconds (fixed since
+  2026-10-21, see "Precise sleeps" below).
 
 **Validation** (`FABLE2_TURBO_SCALE=2`; sessions `out/validation/area-load-20261008/tb1`, `tb2`):
 
@@ -317,6 +318,39 @@ wait fix not needed)`. On the prebuilt runtime (`FABLE2_SDK_FROM_SOURCE=0`) the 
 - Every expired 500 ms timeout took 250.0–250.5 ms (n = 37).
 - `[clock-report]` 2.0000 in all 13 windows. `[game-tick-sleep]`: 0 late ticks in every 10 s window, maximum overshoot 338 µs.
 - 0 AVs.
+
+## Precise sleeps (2026-10-21)
+
+**Bug.** `XThread::Delay`, the `XObject` wait timeouts (`Wait`, `WaitMultiple`, `SignalAndWait`) and the `XTimer`
+period converted the guest duration to whole milliseconds, then divided by the turbo speed and truncated again. At
+any turbo speed a guest `Sleep(1)` became 0 ms, a yield. Five Fable II worker threads sleep 1 ms in a loop, so each
+one spun a core: about 580% process CPU at 2x/60 against about 120% at 1x, at the same frame rate. A 1 ms wait
+timeout became a poll, and a 1 ms timer period became 0 (a one-shot timer).
+
+**Fix** (`patches/sdk/turbo-fine-delay.patch`; `FABLE2_TURBO_FINE_DELAY`, default on, `=0` restores the old path;
+launcher Fixes > Turbo: precise sleeps). Under turbo these durations are scaled in microseconds: a 1 ms sleep at
+2x takes 500 µs. 0 stays a poll, an infinite timeout stays infinite, and anything else is at least 1 µs. Waits use
+new `rex::thread::WaitMicros` / `SignalAndWaitMicros` / `WaitMultipleMicros` entry points, and timer periods are
+microseconds. At 1x every caller takes the old millisecond path unchanged. Unit test:
+`tests/turbo_fine_delay_tests.cpp` (runs with the build).
+
+**Measured** (Bower Lake dog save, muted background test sessions, 20 s still then 8 s walking with a camera turn,
+M5 Max, no contention; process CPU in % of one core):
+
+| Arm | Before (still / move) | After (still / move) | FPS after |
+|---|---|---|---|
+| Turbo off, 60 cap | 118 / 117 | 117 / 121 | 60 |
+| 2x, 60 cap | 581 / 576 | 96 / 100 | 30 |
+| 4x, 60 cap | 606 / 571 | 136 / 149 | 30 |
+| 2x, uncapped | 655 / 616 | 178 / 180 | 79 / 81 |
+| 4x, uncapped | 684 / 665 | 221 / 234 | 80 / 85 |
+| 2x, 60 cap, `FABLE2_TURBO_FINE_DELAY=0` | | 581 / 575 | 30 |
+
+The five spinning workers drop from ~99% each to under 3%. `[clock-report]` reads exactly 2.0000 / 4.0000 in every
+window. Turbo audio keeps pace (guest audio produced and consumed at the turbo rate, output 1.000x). The only
+starvation is in the windows where `sample` pauses the process, and it is lower than before. FPS and frame
+pacing do not change (the uncapped move window before the fix fell to 49 FPS at 2x; now 81). Evidence:
+`out/validation/turbo-cpu-20261021/` (before) and `out/validation/turbo-fine-delay-20261021/` (this patch).
 
 ## Caveats
 

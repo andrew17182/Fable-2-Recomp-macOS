@@ -551,6 +551,7 @@ struct LaunchSettings: Equatable {
   var ssmMerge = false
   var ssmStencilFold = true
   var ringReinitFix = true
+  var turboFineDelay = true  // docs/turbo.md "Precise sleeps"
   var fixLodSizeCache = false
   var fastPacing = false  // docs/load-fixes-20261016.md section F (pacing change, opt-in; replaces "Shorter load fades")
   // Diagnostics
@@ -773,6 +774,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "ringReinitFix", path: \.ringReinitFix, cli: "ring-reinit-fix", tab: .fixes, section: "Boot",
          title: "Ring re-init fix",
          detail: "Boot-hang workaround; the SDK's own ring sync also fixes it, so off alone changes nothing."),
+    Flag(key: "turboFineDelay", path: \.turboFineDelay, cli: "turbo-fine-delay", tab: .fixes, section: "Turbo",
+         title: "Turbo: precise sleeps",
+         detail: "Short sleeps keep their length under turbo. Off: they spin and use several CPU cores."),
     Flag(key: "fixLodSizeCache", path: \.fixLodSizeCache, cli: "fix-lod-size-cache", tab: .fixes,
          section: "Game bug fixes (changes original behaviour)",
          title: "Fix game texture-detail cache bug (pale textures)",
@@ -821,6 +825,7 @@ struct LaunchSettings: Equatable {
     (\.passMergeClearDst, "FABLE2_PASS_MERGE_CLEAR_DST"),
     (\.dhrStorageFormat, "FABLE2_DHR_STORAGE_FORMAT"),  // docs/hle-census-20261013.md section 11
     (\.tileEdram, "FABLE2_TILE_EDRAM"), (\.ringReinitFix, "FABLE2_RING_REINIT_FIX"),
+    (\.turboFineDelay, "FABLE2_TURBO_FINE_DELAY"),  // docs/turbo.md "Precise sleeps"
     (\.hitchTrace, "FABLE2_HITCH_TRACE"), (\.nativeXlate, "FABLE2_NATIVE_XLATE"),
     (\.nativeXlateVS, "FABLE2_NATIVE_XLATE_VS"), (\.nativeTess, "FABLE2_NATIVE_TESS"),
     (\.nativeRects, "FABLE2_NATIVE_RECTS"), (\.nativeTessBlended, "FABLE2_NATIVE_TESS_BLENDED"), (\.nativePoints, "FABLE2_NATIVE_POINTS"),

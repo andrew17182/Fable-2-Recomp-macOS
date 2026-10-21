@@ -59,6 +59,7 @@ SDK_BEHAVIOUR_PATCHES = [
     'patches/sdk/thread-exit-signal-safe.patch',  # no TLV in the thread signal handler; signals blocked at exit; quit outside SDL's watch lock
     'patches/sdk/codegen-graph-index.patch',  # codegen: indexed pending-jump and GAP_FILL lookups (same output, 4.5x faster)
     'patches/sdk/audio-playback-rate.patch',  # turbo audio: output consumes guest audio at the turbo rate
+    'patches/sdk/turbo-fine-delay.patch',  # turbo: Delay/wait/timer durations scaled in us (no sub-ms spin)
 ]
 # sdk-metal.patch adapts the graphics sources for the Metal plugin, which compiles them itself
 # with backends/metal/compat.h and its port/ headers; the Vulkan plugin (rexgpu-xenos) cannot
