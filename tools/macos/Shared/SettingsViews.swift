@@ -325,7 +325,22 @@ struct SettingsTabView: View {
 /// folder the game uses. Dev Launcher role: the live state (tools/fable2_dev_session.py sets
 /// FABLE2_RECORD_INPUT_PATH there for play sessions); player role: the app's own state folder.
 enum InputRecordings {
-  static var folder: String { (AppRole.devLauncher ? Backend.liveState : Paths.state) + "/logs/recordings" }
+  /// Same rules as Backend.liveState (Dev Launcher) and Paths.state (player), kept here so the shared files
+  /// build on their own (tests/controls_tab_tests.py).
+  static var folder: String {
+    let env = ProcessInfo.processInfo.environment
+    let state: String
+    if AppRole.devLauncher {
+      state = env["FABLE2_LIVE_STATE_ROOT"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? NSHomeDirectory() + "/Library/Application Support/Fable II Recomp"
+    } else if let root = env["FABLE2_APP_STATE_ROOT"], !root.isEmpty {
+      state = root
+    } else {
+      let name = Bundle.main.object(forInfoDictionaryKey: "Fable2StateFolder") as? String ?? "Fable II Recomp"
+      state = NSHomeDirectory() + "/Library/Application Support/" + name
+    }
+    return state + "/logs/recordings"
+  }
   /// Opens the folder in Finder (created first, so the button always works). Our own Application Support folder:
   /// no permission prompt.
   static func reveal() {
