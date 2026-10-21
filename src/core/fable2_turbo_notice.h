@@ -100,30 +100,49 @@ inline void LoadGameFont() {
               gf.font.pixel_size, gf.font.glyphs.size(), gf.font.tex_width, gf.font.tex_height);
 }
 
-// Measures / draws `text` with the game font at `scale` (1 = native 32 px).
-inline float GameTextWidth(const char* text, float scale) {
+// Widest advance among the digits 0-9 (unscaled), for tabular digits.
+inline float DigitAdvance() {
   const auto& f = Font().font;
   float w = 0;
+  for (uint32_t c = '0'; c <= '9'; ++c)
+    if (const auto* g = f.Find(c)) w = std::max(w, float(g->advance));
+  return w;
+}
+
+// Measures / draws `text` with the game font at `scale` (1 = native 32 px).
+// `tabular`: every digit takes the widest digit's advance (centred in it), so
+// changing numbers keep the text width; only a change in digit count moves it.
+inline float GameTextWidth(const char* text, float scale, bool tabular = false) {
+  const auto& f = Font().font;
+  const float digit = tabular ? DigitAdvance() : 0.0f;
+  float w = 0;
   for (const char* s = text; *s;) {
-    if (const auto* g = f.Find(fable2::bftfont::NextCodepoint(s))) w += g->advance * scale;
+    const uint32_t c = fable2::bftfont::NextCodepoint(s);
+    if (tabular && c >= '0' && c <= '9') w += digit * scale;
+    else if (const auto* g = f.Find(c)) w += g->advance * scale;
   }
   return w;
 }
 
-inline void DrawGameText(ImDrawList* dl, ImVec2 pos, const char* text, float scale, ImU32 color) {
+inline void DrawGameText(ImDrawList* dl, ImVec2 pos, const char* text, float scale, ImU32 color,
+                         bool tabular = false) {
   auto& gf = Font();
   const ImTextureID tex = reinterpret_cast<ImTextureID>(gf.texture.get());
   const float cell = float(gf.font.pixel_size);
+  const float digit = tabular ? DigitAdvance() : 0.0f;
   float x = pos.x;
   for (const char* s = text; *s;) {
-    const auto* g = gf.font.Find(fable2::bftfont::NextCodepoint(s));
+    const uint32_t c = fable2::bftfont::NextCodepoint(s);
+    const auto* g = gf.font.Find(c);
     if (!g) continue;
+    const bool fixed = tabular && c >= '0' && c <= '9';
+    const float shift = fixed ? (digit - g->advance) * 0.5f * scale : 0.0f;
     if (g->width > 0) {
-      const ImVec2 a(x + g->x_offset * scale, pos.y);
+      const ImVec2 a(x + shift + g->x_offset * scale, pos.y);
       const ImVec2 b(a.x + (g->u1 - g->u0) * gf.font.tex_width * scale, pos.y + cell * scale);
       dl->AddImage(tex, a, b, ImVec2(g->u0, g->v0), ImVec2(g->u1, g->v1), color);
     }
-    x += g->advance * scale;
+    x += (fixed ? digit : g->advance) * scale;
   }
 }
 

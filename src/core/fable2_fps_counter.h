@@ -2,11 +2,11 @@
 //
 // Headline: the game's own frame rate and average frame time over the last
 // ~0.5 s, e.g. "52 FPS · 19.2 ms". Guest frames come from the flight recorder's
-// swap counter (fable2::fr::g_frame, counted on every guest swap). Extra fields
-// appear only when they say something: "display N" when the presented rate
-// differs from the game's (the presenter repaints every UI tick while any
-// overlay, this one included, is shown, so the presented rate tends toward the
-// display refresh), "2× res" for a higher internal resolution, "turbo 2.5x"
+// swap counter (fable2::fr::g_frame, counted on every guest swap). "display N"
+// (the presented rate; the presenter repaints every UI tick while any overlay,
+// this one included, is shown, so it tends toward the display refresh) is always
+// shown. Digits are tabular, so the width changes only with the digit count.
+// Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x"
 // while turbo is on, and the upscaling filter in use for presenting
 // ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter
 // export, MetalFX only when it is actually applied). The text uses the game's
@@ -101,8 +101,8 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     auto append = [&](const char* fmt, auto... args) {
       if (n > 0 && size_t(n) < sizeof(text_)) n += std::snprintf(text_ + n, sizeof(text_) - n, fmt, args...);
     };
-    // Presented rate only when it tells something the game rate does not.
-    if (std::abs(display_fps - fps) >= std::max(2.0, fps * 0.05)) append("%sdisplay %.0f", sep, display_fps);
+    // Presented rate always shown, so the overlay keeps its layout.
+    append("%sdisplay %.0f", sep, display_fps);
     if (res_scale_ > 1) append("%s%d%s res", sep, res_scale_, times_);
     if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::ConfiguredScale());
     switch (PresentFilter()) {
@@ -143,7 +143,7 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     float text_w, cell_h, scale = 1.0f;
     if (game_font) {
       scale = text_h / float(tn::Font().font.pixel_size);
-      text_w = tn::GameTextWidth(text_, scale);
+      text_w = tn::GameTextWidth(text_, scale, /*tabular=*/true);
       cell_h = tn::Font().font.pixel_size * scale;
     } else {
       const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(text_h, 1e9f, 0.0f, text_);
@@ -162,8 +162,8 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     const ImU32 cream = tn::Rgba(240, 230, 204, 1.0f);
     const float o = std::max(1.0f, text_h * 0.06f);
     if (game_font) {
-      tn::DrawGameText(dl, ImVec2(pos.x + o, pos.y + o), text_, scale, shadow);
-      tn::DrawGameText(dl, pos, text_, scale, cream);
+      tn::DrawGameText(dl, ImVec2(pos.x + o, pos.y + o), text_, scale, shadow, /*tabular=*/true);
+      tn::DrawGameText(dl, pos, text_, scale, cream, /*tabular=*/true);
     } else {
       dl->AddText(ImGui::GetFont(), text_h, ImVec2(pos.x + o, pos.y + o), shadow, text_);
       dl->AddText(ImGui::GetFont(), text_h, pos, cream, text_);
