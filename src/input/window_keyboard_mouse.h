@@ -129,9 +129,11 @@ class WindowKeyboardMouse final
     using K = rex::ui::VirtualKey;
     if (!options_().overlay_captures_input) {
       if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) request_lua_(5);
-      if (key == uint16_t(K::k6) || key == uint16_t(K::kF6)) request_lua_(6);
+      if (key == uint16_t(K::k6)) request_lua_(6);
       if (key == uint16_t(K::k7)) request_lua_(7);
     }
+    // F6 opens and closes the F6 menu even while an overlay has keyboard focus (a function key, never typed text).
+    if (key == uint16_t(K::kF6)) request_lua_(6);
     // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h; number-row 8 stays
     // the SDK achievements overlay), F9 = FPS counter (src/core/fable2_fps_counter.h);
     // function keys, never typed text.
@@ -183,6 +185,7 @@ class WindowKeyboardMouse final
     const auto key = uint16_t(rex::ui::TranslateSDLScancode(scancode));
     if (!key || key >= 256) return true;
     fable2::session::Get().Key(key, down);
+    if (down && fable2::testbg::g_test_key_trace) fable2::testbg::g_test_key_trace(key);
     bool edge = false;
     {
       std::lock_guard lock(self->mutex_);
@@ -193,9 +196,10 @@ class WindowKeyboardMouse final
     using K = rex::ui::VirtualKey;
     if (!self->options_().overlay_captures_input) {
       if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) self->request_lua_(5);
-      if (key == uint16_t(K::k6) || key == uint16_t(K::kF6)) self->request_lua_(6);
+      if (key == uint16_t(K::k6)) self->request_lua_(6);
       if (key == uint16_t(K::k7)) self->request_lua_(7);
     }
+    if (key == uint16_t(K::kF6)) self->request_lua_(6);
     if (key == uint16_t(K::kF7)) self->request_lua_(7);
     if (key == uint16_t(K::kF8)) self->request_lua_(8);
     if (key == uint16_t(K::kF9)) self->request_lua_(9);

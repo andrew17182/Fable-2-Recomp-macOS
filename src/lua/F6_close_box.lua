@@ -1,0 +1,2 @@
+-- F6_close_box.lua: no-op. F6.lua runs it to ask the host for a B tap that dismisses the open F6 menu box
+-- (the host's RunScript probe sees the path; src/core/fable2_f5_lua.h).

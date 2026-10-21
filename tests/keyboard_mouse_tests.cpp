@@ -244,7 +244,13 @@ int main() {
   window.Key(K::kW, true);
   window.Key(K::k5, true);
   window.Key(K::k5, false);
+  window.Key(K::k6, true);
+  window.Key(K::k6, false);
   CHECK(overlay_lua_requests == 0);
+  // F6 still opens/closes the F6 menu while an overlay has the keyboard (a function key, never text).
+  window.Key(K::kF6, true);
+  window.Key(K::kF6, false);
+  CHECK(overlay_lua_requests == 1);
   options.overlay_captures_input = false;
   input->RequestRefresh();
   auto snapshot = input->Consume();

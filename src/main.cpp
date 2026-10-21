@@ -46,6 +46,15 @@
 // initializer. See src/input/test_background.h.
 [[maybe_unused]] static const bool g_fable2_test_background_hints =
     fable2::testbg::ApplyLaunchHints();
+// FABLE2_F6_TRACE=1: timestamp synthetic test keys next to the F6 menu trace (src/core/fable2_f5_lua.h).
+[[maybe_unused]] static const bool g_fable2_f6_trace_keys = [] {
+  if (fable2::f5lua::trace_on()) {
+    fable2::testbg::g_test_key_trace = [](uint16_t key) {
+      fable2::f5lua::logline("[f6t %.1f] test key 0x%02X\n", fable2::f5lua::trace_ms(), key);
+    };
+  }
+  return true;
+}();
 // FABLE2_SHADER_PREP (headless shader prep): no Dock icon; see src/core/fable2_shader_prep_hide.h.
 [[maybe_unused]] static const bool g_fable2_shader_prep_hidden =
     fable2::shader_prep_hide::ApplyEarly();

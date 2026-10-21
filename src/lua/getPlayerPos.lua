@@ -1,5 +1,5 @@
 -- getPlayerPos.lua: display the player's current (x, y, z) position in a
--- message box. Run directly, or via the F5 selector menu (F5.lua).
+-- message box. Run directly, or from the F6 menu (F6.lua).
 --
 -- Position comes from the hero entity: QuestManager.HeroEntity:GetPosition()
 -- (equivalently GetPlayerHero():GetPosition() or Debug.GetHero():GetPosition()).
@@ -45,12 +45,17 @@ local function player_position()
   return parse_vector3(tostring(pos))
 end
 
+-- From the F6 menu the box goes through st.message, so F6 also closes it (F6.lua).
+local st = rawget(_G, "__f6_menu_state")
+local function show(text)
+  if st and st.message then st.message(text) else GUI.DisplayMessageBox(text) end
+end
+
 local x, y, z = player_position()
 if x then
-  GUI.DisplayMessageBox(
-      "Player position\nX: " .. string.format("%.3f", x) ..
-      "\nY: " .. string.format("%.3f", y) ..
-      "\nZ: " .. string.format("%.3f", z))
+  show("Player position\nX: " .. string.format("%.3f", x) ..
+       "\nY: " .. string.format("%.3f", y) ..
+       "\nZ: " .. string.format("%.3f", z))
 else
-  GUI.DisplayMessageBox("Could not get player position")
+  show("Could not get player position")
 end

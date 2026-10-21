@@ -718,6 +718,8 @@ extern "C" void ProcessAndProcessAndProcess1013_822B2D60(PPCContext& ctx, uint8_
   const uint32_t user = ctx.r3.u32;
   __imp__ProcessAndProcessAndProcess1013_822B2D60(ctx, base);
   fable2::session::ObservePad(ctx, base, state_ptr, user);
+  // F6 closes the F6 menu: a short B tap on the open game box (src/core/fable2_f5_lua.h).
+  if (ctx.r3.u32 == 0 && user == 0) fable2::f5lua::inject_close_tap(base + state_ptr);
 #ifdef FABLE2_REMOTE_CONTROL
   fable2::stateprobe::observe_a_button(state_ptr);
 #endif

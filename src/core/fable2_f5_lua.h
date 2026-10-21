@@ -28,6 +28,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -38,6 +40,7 @@
 
 #include "rex/cvar.h"
 #include "fable2_character_editor.h"  // opt-in mod: F6 entry + save backup ack
+#include "fable2_f6_close.h"          // F6 closes the F6 menu (B tap)
 #include "rex/ppc/context.h"  // PPCContext
 
 // Guest-memory helpers (defined in src/diagnostics/fable2_text_append.h, which
@@ -172,6 +175,26 @@ inline void logline(const char* fmt, ...) {
   }
 }
 
+// F6 menu timing trace (diagnostic, FABLE2_F6_TRACE=1): timestamped lines in fable2_f5_lua.log for the
+// F6 key, the RunScript of the menu file and Lua marks (below). Used to measure open/page-switch latency.
+inline bool trace_on() {
+  static const bool on = [] {
+    const char* v = std::getenv("FABLE2_F6_TRACE");  // getenv-ok: once
+    return v && v[0] == '1';
+  }();
+  return on;
+}
+inline double trace_ms() {
+  static const auto t0 = std::chrono::steady_clock::now();
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+// F6 closes an open F6 menu box with a short B tap (src/core/fable2_f6_close.h).
+inline void request_close_box() {
+  fable2::f6close::Request();
+  if (trace_on()) logline("[f6t %.1f] close box (B tap)\n", trace_ms());
+}
+inline void inject_close_tap(uint8_t* state) { fable2::f6close::InjectTap(state); }
+
 // Mac window events and Windows polling both queue work for the guest thread.
 // key 5 = quick save (f5_lua_path), key 6 = custom Lua (f6_lua_path).
 inline void request_run(int key = 5) {
@@ -179,6 +202,7 @@ inline void request_run(int key = 5) {
     fable2::quicksave::request();
     return;
   }
+  if (key == 6 && trace_on()) logline("[f6t %.1f] key F6\n", trace_ms());
   (key == 6 ? g_f6_pending : g_f5_pending).store(true);
 }
 
@@ -332,6 +356,7 @@ inline void poll_mainloop(PPCContext& ctx, uint8_t* base) {
   // when the hook fired (only F5 detection should be side-effectful).
   logline("[f5] poll_mainloop: r1=0x%08X r2=0x%08X r3=0x%08X (about to run_external)\n",
           (uint32_t)ctx.r1.u64, (uint32_t)ctx.r2.u64, (uint32_t)ctx.r3.u64);
+  if (custom && trace_on()) logline("[f6t %.1f] RunScript %s\n", trace_ms(), path.c_str());
   const PPCContext saved = ctx;
   try {
     run_external(ctx, base, path);
@@ -384,6 +409,11 @@ extern "C" void LuaBind_RunScript_82806168(PPCContext& ctx, uint8_t* base) {
     }
     pathbuf[95] = 0;
 
+    // Lua-side timing marks: RunScript("…f6_mark_<label>.lua") (a missing no-op path; the
+    // probe sees it before the game resolves it).
+    if (trace_on() && std::strstr(pathbuf, "f6_mark_")) {
+      logline("[f6t %.1f] mark %s\n", trace_ms(), pathbuf);
+    }
     if (this_ptr != 0 && method != 0 && pathbuf[0]) {
       const std::string p(pathbuf);
       const bool is_lua = p.size() > 4 && p.compare(p.size() - 4, 4, ".lua") == 0;
@@ -397,6 +427,8 @@ extern "C" void LuaBind_RunScript_82806168(PPCContext& ctx, uint8_t* base) {
         logline("[notify] ack '%s' (shown=%u declined=%u)\n", pathbuf, g_notify_shown.load(),
                 g_notify_declined.load());
       }
+      // F6 menu: dismiss the open box (F6 pressed while the menu is up).
+      if (is_lua && p.find(fable2::f6close::kCloseBoxAck) != std::string::npos) request_close_box();
       // Character Editor mod (opt-in): the editor asks for a save backup before any change.
       if (is_lua && fable2::character_editor::IsBackupAck(pathbuf)) {
         fable2::character_editor::OnBackupRequest();

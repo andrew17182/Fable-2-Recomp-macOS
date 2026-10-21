@@ -1,35 +1,37 @@
 -- F6 selector menu (custom Lua). Moved from F5 when F5 became quick save.
 --
--- Pressing F6 or number-row 6 (host keyboard) re-runs this file. It opens a native menu box
--- listing available Lua scripts; pick one with up/down + A to run it.
+-- F6 (or number-row 6) re-runs this file. The first run registers ONE persistent per-frame script with
+-- the GeneralScriptManager (the in-game Debug Menu's model); every press after that only flips flags
+-- that the script reads on its next tick:
+--   * no menu up       -> open the F6 menu;
+--   * any menu, page, submenu or message of ours up -> close all of it (F6 always closes).
 --
--- Implementation model (matches the in-game Debug Menu / MultipageMenu):
--- a SINGLE persistent per-frame script is registered with the
--- GeneralScriptManager. The top-level below runs on every F6 press, but it
--- only registers the script the FIRST time; each subsequent press just sets a
--- "show" flag that the per-frame coroutine picks up on the next frame. This
--- avoids re-registering a new script (and re-entering the menu box) on every
--- press, which is what crashed the game on the second F6.
+-- Menu boxes (GUI.DisplayMenuBox: a title plus at most 5 entries, B = 0) go through st.box below, which
+-- every F6 script shares (character_editor.lua, modifyMoney.lua, modifyMoralityPurity.lua). Timing, as
+-- measured 2026-10-21 (the script ticks at 15 Hz, 67 ms):
+--   * A box opened less than 2 ticks after the previous one closed is dropped by the game (the script
+--     then waits for a selection that never comes).
+--   * A box opened less than about 7 ticks after the previous one closed keeps the old box's hovered
+--     slot highlighted, and that stale highlight sticks (the "white highlight bug" the game's own
+--     MultipageMenu works around with a 0.45 s wait).
+--   * The new box's cursor starts on slot 1, so when slot 1 was the one chosen the stale highlight is
+--     the cursor itself: a page flip on slot 1 is safe after 3 ticks.
+-- So st.box waits SETTLE_FULL ticks after a close, or SETTLE_FAST when slot 1 was chosen. Paged menus
+-- put their "More..." / "Next" entry in slot 1. (The old fixed 30-tick waits made every page switch
+-- take about 2 s and returning to this menu about 5 s.)
 --
--- The menu box (GUI.DisplayMenuBox) is, in the words of the game's own
--- MultipageMenu.lua, "honestly terrible to use" and has a known bug where an
--- item that was hovered when a box closed stays highlighted if the box is
--- reopened too soon, and where passing a nil arg (vs. "nothing") crashes. To
--- stay in the safe zone we replicate the game's exact idiom:
---   * prepend a "Leave Menu" entry (the box always has >= 1 entry and the
---     processor's item array is never left with a shifted/short tail),
---   * pad the page up to the full 5 slots with "NONE" so the item array the
---     per-frame processor iterates is always complete (no trailing nils),
---   * wait for the teardown/animation to finish after close before allowing a
---     re-open (the game's 0.45 s slowmode, plus our message-ID re-anchor).
--- Cycling the box then no longer leaves a dangling item pointer that the
--- per-frame "process items" pass dereferences (which was the null read that
--- aborted the game).
+-- Closing: the game's menu box has no close call (DisplayMenuBox returns no handle), so F6 dismisses
+-- it the way a player does. This file RunScript()s the no-op F6_close_box.lua; the host's RunScript
+-- probe sees it and taps B on the pad for two reads (src/core/fable2_f5_lua.h). The box posts
+-- "cancelled", st.box returns nil, and every caller unwinds without opening anything else. Messages
+-- (st.message) are menu boxes too, for the same reason.
 --
--- To add a script, add { name = "...", path = "..." } to F6_MENU_ITEMS.
--- `path` is relative to the game VFS root (data/), forward slashes, e.g.
--- "scripts/recomp/myScript.lua". The file must also be a line in
--- data/dir.manifest (the build auto-maintains that for src/lua/*.lua).
+-- Scripts run in a coroutine of their own, resumed once per tick, so a script error ends that script
+-- (with a message) instead of the whole menu, and F6 keeps working.
+--
+-- To add a script, add { name = "...", path = "..." } to F6_MENU_ITEMS. `path` is relative to the game
+-- VFS root (data/), forward slashes, e.g. "scripts/recomp/myScript.lua", and must be a line in
+-- data/dir.manifest (the build adds src/lua/*.lua).
 
 local F6_MENU_ITEMS = {
   { name = "Get Player Position", path = "scripts/recomp/getPlayerPos.lua" },
@@ -42,174 +44,146 @@ if rawget(_G, "__recomp_character_editor") then
   F6_MENU_ITEMS[#F6_MENU_ITEMS + 1] = { name = "Character Editor", path = "scripts/recomp/character_editor.lua" }
 end
 
--- Run a script from the game VFS. The game's custom loadfile resolves paths
--- relative to the data/ root (io is disabled), so there is no "data/" prefix.
--- Returns (chunk, nil) on success or (nil, msg) when not found / compile error.
-local function run_script(path)
-  local chunk, err = loadfile(path)
-  if type(chunk) ~= "function" then
-    local why = (err and err ~= "") and tostring(err)
-        or "file not found in the game VFS (is it in data/dir.manifest?)"
-    pcall(GUI.DisplayMessageBox, "F6: could not load " .. path .. "\n" .. why)
-    return
-  end
-  -- Run the chunk directly, NOT inside pcall(): a script may coroutine.yield()
-  -- to run across frames (e.g. modifyMoney.lua's sub-menu), and a yield cannot
-  -- cross a C-call boundary — pcall is one. Errors in the chunk propagate to
-  -- the update() coroutine (the GeneralScriptManager then logs + terminates it);
-  -- the scripts guard their game API calls with pcall individually, so a normal
-  -- script run should not raise.
-  chunk()
-end
+local CLOSE_BOX = "scripts/recomp/F6_close_box.lua"
 
--- Shared state that persists across F6 presses (the game uses one Lua state,
--- so a global table survives across separate runs of this file).
+-- Shared state that persists across F6 presses (the game uses one Lua state, so a global table
+-- survives across separate runs of this file).
 local st = rawget(_G, "__f6_menu_state")
-if not st then
-  st = { show = false, registered = false, busy = false }
+if not st or st.version ~= 2 then
+  st = { version = 2, show = false, active = false, closing = false, registered = false,
+         tick = 0, ready_tick = 0, box_open = false, close_sent = -1000 }
   rawset(_G, "__f6_menu_state", st)
 end
--- Ignore an F6 press while any native modal (the menu box OR a message box
--- from the chosen script) is up or mid-teardown: re-opening a box on top of
--- a live one (and re-running the script loader mid-modal) is what
--- hard-crashed the game. The press is simply dropped.
-if not st.busy then
-  st.show = true -- this F6 press requests the menu
+
+-- This press.
+if st.active then
+  -- A menu, page, submenu or message of ours is up: close everything.
+  st.closing = true
+  st.show = false
+  if st.box_open then
+    st.close_sent = st.tick
+    pcall(RunScript, CLOSE_BOX)
+  end
+elseif st.show then
+  st.show = false -- pressed twice before the menu came up: stay closed
+else
+  st.show = true
 end
 
 if not st.registered then
   st.registered = true
 
-  -- The menu box can show at most 5 entries per page (6 args incl. title).
-  -- We build a full 5-slot page (never a short one) so the game's per-frame
-  -- "process items" pass always sees a complete item array.
-  local PAGE_SIZE = 5
-  local LEAVE_LABEL = "Leave Menu"
-  local PAD_LABEL = "NONE"
+  local SETTLE_FULL = 9 -- ticks after a box closed (7 measured clean; margin)
+  local SETTLE_FAST = 3 -- after slot 1 was chosen (2 measured clean; margin)
+  local RESEND_TICKS = 8 -- re-tap B if a box has not closed this long after a close request
 
-  -- Build the full 5-slot page of entry strings: slot 1 is the "Leave Menu"
-  -- entry, slots 2..N are our scripts, remaining slots are "NONE". Always
-  -- returns exactly PAGE_SIZE non-nil strings.
-  local function build_page()
-    local page = {}
-    page[1] = LEAVE_LABEL
-    for i = 2, PAGE_SIZE do
-      local item = F6_MENU_ITEMS[i - 1]
-      page[i] = (item and item.name) or PAD_LABEL
+  -- One tick. Every yield of the menu and its scripts goes through here so st.tick counts ticks.
+  function st.wait()
+    coroutine.yield()
+    st.tick = st.tick + 1
+  end
+
+  -- Shows a game menu box and waits for the choice. Returns the 1-based entry chosen, 0 for B, or nil
+  -- when F6 closed the menu (callers return at once and open nothing else).
+  function st.box(title, entries)
+    while st.tick < st.ready_tick do
+      if st.closing then return nil end
+      st.wait()
     end
-    return page -- exactly PAGE_SIZE entries, none nil
+    if st.closing then return nil end
+    local args = { title }
+    for i = 1, #entries do args[i + 1] = entries[i] end
+    local okid, last_id = pcall(MessageEvents.GetMostRecentMessageID)
+    if not okid or last_id == nil then return 0 end
+    if not pcall(GUI.DisplayMenuBox, unpack(args, 1, #args)) then return 0 end
+    st.box_open = true
+    local resent = 0
+    local choice = 0
+    while true do
+      local ok, posted, msg = pcall(MessageEvents.IsMessagePosted, EMessageEventType.MESSAGE_EVENT_MENUBOX,
+                                    last_id)
+      if not ok then break end
+      if posted then
+        local okc, c = pcall(function() return msg:GetExtraDataAsNumber() end)
+        if okc and type(c) == "number" then choice = c end
+        break
+      end
+      if st.closing and st.tick - st.close_sent >= RESEND_TICKS then
+        -- Still up after a close request (F6 came while the box was opening and not yet taking
+        -- input): tap B again, twice at most, then stop waiting (a box the game dropped never posts).
+        if resent >= 2 then break end
+        resent = resent + 1
+        st.close_sent = st.tick
+        pcall(RunScript, CLOSE_BOX)
+      end
+      st.wait()
+    end
+    st.box_open = false
+    st.ready_tick = st.tick + ((choice == 1) and SETTLE_FAST or SETTLE_FULL)
+    if st.closing then return nil end
+    return choice
   end
 
-  -- Open the native menu box and wait for the selection. Returns the 1-based
-  -- F6_MENU_ITEMS index chosen, or 0 if cancelled / "Leave Menu". Uses the
-  -- game's idiom: capture the most recent message id BEFORE opening, then poll
-  -- for the MENUBOX message; yield once more after the selection so the menu
-  -- box fully closes first.
-  --
-  -- IMPORTANT: NOT wrapped in pcall by the caller. LuaPlus is Lua 5.1, where
-  -- a coroutine.yield() cannot propagate through pcall (it becomes a
-  -- "yield across C boundary" error), so the yield loop must live directly in
-  -- the coroutine. Each individual (non-yielding) API call is pcall'd and
-  -- errors degrade to a message box + return 0.
-  local function menu_fail(what)
-    pcall(GUI.DisplayMessageBox, "F6: menu error: " .. tostring(what))
-    return 0
+  -- Shows a message as a menu box with one "OK" entry, so F6 closes it like any other box. (The game's
+  -- message box cannot be closed from here: GUI.DisplayMessageBox returns no handle, it ignores B, and
+  -- the game holds this script while it is up.) Returns nil when F6 closed it.
+  function st.message(text)
+    return st.box(text, { "OK" })
   end
-  local function open_menu()
-    st.busy = true
-    local page = build_page()
-    -- args = title + exactly PAGE_SIZE entries (no nils, full array).
-    local args = { "F6 Menu" }
-    for i = 1, PAGE_SIZE do args[i + 1] = page[i] end
-    local ok, last_id = pcall(MessageEvents.GetMostRecentMessageID)
-    if not ok or last_id == nil then return menu_fail(last_id) end
-    local ok2, disperr = pcall(GUI.DisplayMenuBox, unpack(args, 1, #args))
-    if not ok2 then return menu_fail(disperr) end
+
+  -- Runs a script from the game VFS in a coroutine of its own, one resume per tick. The game's
+  -- loadfile resolves paths relative to data/ (io is disabled).
+  local function run_script(path)
+    local chunk, err = loadfile(path)
+    if type(chunk) ~= "function" then
+      local why = (err and err ~= "") and tostring(err)
+          or "file not found in the game VFS (is it in data/dir.manifest?)"
+      st.message("F6: could not load " .. path .. "\n" .. why)
+      return
+    end
+    local co = coroutine.create(chunk)
     while true do
-      local ok3, posted, message = pcall(
-          MessageEvents.IsMessagePosted, EMessageEventType.MESSAGE_EVENT_MENUBOX,
-          last_id)
-      if not ok3 then return menu_fail(posted) end
-      if posted then
-        local okc, choice = pcall(function()
-          return message:GetExtraDataAsNumber()
-        end)
-        coroutine.yield() -- let the menu box finish closing.
-        st.busy = false
-        if not okc then return menu_fail(choice) end
-        -- choice is the 1-based box entry index: 1 = "Leave Menu" (cancel),
-        -- 2..PAGE_SIZE = F6_MENU_ITEMS[1..PAGE_SIZE-1]. 0 = B (cancel).
-        if choice == 0 or choice == 1 then return 0 end
-        local idx = choice - 1
-        if idx >= 1 and idx <= #F6_MENU_ITEMS then return idx end
-        return 0
+      local ok, e = coroutine.resume(co)
+      if not ok then
+        pcall(cprint, "[F6] " .. path .. ": " .. tostring(e))
+        st.message("F6: " .. path .. " failed\n" .. tostring(e))
+        return
       end
+      if coroutine.status(co) == "dead" then return end
+      -- The script yielded (st.wait counted the tick): wait for the next tick here.
       coroutine.yield()
     end
   end
 
-  -- Message-ID helpers. GetMostRecentMessageID() is a monotonic counter over
-  -- the game's message pipeline; every box (menu box, message box) posts a
-  -- message when it is dismissed, so "the ID advanced" == "a box closed".
-  local function latest_id()
-    local ok, id = pcall(MessageEvents.GetMostRecentMessageID)
-    if ok and id ~= nil then return id end
-    return nil
+  -- The menu page: "Leave Menu", our scripts, then "NONE" up to the full 5 slots (the game's idiom: a
+  -- complete item array for its per-frame item pass).
+  local PAGE_SIZE = 5
+  local function page()
+    local entries = { "Leave Menu" }
+    for i = 2, PAGE_SIZE do
+      local item = F6_MENU_ITEMS[i - 1]
+      entries[i] = (item and item.name) or "NONE"
+    end
+    return entries
   end
 
   -- Persistent per-frame body, driven as a coroutine by the GeneralScriptManager.
   local function update()
-    local cooldown = 0
-    local busy_anchor = nil -- message ID captured when a modal went up
-    local busy_frames = 0
-    -- A modal counts as closed once a box-dismissal message has been posted
-    -- (ID advanced past the anchor) AND a few frames have elapsed for the box
-    -- to fully tear down. Hard cap so a stray/never-dismissed modal can't
-    -- wedge F6 forever.
-    local function modal_clear()
-      if busy_anchor == nil then return true end
-      local id = latest_id()
-      local dismissed = id ~= nil and id > busy_anchor
-      busy_frames = busy_frames + 1
-      if (dismissed and busy_frames >= 10) or busy_frames >= 300 then
-        busy_anchor = nil
-        return true
-      end
-      return false
-    end
     while true do
-      if not modal_clear() then
-        -- A native box is still up/tearing down: drop F6, wait.
-      elseif cooldown > 0 then
-        -- The game's menu box needs a few frames to fully tear down after a
-        -- selection/cancel before it can be re-opened without an error. Hold
-        -- off on re-opening until the cooldown elapses.
-        cooldown = cooldown - 1
-      elseif st.show then
-        st.show = false
-        st.busy = true
-        busy_anchor = latest_id() or 0
-        busy_frames = 0
-        -- open_menu yields (must not be pcall'd; see its note). It returns 0
-        -- on any internal error after showing an error box.
-        local choice = open_menu() or 0
-        if choice >= 1 and choice <= #F6_MENU_ITEMS then
-          run_script(F6_MENU_ITEMS[choice].path) -- may yield (sub-menus); run
-                                                 -- directly so yields stay in this coroutine
+      if st.show then
+        st.active = true
+        -- A script returns to this menu by setting st.show (its "Back").
+        while st.show and not st.closing do
+          st.show = false
+          local choice = st.box("F6 Menu", page())
+          local item = choice and F6_MENU_ITEMS[choice - 1]
+          if item then run_script(item.path) end
         end
-        -- Re-anchor AFTER the whole sequence: the menu selection itself
-        -- advanced the ID, and the script may have opened its own message box
-        -- whose dismissal posts a later ID.
-        local id = latest_id()
-        if id then busy_anchor = id end
-        st.busy = false
-        -- Wait long enough for the box's teardown/animation to finish (the
-        -- game's 0.45 s slowmode at 60 fps ~= 27 frames) before we're allowed
-        -- to re-open. This is what keeps a re-opened box from reusing a stale
-        -- hovered-item index from the previous box.
-        cooldown = 40
+        st.show = false
+        st.closing = false
+        st.active = false
       end
-      coroutine.yield()
+      st.wait()
     end
   end
 

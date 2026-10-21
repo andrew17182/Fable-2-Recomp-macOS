@@ -21,9 +21,9 @@
 --   * Changes live in memory until the game saves (autosave, F5 quick save or the pause menu), so
 --     quitting without saving discards them.
 --
--- Runs inside the F6 menu's per-frame coroutine (F6.lua's run_script calls the chunk directly), so the
--- menu loops below yield across frames. A yield cannot cross pcall, so the loops stay outside pcall and
--- each single game call is pcall'd.
+-- Runs as a coroutine of the F6 menu (F6.lua's run_script), so the menu loops below wait across ticks
+-- (st.box). A yield cannot cross pcall, so the loops stay outside pcall and each single game call is
+-- pcall'd. F6 closes the editor at any point (st.box returns nil).
 
 local st = rawget(_G, "__f6_menu_state")
 
@@ -52,7 +52,7 @@ end
 local function round(v) return math.floor(v + 0.5) end
 
 local function message(text)
-  pcall(GUI.DisplayMessageBox, text)
+  if st and st.message then st.message(text) else pcall(GUI.DisplayMessageBox, text) end
 end
 
 -- ---------------------------------------------------------------------------------------------------
@@ -192,35 +192,8 @@ local function backup_save()
 end
 
 -- ---------------------------------------------------------------------------------------------------
--- Menu boxes (the game's GUI.DisplayMenuBox: a title plus at most 5 entries; B = 0).
-
-local function settle()
-  for _ = 1, 30 do coroutine.yield() end
-end
-
--- Shows a box; returns the chosen 1-based entry, or 0 for B / timeout.
-local function menu_box(title, entries)
-  local args = { title }
-  for i = 1, #entries do args[i + 1] = entries[i] end
-  local okid, last_id = pcall(MessageEvents.GetMostRecentMessageID)
-  if not okid or last_id == nil then return 0 end
-  if not pcall(GUI.DisplayMenuBox, unpack(args, 1, #args)) then return 0 end
-  local frames = 0
-  while frames < 3600 do  -- a guard only (about a minute at 60 FPS): a lost box cannot wedge F6
-    local ok, posted, msg = pcall(MessageEvents.IsMessagePosted, EMessageEventType.MESSAGE_EVENT_MENUBOX,
-                                  last_id)
-    if not ok then return 0 end
-    if posted then
-      local okc, choice = pcall(function() return msg:GetExtraDataAsNumber() end)
-      coroutine.yield()  -- let the box finish closing
-      if okc and type(choice) == "number" then return choice end
-      return 0
-    end
-    frames = frames + 1
-    coroutine.yield()
-  end
-  return 0
-end
+-- Menu boxes: F6.lua's shared st.box (the game's GUI.DisplayMenuBox, a title plus at most 5 entries).
+-- It returns the chosen entry, 0 for B, or nil when F6 closed the menu: then return at once.
 
 local function stat_title(stat)
   local h = hero()
@@ -229,25 +202,27 @@ local function stat_title(stat)
   return stat.name .. ": " .. stat.show(v)
 end
 
+-- Returns false when F6 closed the menu.
 local function edit_stat(stat)
+  local labels = {}
+  for i, o in ipairs(stat.options) do labels[i] = o.label end
   while true do
-    local labels = {}
-    for i, o in ipairs(stat.options) do labels[i] = o.label end
-    local choice = menu_box(stat_title(stat), labels)
-    if choice < 1 or choice > #stat.options then return end
+    local choice = st.box(stat_title(stat), labels)
+    if choice == nil then return false end
+    if choice < 1 or choice > #stat.options then return true end  -- B: back to the stat list
     local result = apply(stat, stat.options[choice])
     pcall(cprint, "[character_editor] " .. result)
-    settle()
   end
 end
 
--- Main menu: two pages of four stats plus a "More..." entry that flips the page. B leaves.
+-- Main menu: two pages of four stats. "More..." flips the page; it is slot 1, where the next box's
+-- cursor starts, so the flip can reopen quickly (F6.lua). B leaves. Returns false when F6 closed it.
 local PAGE = 4
 local function main_menu()
   local page = 0
   local pages = math.ceil(#STATS / PAGE)
   while true do
-    local entries, map = {}, {}
+    local entries, map = { "More..." }, {}
     for i = 1, PAGE do
       local stat = STATS[page * PAGE + i]
       if stat then
@@ -255,23 +230,23 @@ local function main_menu()
         map[#entries] = stat
       end
     end
-    entries[#entries + 1] = "More..."
-    local more = #entries
-    local choice = menu_box("Character Editor (" .. (page + 1) .. "/" .. pages .. ")", entries)
-    if choice == 0 then return end
-    settle()
-    if choice == more then
+    local choice = st.box("Character Editor (" .. (page + 1) .. "/" .. pages .. ")", entries)
+    if choice == nil then return false end
+    if choice == 1 then
       page = (page + 1) % pages
     elseif map[choice] then
-      edit_stat(map[choice])
+      if not edit_stat(map[choice]) then return false end
     else
-      return
+      return true  -- B
     end
   end
 end
 
 local function run()
-  settle()  -- let the F6 box finish tearing down before opening ours
+  if not (st and st.box) then
+    message("Character Editor: open it from the F6 menu.")
+    return
+  end
   if not hero() then
     message("Character Editor: only available in normal gameplay.")
     return
@@ -281,8 +256,7 @@ local function run()
     message("Character Editor: could not back up the save, so nothing was changed.\n" .. tostring(why))
     return
   end
-  main_menu()
-  if st then st.show = true end  -- back to the F6 menu
+  if main_menu() then st.show = true end  -- B: back to the F6 menu
 end
 
 run()

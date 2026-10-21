@@ -227,6 +227,14 @@ before F5 became quick save.)
   `src/lua/*.lua` into `data/scripts/recomp/` next to the exe). The shipped
   `F6.lua` opens a script selector menu (Get Player Position, Modify Money,
   Morality / Purity, and Character Editor when that mod is on: `docs/character-editor.md`).
+  F6 toggles it: pressed while any of its menus, pages, submenus or messages is up, it closes all
+  of them (a short B tap on the game's menu box, `src/core/fable2_f6_close.h`); pressed again, it opens
+  the menu. F6 works while an overlay has the keyboard; number-row 6 does not (it may be typed text).
+- **Menu timing:** the menu's script ticks at 15 Hz. Every box goes through `st.box` in `F6.lua`, which
+  waits 9 ticks (0.6 s) after a box closes before opening the next, or 3 ticks (0.2 s) when slot 1 was
+  chosen, so paged menus keep "More..." / "Next" in slot 1. Opening sooner drops the box (under 2 ticks)
+  or leaves the old box's hovered slot highlighted for good (under 7). `FABLE2_F6_TRACE=1` writes
+  timestamped `[f6t]` lines (F6 key, RunScript, close taps, Lua `f6_mark_*` paths) to `fable2_f5_lua.log`.
 - **Path:** set by the `f6_lua_path` cvar (default `scripts/recomp/F6.lua`,
   resolved relative to the VFS root `data/`). Override per-launch with
   `fable_2.exe --f6_lua_path "scripts/other/MyScript.lua"`.

@@ -52,6 +52,9 @@ namespace fable2::testbg {
 constexpr uint32_t kTestKeyEventType = 0xF2B5;
 constexpr int32_t kTestKeyDownBit = 0x10000;
 
+// Optional diagnostic hook for each synthetic key-down (main.cpp sets it when FABLE2_F6_TRACE=1).
+inline void (*g_test_key_trace)(uint16_t key) = nullptr;
+
 inline bool enabled() {
   static const bool on = [] {
     const char* v = std::getenv("FABLE2_TEST_BACKGROUND");
