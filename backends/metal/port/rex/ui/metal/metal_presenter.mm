@@ -17,6 +17,7 @@
 
 #include "rex/ui/metal/metal_presenter.h"
 #include "rex/ui/metal/metal_flash_detect.h"
+#include "rex/ui/metal/metal_frame_interp.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -154,6 +155,7 @@ bool MetalPresenter::Initialize() {
 }
 
 void MetalPresenter::Shutdown() {
+  frame_interp::StopPresentThread();
   uint64_t last_submission = guest_output_submission_counter_.load(std::memory_order_acquire);
   if (shared_event_ && last_submission) {
     [(id<MTLSharedEvent>)shared_event_ waitUntilSignaledValue:last_submission timeoutMS:UINT64_MAX];
@@ -643,15 +645,21 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     metal_layer_.framebufferOnly = YES;
     screen_capture_restore_fbo_ = false;
   }
+  // [frame-interp] FABLE2_FRAME_INTERP=1: this thread paints into offscreen targets and a present thread acquires
+  // the drawables (two presents per real frame must not block the UI thread on nextDrawable).
+  const bool fi_async = frame_interp::Enabled();
+  const double fi_t0 = frame_interp::Active() ? frame_interp::Now() : 0.0;
   // Vsync phase lock (metal_vsync_lock.h): drawable acquisition time and the nextDrawable wait of each paint.
-  const bool vsync_lock_on = graphics::metal::vsync_lock::Enabled();
+  // With async frame interpolation the present thread reports to the lock instead (metal_frame_interp.mm).
+  const bool vsync_lock_on = graphics::metal::vsync_lock::Enabled() && !fi_async;
   const double vsync_lock_paint_start = vsync_lock_on ? graphics::metal::vsync_lock::NowSeconds() : 0.0;
   // nextDrawable blocks while every drawable is queued for the display; the wait is logged as drawable_wait
   // (frame CSV + recorder) so the UI-thread cost of the smaller queue is visible.
-  const bool log_drawable_wait = graphics::metal::frame_log::Enabled();
+  const bool log_drawable_wait = graphics::metal::frame_log::Enabled() && !fi_async;
   const auto drawable_wait_t0 =
       log_drawable_wait ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-  id<CAMetalDrawable> drawable = [metal_layer_ nextDrawable];
+  id<CAMetalDrawable> drawable = fi_async ? nil : [metal_layer_ nextDrawable];
+  if (fi_t0 > 0.0 && !fi_async) frame_interp::NoteDrawableWait(0, frame_interp::Now() - fi_t0);
   const double vsync_lock_drawable_wait =
       vsync_lock_on ? graphics::metal::vsync_lock::NowSeconds() - vsync_lock_paint_start : 0.0;
   if (log_drawable_wait) {
@@ -661,16 +669,11 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
                                                                        drawable_wait_t0)
                      .count()));
   }
-  if (!drawable) {
+  if (!drawable && !fi_async) {
     REXLOG_WARN("Metal PaintAndPresentImpl failed to get drawable");
     return PaintResult::kNotPresented;
   }
   graphics::metal::trace::Paint();
-  id<MTLTexture> drawable_texture = drawable.texture;
-  if (!drawable_texture) {
-    REXLOG_WARN("Metal PaintAndPresentImpl failed to get drawable texture");
-    return PaintResult::kNotPresented;
-  }
 
   id<MTLCommandBuffer> command_buffer = [command_queue_ commandBuffer];
   if (REXCVAR_GET(metal_presenter_debug_markers) && command_buffer) {
@@ -683,6 +686,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
   GuestOutputProperties guest_output_properties;
   GuestOutputPaintConfig guest_output_paint_config;
   id<MTLTexture> guest_output_texture = nil;
+  uint64_t fi_await_submission = 0;
   {
     std::unique_lock<std::mutex> guest_output_consumer_lock(ConsumeGuestOutput(
         guest_output_mailbox_index, &guest_output_properties, &guest_output_paint_config));
@@ -701,9 +705,45 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
         guest_output_waited_submission_ = await_submission;
       }
       guest_output_texture = guest_output_textures_[guest_output_mailbox_index];
+      fi_await_submission = await_submission;
     }
   }
 
+  // [frame-interp] FABLE2_FRAME_INTERP=1 (prototype, metal_frame_interp.h): once per new guest frame, MetalFX
+  // generates the frame between the previous and this one; it is presented first, the real frame half a real
+  // frame interval later. =stats measures the display latency only.
+  frame_interp::PresentPlan fi_plan;
+  double fi_ready = 0.0;
+  bool fi_new_frame = false;
+  if (frame_interp::Active() && guest_output_texture && measured_frame_id &&
+      measured_frame_id != fi_last_frame_id_) {
+    fi_last_frame_id_ = measured_frame_id;
+    fi_new_frame = true;
+    fi_ready = frame_interp::Now();
+    fi_plan = frame_interp::Process(static_cast<void*>(device_), (__bridge void*)command_queue_,
+                                    (__bridge void*)guest_output_texture, measured_frame_id,
+                                    (__bridge void*)shared_event_, fi_await_submission);
+  }
+
+  if (fi_async && !fi_new_frame) {
+    // [frame-interp] repaints of an already shown guest frame: nothing to paint. Wait for the present thread's
+    // next present instead of returning at once (nextDrawable used to pace this thread to the display).
+    frame_interp::WaitPresentTick(1.0 / 30.0);
+    return PaintResult::kPresented;
+  }
+
+  auto paint_one = [&](id<CAMetalDrawable> drawable, id<MTLCommandBuffer> command_buffer,
+                       id<MTLTexture> guest_output_texture, double min_duration,
+                       bool fi_generated) -> PaintResult {
+  id<MTLTexture> drawable_texture =
+      drawable ? drawable.texture
+               : (__bridge id<MTLTexture>)frame_interp::AcquireTarget(
+                     static_cast<void*>(device_), uint32_t(metal_layer_.drawableSize.width),
+                     uint32_t(metal_layer_.drawableSize.height));
+  if (!drawable_texture) {
+    REXLOG_WARN("Metal PaintAndPresentImpl failed to get drawable texture");
+    return PaintResult::kNotPresented;
+  }
   uint32_t drawable_width = static_cast<uint32_t>(drawable_texture.width);
   uint32_t drawable_height = static_cast<uint32_t>(drawable_texture.height);
 
@@ -1017,7 +1057,25 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     }
   }
 
-  if (vsync_lock_on) {
+  if (!drawable) {
+    // [frame-interp] async: the present thread blits this target into a drawable and presents it.
+    if (!fi_generated && draw_guest_output && measured_frame_id && graphics::metal::frame_log::Enabled()) {
+      graphics::metal::frame_log::Record("present_submit", measured_frame_id);
+    }
+    [command_buffer commit];
+    frame_interp::SubmitPresent((__bridge void*)metal_layer_, (__bridge void*)command_queue_,
+                                (__bridge void*)drawable_texture, min_duration, fi_generated,
+                                fi_new_frame ? fi_ready : 0.0, fi_generated ? 0 : measured_frame_id);
+    return PaintResult::kPresented;
+  }
+  if (fi_new_frame) {
+    const bool generated = fi_generated;
+    const double ready = fi_ready;
+    [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+      frame_interp::OnPresented(generated, shown.presentedTime, ready);
+    }];
+  }
+  if (vsync_lock_on && !fi_generated) {
     // Frame ids as in RefreshGuestOutputImpl (VsyncLockFrameId). A repaint of the same output (UI) is not a new
     // frame, but its drawable wait still tells the lock where the UI paint loop wakes.
     static std::atomic<uint64_t> vsync_lock_last_frame{0};
@@ -1040,7 +1098,7 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
       }
     }
   }
-  if (draw_guest_output && measured_frame_id && graphics::metal::frame_log::Enabled()) {
+  if (!fi_generated && draw_guest_output && measured_frame_id && graphics::metal::frame_log::Enabled()) {
     const uint64_t frame_id = measured_frame_id;
     graphics::metal::frame_log::Record("present_submit", frame_id);
     [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
@@ -1059,10 +1117,33 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
       }
     }];
   }
-  [command_buffer presentDrawable:drawable];
+  if (min_duration > 0.0) {
+    [command_buffer presentDrawable:drawable afterMinimumDuration:min_duration];
+  } else {
+    [command_buffer presentDrawable:drawable];
+  }
   [command_buffer commit];
 
   return PaintResult::kPresented;
+  };
+
+  if (fi_plan.generated && fi_async) {
+    paint_one(nil, command_buffer, (__bridge id<MTLTexture>)fi_plan.generated, fi_plan.half_interval_s, true);
+    return paint_one(nil, [command_queue_ commandBuffer], guest_output_texture, fi_plan.half_interval_s, false);
+  }
+  if (fi_plan.generated) {
+    paint_one(drawable, command_buffer, (__bridge id<MTLTexture>)fi_plan.generated, fi_plan.half_interval_s,
+              true);
+    const double fi_t1 = frame_interp::Now();
+    drawable = [metal_layer_ nextDrawable];
+    frame_interp::NoteDrawableWait(1, frame_interp::Now() - fi_t1);
+    if (!drawable) {
+      return PaintResult::kPresented;
+    }
+    command_buffer = [command_queue_ commandBuffer];
+    return paint_one(drawable, command_buffer, guest_output_texture, fi_plan.half_interval_s, false);
+  }
+  return paint_one(drawable, command_buffer, guest_output_texture, 0.0, false);
 }
 
 Presenter::SurfacePaintConnectResult

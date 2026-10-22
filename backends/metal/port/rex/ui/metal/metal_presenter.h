@@ -224,6 +224,7 @@ class MetalPresenter : public Presenter {
   uint32_t metalfx_output_height_ = 0;
   uint32_t metalfx_color_format_ = 0;
   uint32_t metalfx_color_processing_mode_ = 0;
+  uint64_t fi_last_frame_id_ = 0;  // [frame-interp] last guest frame handed to frame_interp::Process (UI thread)
   float surface_scale_ = 1.0f;
   // CAMetalLayer contentsScale: the window's backing scale (FABLE2_RETINA, default on) or 1.
   float layer_contents_scale_ = 1.0f;

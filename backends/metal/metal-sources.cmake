@@ -36,6 +36,7 @@ set(METAL_SOURCES
   port/rex/ui/metal/metal_api.cc
   port/rex/ui/metal/metal_provider.cc
   port/rex/ui/metal/metal_presenter.mm
+  port/rex/ui/metal/metal_frame_interp.mm
   port/rex/ui/metal/metal_immediate_drawer.mm
   port/rex/ui/metal/metal_gpu_completion_timeline.cc
   port/rex/ui/metal/metal_test_control.mm

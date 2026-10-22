@@ -293,6 +293,8 @@ class MetalRenderTargetCache final : public graphics::RenderTargetCache {
   MTL::Texture* GetDepthTargetForDraw() const;
   MTL::Texture* GetDummyColorTargetForDraw() const;
   double GetDepthTargetClearDepth() const;
+  // [frame-interp] the bound depth target is kD24FS8 (host depth holds guest window z * 0.5).
+  bool IsDepthTargetFloat24() const;
   // [shadows-native] diagnostic pass / resolve / texture graph for two frames
   // starting at frame FABLE2_SHADOW_TRACE=<N> (trace only, no behaviour change).
   static bool ShadowTraceActive();

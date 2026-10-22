@@ -4428,6 +4428,11 @@ MTL::Texture* MetalRenderTargetCache::GetDummyColorTargetForDraw() const {
   return nullptr;
 }
 
+bool MetalRenderTargetCache::IsDepthTargetFloat24() const {
+  return current_depth_target_ && current_depth_target_->key().GetDepthFormat() ==
+                                      xenos::DepthRenderTargetFormat::kD24FS8;
+}
+
 double MetalRenderTargetCache::GetDepthTargetClearDepth() const {
   if (!current_depth_target_) {
     return 1.0;
