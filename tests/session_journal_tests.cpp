@@ -81,5 +81,64 @@ int main(int argc,char** argv) {
     assert(fable2::stickdz::g_left_replay_percent.load()==100);  // keyboard-pad stick: as recorded
   }
   unsetenv("FABLE2_REPLAY_INPUT");
-  std::cout<<"Session clock, raw edges, pad snapshots, leases, stop and raw-stick replay passed\n";
+  // Player recording (no session dir): the starting saves are copied next to the file at record start, and
+  // the AppLaunch meta names the start and the copy (launcher playback boots that copy).
+  unsetenv("FABLE2_SESSION_DIR");
+  auto state=folder/"player-state";
+  std::filesystem::create_directories(state/"saves"/"B13EBABEBABEBABE"/"4D5307F1"/"00000001"/"Hero002");
+  {std::ofstream f(state/"saves"/"B13EBABEBABEBABE"/"4D5307F1"/"00000001"/"Hero002"/"mainsave.bin");f<<"hero";}
+  setenv("FABLE2_APP_STATE_ROOT",state.c_str(),1);
+  setenv("FABLE2_RECORD_INPUT","1",1);setenv("FABLE2_BOOT_SAVE","1",1);setenv("FABLE2_RECORD_INPUT_SAVE","Hero002",1);
+  auto player_rec=folder/"recordings"/"player.jsonl";
+  setenv("FABLE2_RECORD_INPUT_PATH",player_rec.c_str(),1);
+  {
+    Journal j;
+    assert(j.Path()==player_rec);
+    j.Marker("Go");
+    Pad pressed{4096};j.Input(pressed);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    Pad released;j.Input(released);
+    j.Finish("quit");
+  }
+  {
+    auto copy=folder/"recordings"/"player.save"/"B13EBABEBABEBABE"/"4D5307F1"/"00000001"/"Hero002"/"mainsave.bin";
+    assert(std::filesystem::is_regular_file(copy));
+    std::ifstream in(player_rec);
+    std::string first;std::getline(in,first);
+    assert(first.find("\"start\":\"save\"")!=std::string::npos);
+    assert(first.find("\"save_copy\":\"player.save\"")!=std::string::npos);
+    assert(first.find("\"save\":\"Hero002\"")!=std::string::npos);
+  }
+  // Replay of it without a session dir (launcher playback): recording stays off even with Record input on,
+  // the status goes to <state>/logs/replay-status.json, and Esc ends the replay and holds the live pad
+  // until it is idle.
+  setenv("FABLE2_REPLAY_INPUT",player_rec.c_str(),1);
+  {
+    Journal j;
+    assert(j.Path().empty());
+    assert(j.Replaying());
+    j.Marker("Go");
+    bool saw=false;
+    for(int i=0;i<200&&!saw;++i) {Pad live{0,0,0,0,0,0,0};j.Input(live);saw=live.buttons==4096;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));}
+    assert(saw);
+    Pad live{4096};j.Input(live);assert(live.buttons==4096);  // the replay's pad, not the live one
+    j.Key(0x1B,true);
+    assert(!j.Replaying());
+    Pad held{16};assert(j.Input(held));assert(held.buttons==0);  // Esc's own Pause mapping held back
+    Pad idle;j.Input(idle);
+    Pad next{4096};assert(!j.Input(next));assert(next.buttons==4096);  // live input again
+    std::ifstream in(state/"logs"/"replay-status.json");
+    std::string text((std::istreambuf_iterator<char>(in)),{});
+    assert(text.find("\"status\":\"cancelled\"")!=std::string::npos);
+    assert(text.find("player.jsonl")!=std::string::npos);
+  }
+  {
+    // No new recording was made by the replay.
+    size_t files=0;
+    for(auto& e:std::filesystem::directory_iterator(folder/"recordings")) files+=e.path().extension()==".jsonl";
+    assert(files==1);
+  }
+  unsetenv("FABLE2_REPLAY_INPUT");unsetenv("FABLE2_RECORD_INPUT");unsetenv("FABLE2_BOOT_SAVE");
+  std::cout<<"Session clock, raw edges, pad snapshots, leases, stop, raw-stick replay, start saves and Esc passed\n";
 }

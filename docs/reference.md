@@ -411,7 +411,14 @@ is on, the launcher's front page shows a red "Recording input" note. Each game w
 `FABLE2_RECORD_INPUT_PATH` sets another file (`*.jsonl`) or folder. A normal quit ends the file with
 `recording_end`. Every line is flushed as it is written, so after a crash the file is still a valid prefix.
 The first line (`AppLaunch`) has a `meta` object: build version, save name (Dev Launcher), resolution and
-frame-rate settings.
+frame-rate settings, and the starting state: `start` (`save` when the game booted a save, else `title`),
+`boot_hero` and `save_copy`.
+
+**Starting state (2026-10-22).** At record start (app launch, before the guest runs) the game copies its state
+folder's `saves/` next to the recording as `<recording name>.save/` (about 2.5 MB; `save_copy` names it, empty when
+the copy failed). In a Dev Launcher save session that is the one save it booted (the session holds only that save);
+at the title screen it is every save the title lists. Playback boots that copy, so it starts where the recording
+did. Code: `CopyStartSaves` in `src/diagnostics/fable2_session_journal.h`.
 
 **What is recorded (schema 3, 2026-10-22):** the pad state the game reads (`XamInputGetState`, after keyboard
 mapping, mouse look and the controller-hotkey filter, so hotkey-bound buttons are not in it), one `pad` event per
@@ -426,7 +433,48 @@ unchanged (logged as a `[replay]` note). Code: `src/input/raw_pad_capture.h`. Ra
 only. State anchors are `LevelLoaded` (end of each level load), `AfterNewGameVideo`, and UI fingerprints of frames
 that draw UI items. Turbo and speed changes are `speed` events.
 
-**Replay:**
+**Play back (launcher, 2026-10-22).** Settings > Diagnostics (Dev Options) > **Play recording** picks a recording
+from `logs/recordings` (newest first, "date time · save"; None = off; remembered). While one is picked the front
+page shows **Run Playback** (its date and save under it) in the reserved slot right of Load Saved Game, the same slot
+as the "Recording input" note (a red dot before the caption when Record input is also on); while the playback drives
+the game the slot shows **▶ Replaying**. Nothing moves when the slot changes. Dev Launcher role only (the release app
+has no playback).
+- Run Playback launches `tools/fable2_dev_session.py launch --mode replay --recording <file>` with the **current**
+  launcher settings (preset, resolution, frame rate, deadzones, turbo speeds, bindings): the same recording under
+  different settings, e.g. Original vs Custom deadzones for a video. Dev Launcher CLI: `--launch --replay <file>`.
+- It is a copy session (like `--mode library`): the recording's `.save/` copy is cloned into the session folder. An
+  older recording without a copy boots the save its metadata names if it still exists (live slot or library entry,
+  copied: "No save copy: booted Hero000 as it is now."), else the title screen ("No save copy: started at the title
+  screen."). The note shows in the launcher status line.
+- It never writes back: no live slot, no save-library copies (saves made during playback stay in the session
+  folder), no options write-back. Record input is forced off (`FABLE2_RECORD_INPUT=0`, and the game never records
+  while replaying), so a playback never makes a recording. Intro movies are always skipped. Normal window, sound and
+  focus; the window title ends in "playback".
+- While the replay runs, the game reads only the recording: your controller, keyboard pad and mouse look do not
+  reach it (other controller slots get no input either). Hotkeys still work: 7/F7 turbo, 8/F8 slow motion, 0/F10
+  frame generation, 9/F9 FPS counter (its "L xx%" shows the replayed left stick before the remap), and the
+  controller buttons bound in Controls (e.g. View = turbo). The replay follows guest time, so it stays in step at
+  any speed; recorded speed changes are not replayed (you set the speed).
+- **Esc** ends the replay early. When the replay ends (Esc, the end of the recording, or a missed anchor) the game
+  keeps running and your input drives it; after Esc, input is held back until all buttons are released, so Esc's own
+  Pause does not reach the game. Close the window to end the session.
+- Status: `[replay]` lines in the session's `fable_2.log` (the end line counts applied pad changes and live polls held
+  back) and `logs/replay-status.json` (starting, running, waiting, complete, failed, cancelled), which
+  `fable2_dev_session.py status` reports as `replay`. `FABLE2_REPLAY_LOG=1` adds one `[replay] game pad [...]` line
+  per change of what the game reads.
+- Caveat: inputs before the first `LevelLoaded` are timed from launch, so a recording that starts at the title with
+  intro movies on replays its title inputs early (playback always skips the intros); record title-start recordings
+  with Skip intro movies on.
+
+Measured 2026-10-22 (`out/validation/launcher-playback-20261022/`, test sessions launched through the launcher's
+`--launch --replay` path; ~27 s of test-pad walking from a library save, recorded at deadzone 6% + walk 5%): the
+replay completed anchored on `LevelLoaded` and `AfterNewGameVideo`, the hero moved (frame differences 7–24 against
+the first frame); 7, 8, 7 and a bound View press changed the speed mid-replay and the replay stayed anchored; a
+live Y press and right stick during the replay never reached the game (1263 live polls held back); replayed under
+Original deadzones the game read `ly` 16383 where 6% + walk 5% read 23104; Esc cancelled it with no pause menu; the
+live saves hashed the same before and after.
+
+**Replay (tools):**
 - Test session: `python3 tools/fable2_test_control.py replay <recording> [--env FABLE2_TURBO_SCALE=2]`. This needs a
   test-session recording (`launch --record`, then `stop-recording`), whose `initial-state/` snapshot holds the
   saves.

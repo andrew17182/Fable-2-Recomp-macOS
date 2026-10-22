@@ -9,6 +9,8 @@ Used by the Fable II Launcher app (tools/macos/DevLauncher) and usable from the 
   launch --mode title        normal launch on the live state folder (no copying)
   launch --mode live --save Hero000 [--target-slot Hero000|none]
   launch --mode library --save hero1-dog-live [--target-slot Hero000|none]
+  launch --mode replay --recording "logs/recordings/Fable II input ....jsonl"   playback of an input recording
+         (launcher Run Playback): a copy session that boots the recording's starting saves and replays it
          [--no-skip-intro] [--no-boot] [--test-control]
          [--game-arg=--metal_pipeline_creation_threads=4 ...] [--cache-from DIR]   (test sessions only)
   status                     the launcher's current game / last write-back / all running instances
@@ -54,6 +56,13 @@ normal-play game at a time (a second one is refused); test sessions may run besi
 session's concurrent instances go into session.json (concurrent_instances), instances.jsonl
 (changes, written by the watcher) and the flight-recorder 'contention' tag.
 Test sessions never write saves back to a live slot (target slot is always none).
+Playback (--mode replay, 2026-10-22; docs/reference.md "Input recording and replay"): a copy session like
+--mode library with the CURRENT settings (the caller's --env), started from the recording's own starting state:
+its "<stem>.save/" copy (the saves the game had when recording began; the game makes it), else, for older
+recordings, the save named in its metadata (live slot or library entry, copied), else the title screen. Never
+writes back anywhere: no live slot, no save-library copies, no options write-back. Input recording is forced off,
+the intros are skipped, FABLE2_REPLAY_INPUT drives the pad (the player's pad is ignored until the replay ends or
+Esc ends it; then the game keeps running with live input). Window and sound as normal play.
 Perf lock (local agent docs): --test-control launches hold the global perf lock shared for the game's
 life (a detached `fable2_common.py hold` process), waiting while a perf run holds or waits for it; the wait
 is session.json perf_lock_shared_wait_s. Normal play never takes it.
@@ -126,8 +135,9 @@ def options_path_signature(path):
 
 
 def normal_options_writeback(test_control, env):
+    # Playback (FABLE2_REPLAY_INPUT) never writes the player's options either.
     return not (test_control or env.get('FABLE2_TEST_BACKGROUND') == '1' or
-                env.get('FABLE2_TEST_CONTROL_DIR'))
+                env.get('FABLE2_TEST_CONTROL_DIR') or env.get('FABLE2_REPLAY_INPUT'))
 
 
 def publish_options(source, live_state, expected, reason, source_expected=None):
@@ -609,6 +619,48 @@ def prune_sessions(log=None, sessions_dir=None, slot=common.SLOT, dry_run=False)
     return removed
 
 
+def recording_meta(recording):
+    """The AppLaunch metadata of an input recording (its first line), {} when there is none."""
+    try:
+        with open(recording, encoding='utf-8') as f:
+            first = json.loads(f.readline() or '{}')
+    except (OSError, ValueError):
+        return {}
+    return first.get('meta') or {} if first.get('state') == 'AppLaunch' else {}
+
+
+def save_copy_path(recording):
+    """The starting-saves copy the game made next to a recording ("<stem>.save/"), or None."""
+    recording = Path(recording)
+    copy = recording.with_name(recording.stem + '.save')
+    return copy if copy.is_dir() else None
+
+
+def replay_start(recording, live_state=None):
+    """How a playback session starts. kind: 'copy' (the recording's own save copy; boot = it started in a save),
+    'live' / 'library' (older recording: the save its metadata names, still there), or 'title'. note: a terse line
+    for the launcher when the start is not the recorded one."""
+    live_state = Path(live_state or LIVE_STATE)
+    meta = recording_meta(recording)
+    copy = save_copy_path(recording)
+    boot = meta.get('start') == 'save' if 'start' in meta else meta.get('boot_save', '') not in ('', '0')
+    if copy:
+        heroes = sorted(h.name for h in (copy / control.HERO_SLOTS.relative_to('saves')).glob('Hero*')
+                        if HERO_RE.match(h.name))
+        hero = meta.get('boot_hero') or (heroes[0] if len(heroes) == 1 else None)
+        if boot and not hero: boot = False  # several saves and no pick: the title screen lists them
+        return dict(kind='copy', copy=str(copy), boot=boot, hero=hero, heroes=heroes,
+                    note=None if boot or meta.get('start') == 'title' else 'Started at the title screen.')
+    save = meta.get('save') or ''
+    if save and HERO_RE.match(save) and (live_state / control.HERO_SLOTS / save / 'mainsave.bin').is_file() \
+            and (live_state / control.HERO_HEADERS / (save + '.header')).is_file():
+        return dict(kind='live', save=save, boot=True, hero=save, note='No save copy: booted %s as it is now.' % save)
+    if save and (control.library_entry(save) / 'save.json').is_file():
+        return dict(kind='library', save=save, boot=True, note='No save copy: booted %s.' % save)
+    return dict(kind='title', boot=False, hero=None,
+                note='No save copy: started at the title screen.' if boot or save else None)
+
+
 def prepare_session(mode, save, target_slot):
     prune_sessions()
     try:
@@ -626,6 +678,24 @@ def prepare_session(mode, save, target_slot):
         if (LIVE_STATE / folder).exists(): common.clone(LIVE_STATE / folder, state / folder)
     for name in ('fable_2.toml', 'fable2_config.toml', 'fable2_patches.toml', control.WINDOW_POSITION):
         if (LIVE_STATE / name).exists(): shutil.copy2(LIVE_STATE / name, state / name)
+    if mode == 'replay':
+        # Playback never writes back (save = the recording). Its saves: the recording's start (replay_start).
+        start = replay_start(save)
+        slots = state / control.HERO_SLOTS
+        if start['kind'] == 'copy':
+            shutil.rmtree(state / 'saves', ignore_errors=True)
+            common.clone(Path(start['copy']), state / 'saves')
+        elif start['kind'] == 'live':
+            keep_only_hero(state, LIVE_STATE / control.HERO_SLOTS / start['save'],
+                           LIVE_STATE / control.HERO_HEADERS / (start['save'] + '.header'))
+        elif start['kind'] == 'library':
+            start['hero'] = control.apply_library_save(state, start['save'])['folder']
+        hero = start.get('hero')
+        return session, state, dict(hero=hero, base='replay', origin=dict(kind='replay', recording=str(save)),
+                                    target_slot=None, replay_start=start,
+                                    options_live_signature=options_signature(LIVE_STATE),
+                                    cache_live_signature=cache_signature(LIVE_STATE),
+                                    window_live_signature=window_signature(LIVE_STATE))
     if mode == 'live':
         if not HERO_RE.match(save): raise ValueError('Live save must be a HeroNNN folder name')
         hero_dir = LIVE_STATE / control.HERO_SLOTS / save
@@ -704,8 +774,16 @@ def find_own_pid(app, before, state, control_dir=None, timeout=30):
 
 
 def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_control=False, extra_env=None, fps=None,
-           game_args=None, cache_from=None, build='latest', cache_snapshot=None):
-    if mode not in ('title', 'live', 'library'): raise ValueError('mode must be title, live or library')
+           game_args=None, cache_from=None, build='latest', cache_snapshot=None, recording=None):
+    if mode not in ('title', 'live', 'library', 'replay'): raise ValueError('mode must be title, live, library or replay')
+    if mode == 'replay':
+        # Playback: the recording is the "save"; never a write-back target, intros always skipped.
+        if not recording: raise ValueError('--recording is required for --mode replay')
+        recording = Path(recording).expanduser().resolve()
+        if recording.suffix != '.jsonl' or not recording.is_file(): raise ValueError('No recording %s' % recording)
+        if target_slot not in (None, 'none', 'None'): raise ValueError('Playback never writes back; use --target-slot none')
+        save, target_slot, skip_intro = str(recording), 'none', True
+    elif recording: raise ValueError('--recording is for --mode replay')
     if mode != 'title' and not save: raise ValueError('--save is required for live/library launches')
     # Test sessions never write back into a live save slot (the player may be playing it).
     if test_control:
@@ -766,13 +844,18 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
                 shutil.rmtree(session, ignore_errors=True)
                 raise
             print('AGENT CACHE: %s' % agent_cache_summary(agent_cache_record), file=sys.stderr, flush=True)
-        hero_dir = state / control.HERO_SLOTS / info['hero']
-        header = state / control.HERO_HEADERS / (info['hero'] + '.header')
-        try:
-            write_trace_tags(state, control.describe_save(hero_dir, header))
-        except Exception:
-            pass
+        if info['hero']:
+            hero_dir = state / control.HERO_SLOTS / info['hero']
+            header = state / control.HERO_HEADERS / (info['hero'] + '.header')
+            try:
+                write_trace_tags(state, control.describe_save(hero_dir, header))
+            except Exception:
+                pass
         env.update(FABLE2_APP_STATE_ROOT=str(state), FABLE2_GAME_DATA_ROOT=str(data_root))
+        if mode == 'replay':
+            boot = info['replay_start']['boot']
+            if boot and len(info['replay_start'].get('heroes') or []) > 1:
+                env['FABLE2_BOOT_SAVE_HERO'] = info['hero']
         if boot: env['FABLE2_BOOT_SAVE'] = '1'
         if test_control:
             control_dir = state / 'control'
@@ -789,6 +872,11 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
         key, _, value = item.partition('=')
         if not key: raise ValueError('--env expects NAME=VALUE')
         env[key] = value
+    if mode == 'replay':
+        # After the caller's --env (the launcher's settings): playback drives the pad and never records itself.
+        for key in ('FABLE2_RECORD_INPUT_PATH', 'FABLE2_RECORD_INPUT_SAVE', 'FABLE2_REPLAY_TIMEOUT_S'):
+            env.pop(key, None)
+        env.update(FABLE2_REPLAY_INPUT=save, FABLE2_RECORD_INPUT='0', FABLE2_SKIP_INTRO_MOVIES='1')
     if env.get('FABLE2_RECORD_INPUT', '0') not in ('', '0') and not test_control:
         # Launcher Diagnostics > Record input (src/diagnostics/fable2_session_journal.h): play sessions keep the
         # recording in the live state's logs/recordings (Show Recordings), not in the pruned session folder.
@@ -803,6 +891,7 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
     if not test_control:  # Character Editor mod backups outlive the pruned session folder (docs/character-editor.md)
         env.setdefault('FABLE2_CHARACTER_EDITOR_BACKUP_DIR', str(BACKUPS / 'character-editor'))
     if session: env['FABLE2_INSTANCE_ID'] = session.name
+    if mode == 'replay': env['FABLE2_WINDOW_TAG'] = env.get('FABLE2_WINDOW_TAG') or 'playback'
     if mode == 'title' and build == 'playtest':
         env['FABLE2_GAME_DATA_ROOT'] = str(data_root)  # the playtest copy's own game data (not persisted)
     if mode == 'title' and os.environ.get('FABLE2_LIVE_STATE_ROOT'):
@@ -863,6 +952,7 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
                   agent_game_slots=hold.games if hold else None, agent_game_wait_s=hold.games_wait if hold else None,
                   resolution_scale_counted=hold.scale if hold else None,
                   save=save, skip_intro=skip_intro, boot=boot,
+                  replay=dict(recording=save, start=info['replay_start']) if mode == 'replay' else None,
                   options_writeback=normal_options_writeback(test_control, env),
                   cache_writeback=normal_cache_writeback(test_control, env),
                   window_writeback=normal_window_writeback(test_control, env), test_window=test_window)
@@ -886,6 +976,8 @@ def launch(mode, save=None, target_slot=None, skip_intro=True, boot=True, test_c
                           '--state', str(LIVE_STATE)],
                          stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
     if build_note: record['note'] = build_note
+    if mode == 'replay' and info['replay_start'].get('note'):
+        record['note'] = ((record.get('note') or '') + ' ' + info['replay_start']['note']).strip()
     SESSIONS.mkdir(parents=True, exist_ok=True)
     if not test_control:  # the Dev Launcher's own game; test sessions are addressed by session folder
         CURRENT.write_text(json.dumps(record, indent=2) + '\n')
@@ -968,6 +1060,9 @@ def write_back_live(session_hero_dir, session_header, target, live_state, stamp)
 
 def commit_save(session, record, hero, log):
     state = Path(record['state'])
+    if record.get('mode') == 'replay':  # playback: saves stay in the session (never the library or a live slot)
+        log(dict(event='skip', hero=hero, reason='playback session'))
+        return
     hero_dir = state / control.HERO_SLOTS / hero
     header = state / control.HERO_HEADERS / (hero + '.header')
     if not (hero_dir / 'mainsave.bin').is_file() or not header.is_file():
@@ -1211,8 +1306,19 @@ def status():
             saved = [json.loads(l) for l in path.read_text().splitlines() if '"saved"' in l]
             last = saved[-1] if saved else None
     running = instances.instances()
+    # Playback: the game's replay status (src/diagnostics/fable2_session_journal.h writes logs/replay-status.json
+    # in the session state): running / waiting while the replay drives the pad, complete / failed / cancelled after.
+    replay = None
+    if current and current.get('replay'):
+        replay = dict(current['replay'], status='starting')
+        for path in ('logs/replay-status.json', 'control/replay-status.json'):  # play / test session
+            try:
+                replay.update(status=json.loads((Path(current['state']) / path).read_text())['status'])
+                break
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
     # running: the launcher's own game (only that one enables its Close button).
-    return dict(running=bool(current), pids=[e['pid'] for e in running], session=current, last_save=last,
+    return dict(running=bool(current), pids=[e['pid'] for e in running], session=current, last_save=last, replay=replay,
                 instances=running, others=[instances.describe(e) for e in running
                                            if not current or e['pid'] != current['pid']],
                 last_exit=None if current else last_exit())
@@ -1264,7 +1370,8 @@ def main():
     sub = p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('list')
     q = sub.add_parser('launch')
-    q.add_argument('--mode', choices=['title', 'live', 'library'], required=True)
+    q.add_argument('--mode', choices=['title', 'live', 'library', 'replay'], required=True)
+    q.add_argument('--recording', help='--mode replay: the input recording (.jsonl) to play back')
     q.add_argument('--save', help='HeroNNN (live) or library entry name')
     q.add_argument('--target-slot', help='live slot to write saves back to (HeroNNN or none); '
                    'default: the live slot picked, or the library entry\'s own HeroNNN folder')
@@ -1304,7 +1411,7 @@ def main():
         elif args.cmd == 'launch':
             result = launch(args.mode, args.save, args.target_slot, not args.no_skip_intro, not args.no_boot,
                             args.test_control, args.env, args.fps, args.game_args, args.cache_from, args.build,
-                            args.cache_snapshot)
+                            args.cache_snapshot, args.recording)
         elif args.cmd == 'status': result = status()
         elif args.cmd == 'close': result = close(args.session, args.current)
         elif args.cmd == 'prune': result = dict(removed=prune_sessions(dry_run=args.dry_run), dry_run=args.dry_run)

@@ -63,8 +63,13 @@ inline void ObserveText(const uint8_t* base,uint32_t item) {
 inline void ObservePad(PPCContext& ctx,uint8_t* base,uint32_t pointer,uint32_t user) {
   // Built-in benchmark (src/core/fable2_benchmark.h): replaces the pad like a replay would.
   const bool bench=fable2::bench::g_pad.active.load(std::memory_order_relaxed);
-  auto& j=Get();if((!bench&&!j.Enabled())||ctx.r3.u32!=0||user!=0) return;
+  auto& j=Get();if((!bench&&!j.Enabled())||ctx.r3.u32!=0) return;
   auto* p=base+pointer;
+  if(user!=0) {
+    // An in-game replay drives user 0; a second live controller (user 1-3) must not reach the game either.
+    if(!bench&&j.Replaying()) std::memset(p+4,0,12);
+    return;
+  }
   auto u16=[](const uint8_t* b){return (unsigned(b[0])<<8)|b[1];};
   Pad pad{int(u16(p+4)),p[6],p[7],int16_t(u16(p+8)),int16_t(u16(p+10)),
           int16_t(u16(p+12)),int16_t(u16(p+14))};

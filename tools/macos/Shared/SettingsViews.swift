@@ -42,6 +42,26 @@ class SettingsModel: ObservableObject {
   }
   /// Set by the player role (opens the Dev Launcher model when Dev Options turns on).
   var onDeveloperModeChange: ((Bool) -> Void)?
+  /// Playback (2026-10-22, docs/reference.md "Input recording and replay"): the recording picked in Settings >
+  /// Diagnostics > Play recording (its file name in logs/recordings; "" = None, the front page shows no Run Playback).
+  /// Remembered. Only roles that can play back (playbackSupported) show the picker.
+  @Published var playbackRecording: String {
+    didSet { if persist { store.set(playbackRecording, forKey: "playbackRecording") } }
+  }
+  /// The recordings in logs/recordings, newest first (refreshRecordings).
+  @Published var recordings: [RecordingItem] = []
+  /// Whether this role can play a recording back (the Dev Launcher role: tools/fable2_dev_session.py --mode replay).
+  var playbackSupported: Bool { false }
+  /// The picked recording while its file is there.
+  var selectedRecording: RecordingItem? { recordings.first { $0.id == playbackRecording } }
+  /// Run Playback (front page): the role's playback launch.
+  func runPlayback() {}
+  /// Re-reads logs/recordings (the Diagnostics tab, the front page and every save-list refresh).
+  func refreshRecordings() {
+    guard playbackSupported else { return }
+    let list = InputRecordings.list()
+    if list != recordings { recordings = list }
+  }
   /// False during a --snapshot: page, tab and Dev Options set for the picture are not stored.
   let persist = !commandLine.contains("--snapshot")
   /// --snapshot ... --dev-options on|off: Dev Options for that picture only (never stored).
@@ -115,6 +135,9 @@ class SettingsModel: ObservableObject {
     developerMode = developer
     showUpdatePlaytest = store.object(forKey: "showUpdatePlaytest") as? Bool ?? false
     showStarredSaves = store.object(forKey: "showStarredSaves") as? Bool ?? false
+    // --snapshot --recording NAME: that pick for the picture only.
+    playbackRecording = (commandLine.contains("--snapshot") ? argument(after: "--recording") : nil)
+      ?? store.string(forKey: "playbackRecording") ?? ""
     let tab = SettingsTab(rawValue: store.string(forKey: "settingsTab") ?? "") ?? .general
     settingsTab = !developer && tab.devOnly ? .general : tab
   }
@@ -475,6 +498,19 @@ struct SettingsTabView: View {
       }
       Section {
         ForEach(LaunchSettings.flags(in: .diagnostics).filter { $0.section == "Input recording" }) { row($0) }
+        if model.playbackSupported {
+          FixedPicker("Play recording", selection: $model.playbackRecording) {
+            Text("None").tag("")
+            ForEach(model.recordings) { Text($0.label).tag($0.id) }
+            // A remembered pick whose file is gone: shown as missing, never a blank menu.
+            if !model.playbackRecording.isEmpty && model.selectedRecording == nil {
+              Text("Missing recording").tag(model.playbackRecording)
+            }
+          }
+          .help("Run Playback on the front page plays it with the current settings, from the save it started in. "
+                + "Newest first.")
+          .onAppear { model.refreshRecordings() }
+        }
         HStack {
           Text("One file per game in logs/recordings.").font(.caption).foregroundStyle(.secondary)
           Spacer()
@@ -537,6 +573,58 @@ enum InputRecordings {
   static func reveal() {
     try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
     NSWorkspace.shared.open(URL(fileURLWithPath: folder, isDirectory: true))
+  }
+}
+
+/// One input recording in logs/recordings, for the Play recording picker: the file name (id), its path, and a short
+/// label "2026-10-22 10:24:15 · Hero000" (the date and time from the name, the save it started from, or "Title").
+struct RecordingItem: Identifiable, Hashable {
+  let id: String
+  let path: String
+  let label: String
+  let date: Date
+}
+
+extension InputRecordings {
+  /// Every *.jsonl in `folder`, newest first (the time in the game's file name, else the file's modification time).
+  static func list(in folder: String = InputRecordings.folder) -> [RecordingItem] {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? []
+    let items = names.filter { $0.hasSuffix(".jsonl") && !$0.hasPrefix(".") }.map { name -> RecordingItem in
+      let path = folder + "/" + name
+      let date = stamp(name) ?? ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date)
+        ?? .distantPast
+      return RecordingItem(id: name, path: path, label: label(name: name, date: date, meta: meta(path)), date: date)
+    }
+    return items.sorted { $0.date != $1.date ? $0.date > $1.date : $0.id > $1.id }
+  }
+
+  /// "Fable II input 2026-10-22 10-24-15[ 2].jsonl" -> that local time.
+  static func stamp(_ name: String) -> Date? {
+    guard let range = name.range(of: #"\d{4}-\d\d-\d\d \d\d-\d\d-\d\d"#, options: .regularExpression) else { return nil }
+    let format = DateFormatter()
+    format.locale = Locale(identifier: "en_US_POSIX")
+    format.dateFormat = "yyyy-MM-dd HH-mm-ss"
+    return format.date(from: String(name[range]))
+  }
+
+  /// The recording's AppLaunch metadata (its first line), empty when unreadable.
+  static func meta(_ path: String) -> [String: Any] {
+    guard let handle = FileHandle(forReadingAtPath: path) else { return [:] }
+    defer { try? handle.close() }
+    let head = (try? handle.read(upToCount: 4096)) ?? Data()
+    guard let line = head.split(separator: UInt8(ascii: "\n"), maxSplits: 1).first,
+          let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else { return [:] }
+    return object["meta"] as? [String: Any] ?? [:]
+  }
+
+  static func label(name: String, date: Date, meta: [String: Any]) -> String {
+    let save = (meta["save"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    let start = save ?? (meta["start"] as? String == "save" ? "Save" : "Title")
+    guard date != .distantPast else { return (name as NSString).deletingPathExtension + " · " + start }
+    let format = DateFormatter()
+    format.locale = Locale(identifier: "en_US_POSIX")
+    format.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return format.string(from: date) + " · " + start
   }
 }
 

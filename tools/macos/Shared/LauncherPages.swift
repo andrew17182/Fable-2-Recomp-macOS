@@ -127,6 +127,10 @@ struct SaveMenu: View {
   /// always there, so nothing moves when it shows). Clicking it opens that setting.
   var recording = false
   var showRecording: () -> Void = {}
+  /// Playback (2026-10-22): the same right slot holds Run Playback while a recording is picked (Settings > Diagnostics
+  /// > Play recording) and "▶ Replaying" while a playback drives the game (PlaybackSlot). Hidden: the recording note.
+  var playback = PlaybackSlot.hidden
+  var runPlayback: () -> Void = {}
   static let buttonWidth: CGFloat = 200
   static let spacing: CGFloat = 10
   static var menuWidth: CGFloat { 2 * buttonWidth + spacing }
@@ -152,7 +156,13 @@ struct SaveMenu: View {
         .disabled(disabled || !hasSaves)
         .help("Load the save below. ↩")
         Spacer(minLength: 0)
-        RecordingBadge(on: recording, action: showRecording)
+        // One fixed slot (RecordingBadge.width): nothing moves when its content changes.
+        ZStack(alignment: .trailing) {
+          RecordingBadge(on: recording && playback == .hidden, action: showRecording)
+          PlaybackButton(slot: playback, disabled: disabled, recording: recording, action: runPlayback)
+          ReplayingBadge(on: playback == .replaying)
+        }
+        .frame(width: RecordingBadge.width, alignment: .trailing)
       }
       HStack(spacing: Self.spacing) {
         Text("Select save game:")
@@ -195,6 +205,64 @@ struct RecordingBadge: View {
     .disabled(!on)
     .accessibilityHidden(!on)
     .help("Input is being recorded (Settings > Diagnostics).")
+  }
+}
+
+/// What the front page's right slot shows for playback: nothing (the recording note may show), Run Playback for the
+/// picked recording (its label as the caption), or "▶ Replaying" while the playback drives the game.
+enum PlaybackSlot: Equatable {
+  case hidden
+  case ready(String)
+  case replaying
+}
+
+/// "Run Playback" with the picked recording's date and time under it, in the fixed slot (empty, same size, otherwise).
+/// With Record input on, a red dot before the caption stands in for the "Recording input" note it covers (Load Saved
+/// Game still records; playback never does).
+struct PlaybackButton: View {
+  let slot: PlaybackSlot
+  let disabled: Bool
+  var recording = false
+  let action: () -> Void
+  var body: some View {
+    let label: String? = { if case .ready(let text) = slot { return text } else { return nil } }()
+    VStack(alignment: .trailing, spacing: 1) {
+      Button(action: action) { Text("Run Playback") }
+        .disabled(disabled || label == nil)
+      HStack(spacing: 4) {
+        if recording {
+          Circle().fill(Color.red).frame(width: 6, height: 6).help("Record input is on (not during playback).")
+        }
+        Text(label.map(Self.caption) ?? " ").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+      }
+    }
+    .frame(width: RecordingBadge.width, alignment: .trailing)
+    .opacity(label == nil ? 0 : 1)
+    .accessibilityHidden(label == nil)
+    .help(label.map { "Play back \($0) with the current settings." } ?? "")
+  }
+  /// "2026-10-22 10:24:15 · Hero000" -> "10-22 10:24 · Hero000" (fits the slot; the full label is the tooltip).
+  static func caption(_ label: String) -> String {
+    let parts = label.components(separatedBy: " · ")
+    let stamp = parts[0].split(separator: " ")
+    guard stamp.count == 2, stamp[0].count == 10 else { return label }
+    let short = String(stamp[0].dropFirst(5)) + " " + String(stamp[1].prefix(5))
+    return ([short] + parts.dropFirst()).joined(separator: " · ")
+  }
+}
+
+/// "▶ Replaying" in the fixed slot while a playback drives the game.
+struct ReplayingBadge: View {
+  let on: Bool
+  var body: some View {
+    HStack(spacing: 5) {
+      Image(systemName: "play.fill").font(.caption).foregroundStyle(Color.accentColor)
+      Text("Replaying").font(.callout).foregroundStyle(Color.accentColor)
+    }
+    .frame(width: RecordingBadge.width, alignment: .trailing)
+    .opacity(on ? 1 : 0)
+    .accessibilityHidden(!on)
+    .help("A recording is playing back. Esc hands the game back to you.")
   }
 }
 

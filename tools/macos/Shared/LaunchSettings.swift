@@ -914,7 +914,7 @@ struct LaunchSettings: Equatable {
          detail: "Compares pre-committed texture sources with the shared memory they came from. Slow."),
     Flag(key: "recordInput", path: \.recordInput, cli: "record-input", tab: .diagnostics, section: "Input recording",
          title: "Record input",
-         detail: "Saves controller and keyboard input to logs/recordings, one file per game. Replay it with tools/fable2_test_control.py replay."),
+         detail: "Saves controller and keyboard input to logs/recordings, one file per game, with a copy of the save it starts from. Play recording plays it back."),
   ]
 
   /// Default-on switches that are passed only when turned off (NAME=0), so a default launch has the

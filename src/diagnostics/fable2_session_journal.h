@@ -10,7 +10,16 @@
 //     <state dir>/logs/recordings/, as "Fable II input YYYY-MM-DD HH-MM-SS.jsonl". Finish() (window close)
 //     writes recording_end; every line is flushed, so a crash leaves a valid prefix.
 //   - In-game replay (FABLE2_REPLAY_INPUT=<recording>, or <session dir>/replay-input.txt): the recorded pad
-//     is injected at the guest's XamInputGetState boundary when the guest clock reaches each event.
+//     is injected at the guest's XamInputGetState boundary when the guest clock reaches each event. The live
+//     pad never reaches the game while it runs (controller hotkeys still act: they are handled outside the
+//     guest pad, src/input/controller_hotkeys.h). Esc ends it early; afterwards the live pad drives the game.
+//     Without a session dir the status goes to <state dir>/logs/replay-status.json (launcher playback).
+//
+// Starting state (2026-10-22). A player recording copies the state folder's saves/ to "<recording stem>.save/"
+// next to the file at record start (before the guest runs, so nothing is mid-write), and the AppLaunch meta
+// says how the game started: "start":"save" (FABLE2_BOOT_SAVE, "boot_hero" = FABLE2_BOOT_SAVE_HERO) or
+// "title", and "save_copy" (the folder name, empty when nothing was copied). Playback
+// (tools/fable2_dev_session.py launch --mode replay) boots a session clone of that copy.
 //
 // Timing (schema 2). Every event carries host time (t_us, dt_us since its anchor) and guest time (g_us,
 // gdt_us): the guest clock (rex::chrono::Clock::QueryGuestTickCount) runs at the turbo / slow-mode speed, so
@@ -149,11 +158,30 @@ inline bool JsonPad(const std::string& line,Pad& pad) {
   pad=Pad{v[0],v[1],v[2],v[3],v[4],v[5],v[6]};
   return true;
 }
+// Copies the state folder's saves/ next to a player recording (see "Starting state" above). Returns the copy's
+// folder name, empty when there was nothing to copy or the copy failed (the recording still works).
+inline std::string CopyStartSaves(const std::filesystem::path& recording) {
+  namespace fs=std::filesystem;
+  std::error_code ec;
+  const fs::path source=fable2::StateDirectory()/"saves";
+  if(!fs::is_directory(source,ec)) return "";
+  const fs::path dest=recording.parent_path()/(recording.stem().string()+".save");
+  fs::remove_all(dest,ec);
+  fs::copy(source,dest,fs::copy_options::recursive,ec);
+  if(ec) {
+    REXSYS_WARN("[record] cannot copy the starting saves to {}: {}", dest.string(), ec.message());
+    fs::remove_all(dest,ec);
+    return "";
+  }
+  REXSYS_INFO("[record] starting saves copied to {}", dest.string());
+  return dest.filename().string();
+}
 class Journal {
  public:
   Journal() {
-    const bool record=EnvOn("FABLE2_RECORD_INPUT");
     const char* replay=std::getenv("FABLE2_REPLAY_INPUT");
+    // Never record a replay (playback must not make a new recording of itself).
+    const bool record=EnvOn("FABLE2_RECORD_INPUT")&&!(replay&&*replay);
     const char* dir=std::getenv("FABLE2_SESSION_DIR");
     if(dir&&*dir&&std::filesystem::path(dir).is_absolute()) folder_=dir;
     if(folder_.empty()&&!record&&!(replay&&*replay)) return;
@@ -169,11 +197,12 @@ class Journal {
       std::filesystem::create_directories(path_.parent_path(),ec);
       output_.open(path_,std::ios::out|std::ios::trunc);
       recording_=bool(output_);
+      if(recording_) save_copy_=CopyStartSaves(path_);
       if(recording_) REXSYS_INFO("[record] recording input to {}", path_.string());
       else REXSYS_WARN("[record] cannot write {}; input is not recorded", path_.string());
     }
     if(replay&&*replay) {
-      if(recording_&&folder_.empty()) {output_.close();recording_=false;}  // never record a replay
+      replay_path_=replay;
       LoadReplay(replay);
     }
     active_=true;
@@ -192,6 +221,8 @@ class Journal {
   void Key(unsigned key,bool down,bool repeat=false) {
     if(!Enabled()) return;
     std::lock_guard lock(mu_);
+    // Esc (rex::ui::VirtualKey::kEscape) ends an in-game replay; the live pad takes over once released.
+    if(down&&!repeat&&key==0x1B&&game_replay_) {EndReplay("cancelled","\"error\":\"Esc\"");hold_live_=true;}
     if(recording_) Write("key","\"key\":"+std::to_string(key)+",\"down\":"+
         (down?"true":"false")+",\"repeat\":"+(repeat?"true":"false"));
   }
@@ -204,8 +235,19 @@ class Journal {
     const bool injected=game_replay_||replaying_;
     Pad stored=raw;
     int sticks=raw_sticks;
-    if(game_replay_) {stored=game_pad_;sticks=game_sticks_;pad=RemapSticks(game_pad_,game_sticks_);}
+    if(game_replay_) {
+      if(raw!=Pad{}) ++live_held_;  // live input (pad, keyboard pad, test pad) the game does not get
+      stored=game_pad_;sticks=game_sticks_;pad=RemapSticks(game_pad_,game_sticks_);
+      // FABLE2_REPLAY_LOG=1: one line per change of what the game reads (tests; off by default).
+      if(log_pads_&&pad!=logged_pad_) {logged_pad_=pad;REXSYS_INFO("[replay] game pad {}", pad.Json());}
+    }
     else if(replaying_) {pad=stored=replay_pad_;sticks=0;}
+    else if(hold_live_) {
+      // After Esc ended a replay: keep the live pad from the game until it is idle (no button held), so
+      // the Esc key's own Pause mapping does not reach the game.
+      if(pad.buttons||pad.lt||pad.rt) {pad=Pad{};return true;}
+      hold_live_=false;
+    }
     // F9 overlay readout (stick_deadzone.h): the replayed left stick before the remap, -1 when not replaying.
     fable2::stickdz::g_left_replay_percent.store(
         injected?fable2::stickdz::RadialPercent(int16_t(stored.lx),int16_t(stored.ly)):-1,std::memory_order_relaxed);
@@ -217,6 +259,8 @@ class Journal {
     return injected;
   }
   bool Input(Pad& pad) {const Pad raw=pad;return Input(pad,raw,0);}
+  // An in-game replay drives the pad (other guest users get no live input meanwhile, fable2_session_telemetry.h).
+  bool Replaying() const {return replay_active_.load(std::memory_order_relaxed);}
   void Marker(const std::string& name) {
     if(!Enabled()) return;
     std::lock_guard lock(mu_);Transition(name,GuestUs());
@@ -246,7 +290,9 @@ class Journal {
     s<<"{\"version\":"<<Quote(BuildVersion())<<",\"save\":"<<env("FABLE2_RECORD_INPUT_SAVE")
      <<",\"res_scale\":"<<env("FABLE2_RES_SCALE")<<",\"fps_60\":"<<env("FABLE2_FPS_60")
      <<",\"vsync\":"<<env("REX_VSYNC")<<",\"turbo_speed\":"<<env("FABLE2_TURBO_SPEED")<<",\"slow_speed\":"<<env("FABLE2_SLOW_SPEED")
-     <<",\"boot_save\":"<<env("FABLE2_BOOT_SAVE")<<",\"instance\":"<<env("FABLE2_INSTANCE_ID")<<'}';
+     <<",\"boot_save\":"<<env("FABLE2_BOOT_SAVE")<<",\"instance\":"<<env("FABLE2_INSTANCE_ID")
+     <<",\"start\":"<<Quote(EnvOn("FABLE2_BOOT_SAVE")?"save":"title")<<",\"boot_hero\":"<<env("FABLE2_BOOT_SAVE_HERO")
+     <<",\"save_copy\":"<<Quote(save_copy_)<<'}';
     return s.str();
   }
   void Write(const char* type,const std::string& fields,int64_t guest=-1) {
@@ -303,7 +349,8 @@ class Journal {
     const char* timeout=std::getenv("FABLE2_REPLAY_TIMEOUT_S");
     timeout_us_=int64_t((timeout&&*timeout?std::strtod(timeout,nullptr):60.0)*1e6);
     wait_since_=0;
-    game_replay_=true;game_pad_=Pad{};game_sticks_=0;
+    game_replay_=true;game_pad_=Pad{};game_sticks_=0;replay_active_=true;applied_=live_held_=0;
+    log_pads_=EnvOn("FABLE2_REPLAY_LOG");logged_pad_=Pad{-1};
     REXSYS_INFO("[replay] in-game replay of {}: {} events", path.string(), replay_.size());
     if(schema<3)
       REXSYS_INFO("[replay] schema {} recording: its sticks are what the game read (after the deadzone settings "
@@ -334,32 +381,35 @@ class Journal {
           if(!wait_since_) {wait_since_=NowUs();Status("waiting","\"expected\":"+Quote(e.state));}
           return;
         }
+        if(wait_since_) Status("running");  // the awaited anchor came: the replay drives the pad again
         wait_since_=0;++replay_i_;
         continue;
       }
       auto anchor=rec_anchor_guest_.find(e.anchor);
       if(anchor==rec_anchor_guest_.end()) {EndReplay("failed","\"error\":\"input refers to a missing anchor\"");return;}
       if(now<anchor->second+e.gdt) return;
-      if(e.kind==Recorded::kPad) {game_pad_=e.pad;game_sticks_=e.sticks;++replay_i_;continue;}
+      if(e.kind==Recorded::kPad) {game_pad_=e.pad;game_sticks_=e.sticks;++replay_i_;++applied_;continue;}
       EndReplay("complete");
       return;
     }
   }
   void EndReplay(const char* status,const std::string& fields="") {
-    replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};game_sticks_=0;wait_since_=0;
+    replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};game_sticks_=0;wait_since_=0;replay_active_=false;
     fable2::stickdz::g_left_replay_percent.store(-1,std::memory_order_relaxed);
-    REXSYS_INFO("[replay] {}", status);
+    REXSYS_INFO("[replay] {}: {} pad changes applied; live input held back on {} polls", status, applied_, live_held_);
     Status(status,fields);
   }
   void Status(const char* status,const std::string& fields="") {
-    if(folder_.empty()) return;
-    const auto path=folder_/"replay-status.json";
+    std::error_code ec;
+    // Test sessions: the session dir; launcher playback (no session dir): <state dir>/logs.
+    const auto dir=folder_.empty()?fable2::StateDirectory()/"logs":folder_;
+    std::filesystem::create_directories(dir,ec);
+    const auto path=dir/"replay-status.json";
     {
       std::ofstream out(path.string()+".tmp",std::ios::trunc);
-      out<<"{\"status\":"<<Quote(status)<<",\"driver\":\"game\",\"matched\":["<<matched_<<"]"
-         <<(fields.empty()?"":",")<<fields<<"}\n";
+      out<<"{\"status\":"<<Quote(status)<<",\"driver\":\"game\",\"recording\":"<<Quote(replay_path_)
+         <<",\"matched\":["<<matched_<<"]"<<(fields.empty()?"":",")<<fields<<"}\n";
     }
-    std::error_code ec;
     std::filesystem::rename(path.string()+".tmp",path,ec);
   }
   void Worker() {
@@ -378,7 +428,7 @@ class Journal {
             std::string path;
             std::getline(request,path);
             std::filesystem::remove(folder_/"replay-input.txt",ec);
-            if(!path.empty()) LoadReplay(path);
+            if(!path.empty()) {replay_path_=path;LoadReplay(path);}
           }
           if(!replay_.empty()&&std::filesystem::exists(folder_/"cancel-replay",ec))
             EndReplay("failed","\"error\":\"Replay cancelled\"");
@@ -422,7 +472,12 @@ class Journal {
   std::thread worker_;
   std::atomic<bool> stop_{false};
   std::atomic<int64_t> last_ui_{0};
-  bool active_=false,recording_=false,replaying_=false,have_pad_=false,game_replay_=false;
+  bool active_=false,recording_=false,replaying_=false,have_pad_=false,game_replay_=false,hold_live_=false;
+  std::atomic<bool> replay_active_{false};
+  bool log_pads_=false;
+  int64_t applied_=0,live_held_=0;
+  Pad logged_pad_;
+  std::string save_copy_,replay_path_;
   int64_t origin_=0,anchor_time_=0,anchor_guest_=0,pending_since_=0,wait_since_=0,timeout_us_=60000000;
   uint64_t seq_=0,anchor_=0;
   Pad previous_,replay_pad_,game_pad_;

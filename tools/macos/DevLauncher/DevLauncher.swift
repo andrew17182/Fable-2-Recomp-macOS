@@ -26,6 +26,7 @@
 //       [--keyboard-map KEY:INPUT,...] [--mouse-look|--no-mouse-look] [--mouse-look-scale N]
 //       [--bind bind_console|bind_settings|bind_debug_overlay|bind_achievements=KEY] [--view-button-to-game]
 //       [--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot|--pad-framegen none|view|share|ls|rs]
+//       [--replay RECORDING.jsonl]   playback of an input recording (Run Playback) instead of the pick
 //       [--print-args]   print the fable2_dev_session.py arguments as JSON instead of launching
 // With no --pick it uses the choices last made in the window.
 //   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics] [--scroll bottom]
@@ -38,6 +39,8 @@
 //   a test session (--test-control: input-isolated, no write-back), so agents can drive the button path.
 //   --picker-rows LIST.json [--query TEXT] [--show-tests] [--meta PICKER.json]: the picker's rows as JSON.
 //   --save-menu LIST.json [--meta PICKER.json] [--show-starred] [--pick ID]: the save menu's ids as JSON.
+//   --recordings [FOLDER]: the Play recording picker's entries (newest first) as JSON (default: logs/recordings).
+//   --snapshot ... --recording NAME [--replaying]: the front page with Run Playback for that recording (or "▶ Replaying").
 import AppKit
 import Foundation
 import IOKit
@@ -145,10 +148,21 @@ enum Backend {
   }
 
   /// The launch arguments for one pick. Shared by the Launch button and --launch.
+  /// `replay`: a recording to play back (Run Playback): `--mode replay` with the current settings; the backend boots the
+  /// recording's starting saves, never writes back, skips the intros and keeps recording off.
   static func launchArguments(pick: String, targetSlot: String?, testControl: Bool,
-                              settings s: LaunchSettings) -> [String] {
+                              settings s: LaunchSettings, replay: String? = nil) -> [String] {
     // Playtest without a playtest copy launches Latest (BuildChoice.effective), never a failed launch.
     var args = ["launch", "--build", s.build.effective(playtestExists: Backend.playtestExists).rawValue]
+    if let replay = replay {
+      args += ["--mode", "replay", "--recording", replay, "--target-slot", "none"]
+      if testControl { args.append("--test-control") }
+      if let fps = s.frameRate.argument { args += ["--fps", fps] }
+      if s.frameRate == .auto { for item in s.frameRateEnvironment { args += ["--env", item] } }
+      // Recording stays off during playback (the backend forces it too).
+      for item in s.settingsEnvironment where !item.hasPrefix("FABLE2_RECORD_INPUT=") { args += ["--env", item] }
+      return args
+    }
     if pick.hasPrefix("live:") {
       args += ["--mode", "live", "--save", String(pick.dropFirst(5))]
     } else if pick.hasPrefix("library:") {
@@ -211,6 +225,16 @@ final class LauncherModel: SettingsModel {
   private var watchedGames = Set<Int>()
   @Published var lastSave = ""
   @Published var gameVersion = Backend.gameVersion
+  /// The running playback's replay status (tools/fable2_dev_session.py status "replay": starting, running, waiting,
+  /// complete, failed, cancelled); nil when the launcher's game is not a playback. --snapshot --replaying: running.
+  @Published var replayStatus: String? = DevSnapshot.request != nil && commandLine.contains("--replaying") ? "running" : nil
+  override var playbackSupported: Bool { true }
+  /// The front page's playback slot: "▶ Replaying" while the playback drives the game, else Run Playback for the
+  /// picked recording.
+  var playbackSlot: PlaybackSlot {
+    if let status = replayStatus, ["starting", "running", "waiting"].contains(status) { return .replaying }
+    return selectedRecording.map { .ready($0.label) } ?? .hidden
+  }
   /// State folder of the launcher's current (or last) session; nil for title-screen play.
   @Published var sessionState: String?
 
@@ -227,6 +251,7 @@ final class LauncherModel: SettingsModel {
     converterProbe = { Backend.hasConverter($0) }
     dropMissingPlaytest()
     if DevSnapshot.request != nil, let snapshotPick = argument(after: "--pick") { pick = snapshotPick; autoPicked = true }
+    refreshRecordings()
     if poll {
       refresh()
       timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.pollStatus() }
@@ -294,6 +319,7 @@ final class LauncherModel: SettingsModel {
       let playtest = Backend.playtestVersion
       let exists = Backend.playtestExists
       DispatchQueue.main.async {
+        self.refreshRecordings()
         self.apply(list: result); self.gameVersion = version; self.playtestVersion = playtest
         self.playtestExists = exists
         self.dropMissingPlaytest()
@@ -374,6 +400,9 @@ final class LauncherModel: SettingsModel {
         if let session = data["session"] as? [String: Any] {
           self.sessionState = session["state"] as? String
         }
+        if DevSnapshot.request == nil {
+          self.replayStatus = (data["replay"] as? [String: Any])?["status"] as? String
+        }
         if let last = data["last_save"] as? [String: Any], let name = last["library"] as? String {
           let slot = (last["written_back_to"] as? String).map { " → live \($0)" } ?? ""
           if self.lastSave != "Last save: \(name)\(slot)" {
@@ -406,16 +435,28 @@ final class LauncherModel: SettingsModel {
 
   func launch() { launch(pick: pick, target: pick == "title" ? nil : targetSlot, boot: nil) }
 
-  /// `boot`: overrides "Boot straight into save" (Continue always boots).
-  func launch(pick: String, target: String?, boot: Bool?) {
+  /// Run Playback (front page): plays the picked recording back with the current settings (a copy session that never
+  /// writes back; docs/reference.md "Input recording and replay").
+  override func runPlayback() {
+    refreshRecordings()
+    guard let item = selectedRecording else {
+      message = "Recording not found."
+      return
+    }
+    launch(pick: "title", target: nil, boot: nil, replay: item)
+  }
+
+  /// `boot`: overrides "Boot straight into save" (Continue always boots). `replay`: play that recording back instead.
+  func launch(pick: String, target: String?, boot: Bool?, replay: RecordingItem? = nil) {
     reloadSettings()
     let fellBack = settings.build == .playtest && !Backend.playtestExists
     dropMissingPlaytest()
     var launchSettings = settings
     if let boot = boot { launchSettings.boot = boot }
-    let testControl = Backend.testControlLaunches && pick != "title"
+    let testControl = Backend.testControlLaunches && (pick != "title" || replay != nil)
     let args = Backend.launchArguments(pick: pick, targetSlot: testControl ? nil : target, testControl: testControl,
-                                       settings: launchSettings)
+                                       settings: launchSettings, replay: replay?.path)
+    if replay != nil { replayStatus = "starting" }
     busy = true
     crashLogs = nil
     message = (fellBack ? Backend.playtestFallbackNote + " " : "") + "Launching…"
@@ -436,12 +477,14 @@ final class LauncherModel: SettingsModel {
             GameActivation.handOff(to: pid_t(pid)) { Backend.log($0) }
           }
           self.sessionState = session.map { $0 + "/test-state" }
-          self.message = (session.map { "Running session \(URL(fileURLWithPath: $0).lastPathComponent)" }
+          self.message = (replay.map { "Playing back \($0.label)." }
+            ?? session.map { "Running session \(URL(fileURLWithPath: $0).lastPathComponent)" }
             ?? "Running.")
             + ((fellBack ? Backend.playtestFallbackNote : info?["note"] as? String).map { " " + $0 } ?? "")
           self.running = true
         } else {
           self.message = "Launch failed: \(result["error"] ?? "unknown error")"
+          if replay != nil { self.replayStatus = nil }
           Backend.log("launch failed: \(result["error"] ?? "unknown error")")
         }
       }
@@ -600,7 +643,8 @@ struct LauncherView: View {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.pick, busy: model.busy, disabled: !model.canLaunch,
                    startTitle: { model.startTitle() }, load: { model.loadSave() },
-                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() })
+                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() },
+                   playback: model.playbackSlot, runPlayback: { model.runPlayback() })
         }
         FrontPageOptions(model: model)
         // Dev rows go last, so turning Dev Options on or picking a library save moves nothing above them.
@@ -880,6 +924,7 @@ func cliLaunch(_ argv: [String]) -> Int32 {
   var testControl = false
   var explicitTarget = false
   var printOnly = false
+  var replay: String?
   func fail(_ text: String) -> Int32 { print("{\"ok\": false, \"error\": \"\(text)\"}"); return 2 }
   var i = 0
   while i < argv.count {
@@ -890,6 +935,7 @@ func cliLaunch(_ argv: [String]) -> Int32 {
     case "--target-slot" where value != nil: target = value; explicitTarget = true; i += 1
     case "--test-control": testControl = true
     case "--print-args": printOnly = true
+    case "--replay" where value != nil: replay = value; i += 1
     case "--build":
       guard let v = value.flatMap(BuildChoice.init(rawValue:)) else { return fail("--build expects playtest or latest") }
       s.build = v; s.converterBuiltIn = Backend.hasConverter(v); i += 1
@@ -956,7 +1002,8 @@ func cliLaunch(_ argv: [String]) -> Int32 {
   // A live pick writes back to its own slot unless told otherwise (the backend default).
   if pick.hasPrefix("live:") && !explicitTarget { target = nil }
   if pick == "title" { target = nil }
-  let args = Backend.launchArguments(pick: pick, targetSlot: target, testControl: testControl, settings: s)
+  let args = Backend.launchArguments(pick: pick, targetSlot: target, testControl: testControl, settings: s,
+                                     replay: replay)
   if s.build == .playtest && !Backend.playtestExists {  // launched as Latest (BuildChoice.effective)
     FileHandle.standardError.write(Data((Backend.playtestFallbackNote + "\n").utf8))
   }
@@ -1061,6 +1108,14 @@ enum DevLauncherMain {
     if commandLine.contains("--launch") { return cliLaunch(commandLine) }
     if commandLine.contains("--picker-rows") { return cliPickerRows(commandLine) }
     if commandLine.contains("--save-menu") { return SaveMenuItems.cli(commandLine) }
+    if commandLine.contains("--recordings") {
+      // The Play recording picker's entries, newest first (tests; scratch folders).
+      let folder = argument(after: "--recordings").flatMap { $0.hasPrefix("--") ? nil : $0 } ?? InputRecordings.folder
+      let rows = InputRecordings.list(in: folder).map { ["id": $0.id, "label": $0.label, "path": $0.path] }
+      let data = (try? JSONSerialization.data(withJSONObject: rows, options: [])) ?? Data()
+      print(String(decoding: data, as: UTF8.self))
+      return 0
+    }
     return nil
   }
   static func run() -> Never {
