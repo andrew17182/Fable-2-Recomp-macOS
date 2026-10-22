@@ -6750,6 +6750,15 @@ uint32_t MetalRenderTargetCache::ApplyClearLoadActions(
     DeferredClearTouchedKb(rt, pending_draw_pass_clear_rects_[i],
                            RenderTargetScaleX(key), RenderTargetScaleY(key),
                            &full_target);
+    if (ShadowTraceActive()) {
+      const Transfer::Rectangle& r = pending_draw_pass_clear_rects_[i];
+      MTL::Texture* t = key.is_depth ? rt->texture() : rt->transfer_texture();
+      REXLOG_INFO("[shadow-trace] f{} clear-la slot {} [{}] rect {},{} {}x{} tex {}x{} full={} value={:016X}",
+                  frame_log::CurrentFrame(), i, key.GetDebugName(), r.x_pixels,
+                  r.y_pixels, r.width_pixels, r.height_pixels,
+                  t ? uint32_t(t->width()) : 0u, t ? uint32_t(t->height()) : 0u,
+                  int(full_target), value);
+    }
     if (!full_target) continue;
     MTL::ClearColor color = MTL::ClearColor(0.0, 0.0, 0.0, 0.0);
     double depth = 1.0;

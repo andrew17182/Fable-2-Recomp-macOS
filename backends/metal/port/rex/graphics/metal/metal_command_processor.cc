@@ -4771,6 +4771,17 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       draw_skip_reason_ = "ds_skip_vs";
       return pending_draw_pass_transfer_guard.Flush();
     }
+    // Diagnostic: FABLE2_SKIP_SRM=<RB_STENCILREFMASK hex> skips draws with
+    // exactly that stencil ref/mask/writemask word.
+    static const uint64_t skip_srm = [] {
+      const char* v = std::getenv("FABLE2_SKIP_SRM");  // getenv-ok: once
+      return v ? std::strtoull(v, nullptr, 16) : ~0ull;
+    }();
+    if (skip_srm != ~0ull &&
+        regs[XE_GPU_REG_RB_STENCILREFMASK] == uint32_t(skip_srm)) {
+      draw_skip_reason_ = "ds_skip_vs";
+      return pending_draw_pass_transfer_guard.Flush();
+    }
   }
   // FABLE2_EMU_DRAW_STATS (census) and FABLE2_NATIVE_TESS (default 1, exact):
   // docs/native-translator.md, "Geometry and tessellation emulation".
@@ -6039,7 +6050,17 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
 
   // [shadows-native] diagnostic: one line per draw in the trace window, with
   // the bound render targets and every fetched texture (FABLE2_SHADOW_TRACE).
-  if (render_target_cache_ && MetalRenderTargetCache::ShadowTraceActive()) {
+  // FABLE2_SHADOW_TRACE_STENCIL=1 narrows the draw lines to stencil-writing
+  // draws and stencil-tested colour draws (long windows stay small).
+  static const bool trace_stencil_only = [] {
+    const char* v = std::getenv("FABLE2_SHADOW_TRACE_STENCIL");  // getenv-ok: once
+    return v && v[0] == '1';
+  }();
+  if (render_target_cache_ && MetalRenderTargetCache::ShadowTraceActive() &&
+      (!trace_stencil_only ||
+       ((regs[XE_GPU_REG_RB_DEPTHCONTROL] & 1u) &&
+        ((regs[XE_GPU_REG_RB_STENCILREFMASK] & 0x00FF0000u) == 0x00200000u ||
+         (regs[XE_GPU_REG_RB_STENCILREFMASK] & 0x00FFFF00u) == 0x00003000u)))) {
     std::string tex;
     uint32_t remaining = used_texture_mask;
     uint32_t ti;
@@ -6059,14 +6080,14 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
                        index_buffer_info ? index_buffer_info->guest_base : 0u,
                        index_count);
     REXLOG_INFO("[shadow-trace] f{} draw {} vs={:016X} ps={:016X} zc={:08X} "
-                "cm={:08X} bc0={:08X} cc={:08X} prim={} sc={:08X}-{:08X} vp={}x{}{}{}",
+                "cm={:08X} bc0={:08X} cc={:08X} srm={:08X} prim={} sc={:08X}-{:08X} vp={}x{}{}{}",
                 frame_log::CurrentFrame(),
                 render_target_cache_->DescribeCurrentTargetsForTrace(),
                 vertex_shader->ucode_data_hash(),
                 pixel_shader ? pixel_shader->ucode_data_hash() : 0,
                 regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_COLOR_MASK],
                 regs[XE_GPU_REG_RB_BLENDCONTROL0], regs[XE_GPU_REG_RB_COLORCONTROL],
-                uint32_t(primitive_type),
+                regs[XE_GPU_REG_RB_STENCILREFMASK], uint32_t(primitive_type),
                 regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
                 regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
                 regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE) * 2.0f,
@@ -6135,7 +6156,7 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
         }
       }
       std::string pcs;
-      for (uint32_t c : {20u, 31u, 46u}) {
+      for (uint32_t c : {20u, 31u, 44u, 45u, 46u, 47u}) {
         const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_256_X + c * 4;
         pcs += fmt::format(" pc{}=({},{},{},{})", c, regs.Get<float>(base),
                            regs.Get<float>(base + 1), regs.Get<float>(base + 2),
