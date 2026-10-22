@@ -270,7 +270,9 @@ Five actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = 
 | Frame generation on/off (same as F10) | `FABLE2_PAD_FRAMEGEN` | none |
 
 A screenshot is the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png` in the game data root
-(override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). A bound button no longer reaches the game
+(override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). Once the PNG is written a "Screenshot saved"
+notice shows for ~2 s in the turbo-notice style ("Screenshot failed" if it could not be taken or written); the PNG is
+the game frame without overlays, so the notice is never in it. A bound button no longer reaches the game
 (View = Back, stick clicks = L3/R3); an unbound one does. `FABLE2_VIEW_BUTTON_TO_GAME=1` passes Back
 through while View is bound. One button, one action: a set action takes its button and a default on
 that button is dropped (`FABLE2_PAD_SCREENSHOT=view` alone moves View from turbo to screenshot). Until

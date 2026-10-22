@@ -468,6 +468,10 @@ inline std::filesystem::path NextScreenshotPath(const std::filesystem::path& dir
 
 // UI thread. Reads the guest frame (same CaptureGuestOutput as the test-control
 // `capture`), then encodes and writes the PNG on a worker thread.
+// "Screenshot saved" / "Screenshot failed" in the turbo-notice style, on the UI thread (defined below).
+inline void ScreenshotNotice(bool ok);
+
+// The PNG is the guest output (CaptureGuestOutput), so the notice, an ImGui overlay, is never in it.
 inline void TakeScreenshot() {
   static std::atomic<uint32_t> count{0};
   auto* rt = rex::Runtime::instance();
@@ -475,11 +479,13 @@ inline void TakeScreenshot() {
   auto* presenter = graphics ? graphics->presenter() : nullptr;
   if (!presenter) {
     REXLOG_WARN("[pad-hotkeys] screenshot skipped: no presenter");
+    ScreenshotNotice(false);
     return;
   }
   auto image = std::make_shared<rex::ui::RawImage>();
   if (!presenter->CaptureGuestOutput(*image)) {
     REXLOG_WARN("[pad-hotkeys] screenshot skipped: no rendered frame yet");
+    ScreenshotNotice(false);
     return;
   }
   const uint32_t n = count.fetch_add(1) + 1;
@@ -487,6 +493,7 @@ inline void TakeScreenshot() {
     const auto dir = ScreenshotDir();
     if (dir.empty()) {
       REXLOG_WARN("[pad-hotkeys] screenshot #{} skipped: no screenshot folder", n);
+      ScreenshotNotice(false);
       return;
     }
     std::error_code ec;
@@ -502,6 +509,7 @@ inline void TakeScreenshot() {
                   path.string());
     else
       REXLOG_WARN("[pad-hotkeys] screenshot #{} failed to write {}", n, path.string());
+    ScreenshotNotice(ok);  // after the PNG is written
   }).detach();
 }
 
@@ -519,6 +527,15 @@ struct State {
 inline State& state() {
   static State s;
   return s;
+}
+
+inline void ScreenshotNotice(bool ok) {
+  auto& s = state();
+  const char* text = ok ? "Screenshot saved" : "Screenshot failed";
+  if (!s.context || !s.context->CallInUIThreadDeferred([text] {
+        if (fable2::turbo::g_notice) fable2::turbo::g_notice(text);
+      }))
+    REXLOG_WARN("[pad-hotkeys] screenshot notice skipped: UI thread unavailable");
 }
 
 // Never opens a controller itself: the SDK's SDL driver opens every pad, and SDL
