@@ -308,7 +308,7 @@ struct TurboControls: View {
           .monospacedDigit()
       }
     }
-    .help("Game speed while turbo is on. F7 or 7 toggles turbo; a controller button can too (Controls). Off: no turbo.")
+    .help("Game speed while turbo is on. 7 or F8 toggles turbo; a controller button can too (Controls). Off: no turbo.")
     let slow = Binding(get: { model.settings.slowSpeed }, set: { model.settings.slowSpeed = SlowSpeed.clean($0) })
     LabeledContent("Slow speed") {
       HStack {
@@ -317,7 +317,7 @@ struct TurboControls: View {
           .monospacedDigit()
       }
     }
-    .help("F8 toggles slow motion; a controller button can too (Controls). Off: no slow motion.")
+    .help("` or F1 turns on slow motion; a controller button can toggle it (Controls). Off: no slow motion.")
     FixedPicker("Turbo audio", selection: $model.settings.turboAudio) {
       ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
     }
