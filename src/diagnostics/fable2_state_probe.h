@@ -716,6 +716,7 @@ extern "C" void ProcessAndProcessAndProcess573_82B458C0(PPCContext& ctx, uint8_t
 extern "C" void ProcessAndProcessAndProcess1013_822B2D60(PPCContext& ctx, uint8_t* base) {
   const uint32_t state_ptr = ctx.r4.u32;
   const uint32_t user = ctx.r3.u32;
+  fable2::rawpad::Begin();  // the controllers' raw sticks for this poll (src/input/raw_pad_capture.h)
   __imp__ProcessAndProcessAndProcess1013_822B2D60(ctx, base);
   fable2::session::ObservePad(ctx, base, state_ptr, user);
   // F6 closes the F6 menu: a short B tap on the open game box (src/core/fable2_f5_lua.h).

@@ -159,6 +159,14 @@ inline const WalkConfig& Walk() {
   return w;
 }
 
+// This session's controller remap (Left, Right, Walk), as BackFilterDriver (controller_hotkeys.h) applies
+// it to a live controller; the input replay applies it to recorded raw sticks. `sticks`: bit 0 left
+// (lx, ly), bit 1 right (rx, ry).
+inline void ApplySession(int16_t& lx, int16_t& ly, int16_t& rx, int16_t& ry, int sticks = 3) {
+  if (sticks & 1) ApplyLeft(Left(), Walk(), lx, ly);
+  if (sticks & 2) Apply(Right(), rx, ry);
+}
+
 inline std::string DescribeWalk(const WalkConfig& w) {
   if (!w.enabled) return "game walk threshold";
   return "turn band " + std::to_string(int(std::lround(w.band * 100))) + "%";

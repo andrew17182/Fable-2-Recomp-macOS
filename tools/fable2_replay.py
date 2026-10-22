@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Replay guest pad snapshots against observed state transitions (no images).
 
-Recordings (docs/reference.md "Input recording"): schema 1 (host time only) and schema 2 (adds guest time
-g_us / gdt_us and "speed" events). load_recording validates both and accepts a crash-truncated final line.
+Recordings (docs/reference.md "Input recording"): schema 1 (host time only), schema 2 (adds guest time
+g_us / gdt_us and "speed" events) and schema 3 (pad sticks from a controller are raw, before the deadzone
+remap: "raw" names them, bit 0 left / bit 1 right, and "game" holds what the game read when it differs).
+load_recording validates all three and accepts a crash-truncated final line. The host-clock driver below
+sends "game" (else "pad"), so it replays what the game read, not a remap under the current settings.
 The default replay driver is the game itself (FABLE2_REPLAY_INPUT / control/replay-input.txt), which schedules
 by guest time, so it holds at any turbo speed. This module's Replay class is the old host-clock driver
 (fable2_test_control.py replay --host-clock): exact only when recording and replay both run at 1x."""
@@ -31,7 +34,7 @@ def load_recording(path):
     anchors = {}
     previous_seq, previous_time = -1, -1
     for event in events:
-        if event.get('schema') not in (1, 2) or event.get('type') not in ('state', 'key', 'pad', 'speed', 'recording_end'):
+        if event.get('schema') not in (1, 2, 3) or event.get('type') not in ('state', 'key', 'pad', 'speed', 'recording_end'):
             raise ValueError('Unsupported recording schema/event')
         if not isinstance(event.get('seq'), int) or event['seq'] <= previous_seq:
             raise ValueError('Recording event sequence is not increasing')
@@ -44,14 +47,17 @@ def load_recording(path):
             raise ValueError('Input refers to a missing or future anchor')
         if abs(event['dt_us'] - (event['t_us'] - anchors[event['anchor']]['t_us'])) > 1000:
             raise ValueError('Inconsistent anchor-relative timing')
-        if event['schema'] == 2 and not (isinstance(event.get('g_us'), int) and isinstance(event.get('gdt_us'), int)):
-            raise ValueError('Schema 2 event without guest time')
+        if event['schema'] >= 2 and not (isinstance(event.get('g_us'), int) and isinstance(event.get('gdt_us'), int)):
+            raise ValueError('Schema %d event without guest time' % event['schema'])
         if event['type'] == 'pad':
-            pad = event.get('pad')
             limits = [(0, 65535), (0, 255), (0, 255)] + [(-32768, 32767)] * 4
-            if not isinstance(pad, list) or len(pad) != 7 or any(
-                    type(v) is not int or not lo <= v <= hi for v, (lo, hi) in zip(pad, limits)):
-                raise ValueError('Invalid controller snapshot')
+            for key in ('pad', 'game') if 'game' in event else ('pad',):
+                pad = event.get(key)
+                if not isinstance(pad, list) or len(pad) != 7 or any(
+                        type(v) is not int or not lo <= v <= hi for v, (lo, hi) in zip(pad, limits)):
+                    raise ValueError('Invalid controller snapshot')
+            if type(event.get('raw', 0)) is not int or not 0 <= event.get('raw', 0) <= 3:
+                raise ValueError('Invalid raw stick mask')
     if not any(e['type'] == 'pad' for e in events):
         raise ValueError('Recording contains no guest controller samples')
     if events[-1]['type'] != 'recording_end':
@@ -60,7 +66,7 @@ def load_recording(path):
         last = events[-1]
         end = dict(schema=last['schema'], seq=last['seq'] + 1, type='recording_end',
                    t_us=last['t_us'], anchor=last['anchor'], dt_us=last['dt_us'])
-        if last['schema'] == 2: end.update(g_us=last['g_us'], gdt_us=last['gdt_us'])
+        if last['schema'] >= 2: end.update(g_us=last['g_us'], gdt_us=last['gdt_us'])
         events.append(end)
     return events
 
@@ -141,7 +147,7 @@ class Replay:
                     while clock_us() - self.origin < target:
                         self.tick()
                     if event['type'] == 'pad':
-                        self.pad = event['pad']
+                        self.pad = event.get('game', event['pad'])  # what the game read (schema 3: "pad" sticks are raw)
                         self.publish()
             self.status('complete')
         except Exception as error:

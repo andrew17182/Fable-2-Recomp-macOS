@@ -18,6 +18,15 @@
 // named markers); replay matches them in recorded order and schedules each pad change at
 // live anchor guest time + gdt_us. Speed changes (turbo, slow mode) are recorded as "speed" events, never replayed.
 // Schema 1 recordings (host time only) replay with dt_us as guest time (exact at 1x only).
+//
+// Sticks (schema 3, 2026-10-22). A pad event's "pad" holds controller sticks as the controller reported
+// them, before our deadzone / walk-deadzone remap (src/input/raw_pad_capture.h); "raw" says which sticks
+// those are (bit 0 left, bit 1 right) and "game" (only when different) is what the game read. Replay
+// remaps the "raw" sticks with the replaying session's settings (the same stick_deadzone.h functions
+// BackFilterDriver applies to a live controller), so one recording replays under any deadzone. Keyboard
+// pad and mouse-look sticks are not remapped live either and are recorded and replayed as the game read
+// them. Buttons are always what the game read (hotkey-bound buttons removed). Schema 1/2 recordings hold
+// the game-read (already remapped) sticks and replay them unchanged.
 #include <algorithm>
 #include <chrono>
 #include <time.h>
@@ -37,6 +46,7 @@
 #include <rex/logging/macros.h>
 #include "fable2_guest_speed.h"
 #include "fable2_state_path.h"
+#include "stick_deadzone.h"
 namespace fable2::session {
 inline std::string Quote(const std::string& s) {
   std::string r="\"";
@@ -116,6 +126,14 @@ inline bool JsonString(const std::string& line,const char* key,std::string& out)
   }
   return *p=='"';
 }
+// The live controller remap (BackFilterDriver, src/input/controller_hotkeys.h) applied to the sticks of
+// `pad` named by `sticks` (bit 0 left, bit 1 right).
+inline Pad RemapSticks(Pad pad,int sticks) {
+  int16_t lx=int16_t(pad.lx),ly=int16_t(pad.ly),rx=int16_t(pad.rx),ry=int16_t(pad.ry);
+  fable2::stickdz::ApplySession(lx,ly,rx,ry,sticks);
+  pad.lx=lx;pad.ly=ly;pad.rx=rx;pad.ry=ry;
+  return pad;
+}
 inline bool JsonPad(const std::string& line,Pad& pad) {
   const char* p=JsonField(line,"pad");
   if(!p||*p!='[') return false;
@@ -161,7 +179,7 @@ class Journal {
     active_=true;
     live_.push_back({"AppLaunch",0});
     if(output_) {
-      output_<<"{\"schema\":2,\"seq\":0,\"type\":\"state\",\"t_us\":0,\"state\":\"AppLaunch\",\"anchor\":0,"
+      output_<<"{\"schema\":3,\"seq\":0,\"type\":\"state\",\"t_us\":0,\"state\":\"AppLaunch\",\"anchor\":0,"
              "\"dt_us\":0,\"g_us\":0,\"gdt_us\":0,\"meta\":"<<Meta()<<"}\n";
       output_.flush();
     }
@@ -177,18 +195,25 @@ class Journal {
     if(recording_) Write("key","\"key\":"+std::to_string(key)+",\"down\":"+
         (down?"true":"false")+",\"repeat\":"+(repeat?"true":"false"));
   }
-  bool Input(Pad& pad) {
+  // `pad`: what the game reads (replaced while replaying). `raw`: the same pad with the sticks named by
+  // `raw_sticks` (bit 0 left, bit 1 right) as a controller reported them, before the deadzone remap.
+  bool Input(Pad& pad,const Pad& raw,int raw_sticks) {
     if(!Enabled()) return false;
     std::lock_guard lock(mu_);
     if(!replay_.empty()) Advance(GuestUs());
     const bool injected=game_replay_||replaying_;
-    if(game_replay_) pad=game_pad_;
-    else if(replaying_) pad=replay_pad_;
-    if(recording_&&(!have_pad_||pad!=previous_)) {
-      Write("pad","\"pad\":"+pad.Json());previous_=pad;have_pad_=true;
+    Pad stored=raw;
+    int sticks=raw_sticks;
+    if(game_replay_) {stored=game_pad_;sticks=game_sticks_;pad=RemapSticks(game_pad_,game_sticks_);}
+    else if(replaying_) {pad=stored=replay_pad_;sticks=0;}
+    if(recording_&&(!have_pad_||stored!=previous_||sticks!=previous_sticks_)) {
+      std::string fields="\"pad\":"+stored.Json()+",\"raw\":"+std::to_string(sticks);
+      if(pad!=stored) fields+=",\"game\":"+pad.Json();
+      Write("pad",fields);previous_=stored;previous_sticks_=sticks;have_pad_=true;
     }
     return injected;
   }
+  bool Input(Pad& pad) {const Pad raw=pad;return Input(pad,raw,0);}
   void Marker(const std::string& name) {
     if(!Enabled()) return;
     std::lock_guard lock(mu_);Transition(name,GuestUs());
@@ -210,6 +235,7 @@ class Journal {
     int64_t seq=0,anchor=0,gdt=0;
     std::string state;
     Pad pad;
+    int sticks=0;  // schema 3 "raw": sticks remapped on replay
   };
   std::string Meta() const {
     auto env=[](const char* name){const char* v=std::getenv(name);return Quote(v?v:"");};
@@ -224,7 +250,7 @@ class Journal {
     if(!output_) return;
     auto t=NowUs()-origin_;
     if(guest<0) guest=GuestUs();
-    output_<<"{\"schema\":2,\"seq\":"<<++seq_<<",\"type\":"<<Quote(type)
+    output_<<"{\"schema\":3,\"seq\":"<<++seq_<<",\"type\":"<<Quote(type)
       <<",\"t_us\":"<<t<<",\"anchor\":"<<anchor_<<",\"dt_us\":"
       <<t-anchor_time_<<",\"g_us\":"<<guest<<",\"gdt_us\":"<<guest-anchor_guest_<<','<<fields<<"}\n";output_.flush();
   }
@@ -243,9 +269,11 @@ class Journal {
     replay_.clear();replay_i_=live_i_=0;rec_anchor_guest_.clear();matched_.clear();
     std::ifstream in(path);
     std::string line;
+    int64_t schema=0;
     while(std::getline(in,line)) {
       std::string type;
       if(!JsonString(line,"type",type)) continue;  // a crash-truncated final line
+      if(!schema) JsonInt(line,"schema",schema);
       Recorded e{Recorded::kState};
       if(!JsonInt(line,"seq",e.seq)||!JsonInt(line,"anchor",e.anchor)) continue;
       if(!JsonInt(line,"gdt_us",e.gdt)&&!JsonInt(line,"dt_us",e.gdt)) continue;  // schema 1: host time
@@ -254,6 +282,8 @@ class Journal {
       } else if(type=="pad") {
         e.kind=Recorded::kPad;
         if(!JsonPad(line,e.pad)) continue;
+        int64_t sticks=0;
+        if(JsonInt(line,"raw",sticks)) e.sticks=int(sticks&3);
       } else if(type=="recording_end") {
         e.kind=Recorded::kEnd;
       } else continue;  // key (already in the pad), speed (the viewer picks the speed)
@@ -270,8 +300,16 @@ class Journal {
     const char* timeout=std::getenv("FABLE2_REPLAY_TIMEOUT_S");
     timeout_us_=int64_t((timeout&&*timeout?std::strtod(timeout,nullptr):60.0)*1e6);
     wait_since_=0;
-    game_replay_=true;game_pad_=Pad{};
+    game_replay_=true;game_pad_=Pad{};game_sticks_=0;
     REXSYS_INFO("[replay] in-game replay of {}: {} events", path.string(), replay_.size());
+    if(schema<3)
+      REXSYS_INFO("[replay] schema {} recording: its sticks are what the game read (after the deadzone settings "
+                  "it was recorded with) and replay unchanged; record again for raw sticks", schema);
+    else
+      REXSYS_INFO("[replay] raw controller sticks are remapped with this session's settings: left {}, right {}, "
+                  "walk: {}", fable2::stickdz::Describe(fable2::stickdz::Left()),
+                  fable2::stickdz::Describe(fable2::stickdz::Right()),
+                  fable2::stickdz::DescribeWalk(fable2::stickdz::Walk()));
     Status("running");
   }
   // Applies every recorded event that is due at guest time `now`.
@@ -299,13 +337,13 @@ class Journal {
       auto anchor=rec_anchor_guest_.find(e.anchor);
       if(anchor==rec_anchor_guest_.end()) {EndReplay("failed","\"error\":\"input refers to a missing anchor\"");return;}
       if(now<anchor->second+e.gdt) return;
-      if(e.kind==Recorded::kPad) {game_pad_=e.pad;++replay_i_;continue;}
+      if(e.kind==Recorded::kPad) {game_pad_=e.pad;game_sticks_=e.sticks;++replay_i_;continue;}
       EndReplay("complete");
       return;
     }
   }
   void EndReplay(const char* status,const std::string& fields="") {
-    replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};wait_since_=0;
+    replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};game_sticks_=0;wait_since_=0;
     REXSYS_INFO("[replay] {}", status);
     Status(status,fields);
   }
@@ -384,6 +422,7 @@ class Journal {
   int64_t origin_=0,anchor_time_=0,anchor_guest_=0,pending_since_=0,wait_since_=0,timeout_us_=60000000;
   uint64_t seq_=0,anchor_=0;
   Pad previous_,replay_pad_,game_pad_;
+  int previous_sticks_=0,game_sticks_=0;
   std::string state_="AppLaunch",pending_;
   std::string signature_;
   // In-game replay: recorded events, live anchors (state, guest us) and the matched pairs.

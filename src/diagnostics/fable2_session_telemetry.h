@@ -1,6 +1,7 @@
 #pragma once
 #include "fable2_session_journal.h"
 #include "fable2_benchmark_pad.h"
+#include "raw_pad_capture.h"
 #include <array>
 #include <algorithm>
 #include <vector>
@@ -72,7 +73,15 @@ inline void ObservePad(PPCContext& ctx,uint8_t* base,uint32_t pointer,uint32_t u
     pad=Pad{o.buttons.load(std::memory_order_relaxed),0,0,int16_t(o.lx.load(std::memory_order_relaxed)),
             int16_t(o.ly.load(std::memory_order_relaxed)),
             o.rx.load(std::memory_order_relaxed),o.ry.load(std::memory_order_relaxed)};
-  } else if(!j.Input(pad)) return;
+  } else {
+    // Controller sticks before the deadzone remap (src/input/raw_pad_capture.h): a stick the game read
+    // that equals the controllers' remapped value came from a controller.
+    int16_t s[4]={int16_t(pad.lx),int16_t(pad.ly),int16_t(pad.rx),int16_t(pad.ry)};
+    const int sticks=fable2::rawpad::ToRaw(s);
+    Pad raw=pad;
+    raw.lx=s[0];raw.ly=s[1];raw.rx=s[2];raw.ry=s[3];
+    if(!j.Input(pad,raw,sticks)) return;
+  }
   auto put=[](uint8_t* b,unsigned v){b[0]=v>>8;b[1]=v;};
   static std::mutex packet_mutex;std::lock_guard lock(packet_mutex);
   static Pad previous;static unsigned packet=0;

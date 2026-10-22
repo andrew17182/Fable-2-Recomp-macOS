@@ -82,6 +82,7 @@
 
 #include "fable2_turbo.h"
 #include "fable2_frame_gen.h"
+#include "raw_pad_capture.h"
 #include "stick_deadzone.h"
 #include "test_background.h"
 
@@ -306,7 +307,12 @@ class BackFilterDriver final : public rex::input::InputDriver {
     fable2::stickdz::g_left_raw_percent.store(
         fable2::stickdz::RadialPercent(int16_t(out_state->gamepad.thumb_lx), int16_t(out_state->gamepad.thumb_ly)),
         std::memory_order_relaxed);
-    ApplyStickDeadzones(id, out_state->gamepad);
+    auto& pad = out_state->gamepad;
+    const int16_t raw[4] = {int16_t(pad.thumb_lx), int16_t(pad.thumb_ly), int16_t(pad.thumb_rx), int16_t(pad.thumb_ry)};
+    ApplyStickDeadzones(id, pad);
+    const int16_t remapped[4] = {int16_t(pad.thumb_lx), int16_t(pad.thumb_ly), int16_t(pad.thumb_rx),
+                                 int16_t(pad.thumb_ry)};
+    fable2::rawpad::Observe(raw, remapped);  // input recorder: raw sticks (raw_pad_capture.h)
     const uint16_t buttons = out_state->gamepad.buttons;
     const uint16_t removed = RemovedGuestButtons();
     if (buttons & removed) out_state->gamepad.buttons.set(uint16_t(buttons & ~removed));

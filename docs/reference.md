@@ -411,8 +411,16 @@ is on, the launcher's front page shows a red "Recording input" note. Each game w
 The first line (`AppLaunch`) has a `meta` object: build version, save name (Dev Launcher), resolution and
 frame-rate settings.
 
-**What is recorded:** the final pad state the game reads (`XamInputGetState`, after keyboard mapping, mouse look
-and the controller-hotkey filter), one `pad` event per change. Raw `key` events are recorded too, for information
+**What is recorded (schema 3, 2026-10-22):** the pad state the game reads (`XamInputGetState`, after keyboard
+mapping, mouse look and the controller-hotkey filter, so hotkey-bound buttons are not in it), one `pad` event per
+change, except that controller sticks are stored **raw**: as the controller (or the test pad) reported them,
+before the stick deadzone / walk deadzone remap. `"raw"` names those sticks (bit 0 left, bit 1 right) and
+`"game"` (only when it differs) is what the game read. Replay remaps the raw sticks with the **replaying**
+session's deadzone settings (the same `stick_deadzone.h` functions `BackFilterDriver` applies to a live
+controller). Keyboard-pad and mouse-look sticks never go through the remap: they are recorded and replayed as the
+game read them. The test pad (`fable2_test_control.py stick`) is a virtual SDL controller and takes the controller
+path. Schema 1/2 recordings still load; their sticks are the game-read (already remapped) values and replay
+unchanged (logged as a `[replay]` note). Code: `src/input/raw_pad_capture.h`. Raw `key` events are recorded too, for information
 only. State anchors are `LevelLoaded` (end of each level load), `AfterNewGameVideo`, and UI fingerprints of frames
 that draw UI items. Turbo and speed changes are `speed` events.
 
@@ -427,7 +435,7 @@ Status is logged as `[replay]` lines in `fable_2.log` (test sessions also write 
 `fable2_replay.py` validates recordings (`load_recording`) and keeps the old host-clock driver
 (`replay --host-clock`).
 
-**Timing (schema 2):** every event has host time (`t_us`, `dt_us`) and guest time (`g_us`, `gdt_us`). The guest
+**Timing (schema 2 and 3):** every event has host time (`t_us`, `dt_us`) and guest time (`g_us`, `gdt_us`). The guest
 clock runs at the turbo (or slow-mode) speed. The in-game driver matches the recorded anchors in order, then applies
 each pad change when the guest clock reaches the live anchor time plus `gdt_us`. So a recording made at 2× replays
 at 1× (and the other way round) at the same game moments. Recorded speed changes are not replayed: the replay runs
@@ -444,6 +452,18 @@ each):
 
 The game reads the pad once per frame, so a change lands at the next frame's read: at most one frame late (33 ms
 of guest time at 30 FPS, 67 ms at 2×).
+
+**Recording for comparisons.** Because sticks are stored raw, one recording can be replayed under different
+stick settings to compare them side by side (e.g. for a video): record once, then replay with Settings > Controls
+deadzones on Original and again with a Custom deadzone / walk deadzone. Measured 2026-10-22 (test pad, left
+stick 10/20/35/50%, recorded at deadzone 6% + walk 5%; `out/validation/raw-stick-record-20261022/`):
+
+| Raw tilt | Original: game reads | Original: hero | 6% + walk 5%: game reads | 6% + walk 5%: hero |
+|---|---|---|---|---|
+| 10% | 10% | nothing | 44% | turns on the spot |
+| 20% | 20% | nothing | 53% | walks |
+| 35% | 35% | turns on the spot | 62% | walks |
+| 50% | 50% | walks | 71% | walks |
 
 **Caveat:** replay is state-anchored, not frame-exact. Physics, AI, streaming and load times are not
 deterministic, so long replays drift and can diverge (a missed hit, a different path). Inputs before the first

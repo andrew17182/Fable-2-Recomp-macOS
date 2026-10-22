@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "raw_pad_capture.h"
 #include "stick_deadzone.h"
 
 #define CHECK(condition) do { if (!(condition)) { \
@@ -162,6 +163,51 @@ int main() {
     const WalkConfig w = ParseWalk("5");
     CHECK(GameSees(RunLeft(c, w, int(0.105 * 32767), 0)).mag < kWalkPost);
     CHECK(GameSees(RunLeft(c, w, int(0.112 * 32767), 0)).mag > kWalkPost);
+  }
+  // Input recorder (raw_pad_capture.h): controller sticks recorded raw, the keyboard pad / mouse look as read.
+  {
+    namespace rp = fable2::rawpad;
+    rp::Begin();
+    int16_t none[4] = {100, 0, 0, 0};
+    CHECK(rp::ToRaw(none) == 0 && none[0] == 100);  // no controller this poll
+    // A 6% deadzone controller: raw 20% left is remapped; the game reads the remapped value.
+    const Config c = Parse("6", nullptr);
+    int16_t lx = 6554, ly = 0, rx = 1000, ry = 0;
+    const int16_t raw[4] = {lx, ly, rx, ry};
+    Apply(c, lx, ly);
+    Apply(c, rx, ry);  // 3% right: inside the deadzone -> 0
+    const int16_t remapped[4] = {lx, ly, rx, ry};
+    CHECK(lx != 6554 && rx == 0);
+    rp::Observe(raw, remapped);
+    int16_t game[4] = {lx, ly, rx, ry};
+    CHECK(rp::ToRaw(game) == 3 && game[0] == 6554 && game[2] == 1000);
+    // The keyboard pad pushed the left stick past the controller's value: recorded as read, not remapped.
+    int16_t keyboard[4] = {32767, 0, rx, ry};
+    CHECK(rp::ToRaw(keyboard) == 2 && keyboard[0] == 32767 && keyboard[2] == 1000);
+    // Two controllers merge like the SDK (larger remapped magnitude per axis, the first on a tie); the raw
+    // value comes from the controller that won.
+    const int16_t raw2[4] = {-9000, 0, 1000, 0}, remapped2[4] = {-9000, 0, 0, 0};
+    rp::Observe(raw2, remapped2);
+    int16_t merged[4] = {lx, 0, 0, 0};
+    CHECK(lx > 9000 && rp::ToRaw(merged) == 3 && merged[0] == 6554);
+    rp::Begin();
+    CHECK(!rp::Current().any);
+  }
+  // Replay remap (ApplySession): this session's settings, read once from the environment.
+  {
+    setenv("FABLE2_STICK_DEADZONE_LEFT", "6", 1);
+    setenv("FABLE2_WALK_DEADZONE", "5", 1);
+    unsetenv("FABLE2_STICK_DEADZONE_RIGHT");
+    int16_t lx = int16_t(0.20 * 32767), ly = 0, rx = 5000, ry = 0;
+    int16_t ex = lx, ey = ly;
+    ApplyLeft(Parse("6", nullptr), ParseWalk("5"), ex, ey);
+    ApplySession(lx, ly, rx, ry, 1);
+    CHECK(lx == ex && ly == ey && rx == 5000);           // right stick: game default, unchanged
+    CHECK(GameSees({lx, ly}).mag > kWalkPost);           // 20% walks with deadzone 6% + walk 5%
+    CHECK(GameSees({int(0.20 * 32767), 0}).mag == 0);    // the same raw value under Original: nothing
+    int16_t kx = 3000, ky = 0, z = 0, z2 = 0;
+    ApplySession(kx, ky, z, z2, 0);
+    CHECK(kx == 3000);  // not a controller stick: unchanged
   }
   std::puts("stick_deadzone_tests: ok");
   return 0;

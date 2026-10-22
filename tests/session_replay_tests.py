@@ -41,6 +41,29 @@ class ReplayTests(unittest.TestCase):
         self.save(events)
         self.assertEqual(replay.load_recording(self.recording),events)
 
+    def test_schema3_raw_sticks(self):
+        # Schema 3 (src/diagnostics/fable2_session_journal.h): controller sticks raw ("raw" mask), "game" beside them.
+        def ev3(seq,kind,t,**kw):
+            return dict(schema=3,seq=seq,type=kind,t_us=t,anchor=0,dt_us=t,g_us=t,gdt_us=t,**kw)
+        events=[ev3(0,'state',0,state='AppLaunch',meta={}),
+                ev3(1,'pad',100,pad=[0,0,0,6554,0,0,0],raw=1,game=[0,0,0,13244,0,0,0]),
+                ev3(2,'pad',200,pad=[0,0,0,32767,0,0,0],raw=0),
+                ev3(3,'recording_end',300,reason='quit')]
+        self.save(events)
+        self.assertEqual(replay.load_recording(self.recording),events)
+        for bad in (dict(events[1],raw=4),dict(events[1],game=[0,0,0,40000,0,0,0])):
+            self.save([events[0],bad,events[3]])
+            with self.assertRaises(ValueError): replay.load_recording(self.recording)
+        # The host-clock driver sends what the game read.
+        self.save(events)
+        sent=[]
+        driver=replay.Replay(self.recording,self.session)
+        with patch.object(replay.Replay,'publish',lambda s,active=True: sent.append(list(s.pad))), \
+             patch.object(replay.Replay,'read_live',lambda s: [events[0]]), patch.object(replay.time,'sleep'):
+            driver.run()
+        self.assertIn([0,0,0,13244,0,0,0],sent)
+        self.assertNotIn([0,0,0,6554,0,0,0],sent)
+
     def test_schema2_guest_time_speed_events_and_crash_prefix(self):
         # Player recordings (src/diagnostics/fable2_session_journal.h): guest time, speed events, and a final line
         # cut short by a crash.
