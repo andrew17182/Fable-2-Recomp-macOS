@@ -88,7 +88,7 @@ int main() {
   CHECK(rex::ui::ProcessKeyEvent(number_event) && debug_requests == 1);
   rex::ui::KeyEvent settings_event(&window, K::k4, 1, false, false, false, false, false);
   CHECK(rex::ui::ProcessKeyEvent(settings_event) && settings_requests == 1);
-  rex::ui::KeyEvent achievement_event(&window, K::k8, 1, false, false, false, false, false);
+  rex::ui::KeyEvent achievement_event(&window, K::k1, 1, false, false, false, false, false);
   CHECK(rex::ui::ProcessKeyEvent(achievement_event) && achievement_requests == 1);
   rex::ui::KeyEvent old_event(&window, K::kF3, 1, false, false, false, false, false);
   CHECK(!rex::ui::ProcessKeyEvent(old_event));

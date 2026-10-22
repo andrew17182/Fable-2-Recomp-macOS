@@ -322,12 +322,12 @@ smear, very fast pans turn soft) and adds about 20 ms of delay, so it is not par
 Research and quality comparison: `docs/frame-interp-prototype.md`.
 
 - **Turning it on:** `FABLE2_FRAME_INTERP=1` (start state; launcher Settings > Display > Frame rate "Frame
-  generation", Off / 30 → 60, Custom preset only). **F10** toggles it live; the controller action
+  generation", Off / 30 → 60, Custom preset only). **0** or **F10** toggles it live; the controller action
   `FABLE2_PAD_FRAMEGEN` (Controls > Game controllers, default none) does the same. The toggle shows an on/off notice
   in the turbo-notice style and never changes the launcher setting. The F9 overlay shows "framegen" while it is on.
 - **Requirements** (checked once at startup, `src/core/fable2_frame_gen.h`): the 30 FPS cap, macOS 26, a GPU for
   which `MTLFXFrameInterpolatorDescriptor supportsDevice` is true, and the Metal renderer. Otherwise it stays off
-  with a `[frame-gen] off: ...` log line, F10 shows "Frame generation needs 30 FPS" (or the other reason) and does
+  with a `[frame-gen] off: ...` log line, 0 or F10 shows "Frame generation needs 30 FPS" (or the other reason) and does
   nothing, and the launcher disables the picker with that reason. At 60 FPS or uncapped the frame rate is left as
   chosen (not forced to 30). 60 → 120 on 120 Hz displays is not offered: untested (only a 60 Hz display here).
 - **Turbo pauses it** (only real frames are shown while turbo is on; it resumes when turbo turns off, with no notice

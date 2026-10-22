@@ -103,7 +103,8 @@ class ControlsSourceTests(unittest.TestCase):
             self.assertEqual(rebindable.pop(cvar), key)
         self.assertEqual(rebindable, {'bind_console': 'Backtick'})  # the SDK default, kept by the recomp
         keys = (ROOT / 'src/input/window_keyboard_mouse.h').read_text()
-        for key in ('k5', 'kF5', 'k6', 'kF6', 'k7', 'kF7', 'kF8', 'kF9'): self.assertIn('K::%s)' % key, keys)
+        for key in ('k5', 'kF5', 'k6', 'kF6', 'k7', 'kF7', 'k8', 'kF8', 'k9', 'kF9', 'k0', 'kF10'):
+            self.assertIn('K::%s)' % key, keys)
 
     def test_registered_in_both_apps(self):
         self.assertIn('case general, display, controls,', (ROOT / 'tools/macos/Shared/LaunchSettings.swift').read_text())

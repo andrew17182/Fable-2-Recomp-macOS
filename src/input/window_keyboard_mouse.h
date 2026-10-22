@@ -124,19 +124,23 @@ class WindowKeyboardMouse final
     const auto key = uint16_t(event.virtual_key());
     const bool edge = SetKey(key, true) && !event.prev_state();
     if (!edge) return;
-    // A number typed into a menu or console must not execute game Lua.
-    // F5 / 5 = quick save, F6 / 6 = custom Lua (fable2_f5_lua.h), F7 / 7 = turbo.
+    // Number row first (MacBook F keys need fn); the F keys mirror it. A number typed into a menu or console
+    // must not trigger anything: 5 = quick save, 6 = custom Lua (fable2_f5_lua.h), 7 = turbo, 8 = slow motion,
+    // 9 = FPS counter, 0 = frame generation.
     using K = rex::ui::VirtualKey;
     if (!options_().overlay_captures_input) {
       if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) request_lua_(5);
       if (key == uint16_t(K::k6)) request_lua_(6);
       if (key == uint16_t(K::k7)) request_lua_(7);
+      if (key == uint16_t(K::k8)) request_lua_(8);
+      if (key == uint16_t(K::k9)) request_lua_(9);
+      if (key == uint16_t(K::k0)) request_lua_(10);
     }
     // F6 opens and closes the F6 menu even while an overlay has keyboard focus (a function key, never typed text).
     if (key == uint16_t(K::kF6)) request_lua_(6);
-    // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h; number-row 8 stays
-    // the SDK achievements overlay), F9 = FPS counter (src/core/fable2_fps_counter.h), F10 = frame
-    // generation (src/core/fable2_frame_gen.h); function keys, never typed text.
+    // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h), F9 = FPS counter
+    // (src/core/fable2_fps_counter.h), F10 = frame generation (src/core/fable2_frame_gen.h); function keys,
+    // never typed text.
     if (key == uint16_t(K::kF7)) request_lua_(7);
     if (key == uint16_t(K::kF8)) request_lua_(8);
     if (key == uint16_t(K::kF9)) request_lua_(9);
@@ -199,6 +203,9 @@ class WindowKeyboardMouse final
       if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) self->request_lua_(5);
       if (key == uint16_t(K::k6)) self->request_lua_(6);
       if (key == uint16_t(K::k7)) self->request_lua_(7);
+      if (key == uint16_t(K::k8)) self->request_lua_(8);
+      if (key == uint16_t(K::k9)) self->request_lua_(9);
+      if (key == uint16_t(K::k0)) self->request_lua_(10);
     }
     if (key == uint16_t(K::kF6)) self->request_lua_(6);
     if (key == uint16_t(K::kF7)) self->request_lua_(7);

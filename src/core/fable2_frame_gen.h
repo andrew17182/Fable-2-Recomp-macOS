@@ -2,7 +2,7 @@
 // shows one generated frame between every two real ones, 30 rendered -> 60 shown.
 //
 // Start state: FABLE2_FRAME_INTERP=1 (default 0; launcher Settings > Display > Frame rate "Frame generation", a
-// Custom preset setting). F10 (keyboard_gamepad.h) and the controller action FABLE2_PAD_FRAMEGEN
+// Custom preset setting). 0 or F10 (keyboard_gamepad.h) and the controller action FABLE2_PAD_FRAMEGEN
 // (controller_hotkeys.h, default none) toggle it live; the toggle never changes the launcher setting.
 // Rules, decided once at startup (Configure, after the frame-rate decision):
 // - It needs the 30 FPS cap (fps_60 off, vsync on). At 60 FPS or uncapped it stays off; the frame rate is not
@@ -93,12 +93,12 @@ inline bool Configure() {
   fable2::turbo::g_on_mode_change = &Apply;
   const bool want = Requested();
   if (block != Block::kOk) {
-    REXSYS_INFO("[frame-gen] {}: {} ({}; F10 shows this)", want ? "off" : "off, unavailable", BlockText(block),
+    REXSYS_INFO("[frame-gen] {}: {} ({}; 0/F10 shows this)", want ? "off" : "off, unavailable", BlockText(block),
                 block == Block::kNeeds30 ? (uncapped ? "running uncapped" : "running at 60 FPS") : "checked at start");
     return false;
   }
   if (!want) {
-    REXSYS_INFO("[frame-gen] off (available: F10 turns it on)");
+    REXSYS_INFO("[frame-gen] off (available: 0/F10 turns it on)");
     return false;
   }
   g_on.store(true);

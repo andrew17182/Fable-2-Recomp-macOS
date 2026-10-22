@@ -164,8 +164,10 @@ environment route (below).
   32–2048). There is no invert-Y setting in the game.
 - **Hotkeys:** the SDK overlay keys are cvars and can be rebound here: console (`bind_console`, Backtick),
   settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
-  overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 8); **None** unbinds. Fixed in code
-  and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F8 slow motion, F9 FPS counter, F10 frame generation, ⌃⌘F full screen
+  overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 1; a value 7 or 8 saved in `fable_2.toml`
+  by older builds moves to 1); **None** unbinds. Fixed in code and only listed, number row first (on MacBooks the F
+  keys need fn, or the macOS setting "Use F1, F2, etc. keys as standard function keys"): 5/F5 quick save, 6/F6 Lua
+  script menu, 7/F7 turbo, 8/F8 slow motion, 9/F9 FPS counter, 0/F10 frame generation, ⌃⌘F full screen
   (SDL's window menu), ⌘Q quit; the controller hotkeys show their button next to the keys.
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
@@ -352,23 +354,23 @@ Frame generation (`FABLE2_FRAME_INTERP=1`, default `0`; Settings > Display > Fra
 preset only): MetalFX frame interpolation shows a generated frame between every two real ones, 30 rendered -> 60
 shown, about 20 ms more delay. Needs the 30 FPS cap (at 60 FPS or uncapped the game leaves it off and logs
 `[frame-gen] off: needs the 30 FPS cap`), macOS 26 and a supported GPU; 3 drawables while on. Paused while turbo is on
-(resumes when turbo turns off); keeps running in slow mode. F10 (or the controller action `FABLE2_PAD_FRAMEGEN`) toggles it live with an on/off notice; without
+(resumes when turbo turns off); keeps running in slow mode. 0 or F10 (or the controller action `FABLE2_PAD_FRAMEGEN`) toggles it live with an on/off notice; without
 the requirements it only shows why ("Frame generation needs 30 FPS"). The setting stays the start state. Details and measurements: `docs/macos-metal.md` "Frame generation".
 
 Front-end audio preloading uses a 10 ms yield between banks instead of the original 400 ms throttle. It retains every bank load and completion check, shortening the forest painting pause when booting into a save. Set `FABLE2_AUDIO_PRELOAD_DELAY_MS=400` to compare original pacing; accepted overrides are 1–400 ms.
 
 ### Turbo (macOS)
 
-**F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** Off or 1.1×–4.0×, default 2.0×, Off in the Original preset; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
+**7** or **F7** toggles turbo (the achievements overlay is on **1**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** Off or 1.1×–4.0×, default 2.0×, Off in the Original preset; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
 
-**F8** toggles **slow motion**: the whole game runs at a fraction of normal speed (default 0.5x; launcher
+**8** or **F8** toggles **slow motion**: the whole game runs at a fraction of normal speed (default 0.5x; launcher
 **Slow speed** 0.25×–0.9× in 0.05 steps or Off, `FABLE2_SLOW_SPEED`, `[patches] slow_scale`). The frame rate stays at
 the cap (60 or 30) or uncapped. Turbo and slow motion turn each other off. Audio follows with the turbo audio
 setting. Details: [docs/turbo.md](turbo.md) "Slow mode".
 
 ### FPS counter (macOS)
 
-**F9** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
+**9** or **F9** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
 rate and average frame time over the last ~0.5 s (guest swaps, e.g. `52 FPS · 19.2 ms`). Extra fields, in
 order: `display N`, the presented rate, always shown (while any overlay is shown, this one included, the
 presenter repaints every UI tick, so the presented rate tends toward the display refresh), `2× res` at a
@@ -559,7 +561,7 @@ prints the backend arguments without launching.
   (then `tools/fable2_test_control.py capture|press|close <session>`). `--test-control` turns on
   **background test mode** (`FABLE2_TEST_BACKGROUND=1`, launched with `open -g`): the game opens
   behind the frontmost app and never takes the keyboard/mouse; test `press` keys (including
-  F5/F6/F7/F8/F9/5/6/7/8) go through the app's own test channel and work without focus, while real
+  F5-F10 and 5-9/0) go through the app's own test channel and work without focus, while real
   keyboard/mouse input stays focus-gated; an App Nap exemption keeps frames at full rate when the
   window is covered. Background test launches are also muted (`--audio_mute=true`).
   Normal Launcher play does not set either. `fable2_test_control.py launch|replay`
