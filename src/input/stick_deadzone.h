@@ -34,12 +34,22 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
 
 namespace fable2::stickdz {
+
+// Left stick deflection of the last polled controller, before our remap: percent of full radius
+// (sqrt(x^2 + y^2) / 32767, clamped to 100), or -1 with no controller. Written per guest poll
+// (controller_hotkeys.h BackFilterDriver), read by the F9 overlay (fable2_fps_counter.h, "L 42%").
+inline std::atomic<int> g_left_raw_percent{-1};
+inline int RadialPercent(int16_t x, int16_t y) {
+  const double r = std::sqrt(double(x) * x + double(y) * y) / 32767.0;
+  return int(std::lround(std::min(1.0, r) * 100.0));
+}
 
 // The game's radial deadzone (guest sub_821895B0): 30% of full deflection, both sticks.
 constexpr double kGameDeadzone = 0.3;

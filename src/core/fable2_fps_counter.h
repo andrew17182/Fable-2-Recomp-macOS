@@ -6,11 +6,11 @@
 // (the presented rate; the presenter repaints every UI tick while any overlay,
 // this one included, is shown, so it tends toward the display refresh) is always
 // shown. Digits are tabular, so the width changes only with the digit count.
-// Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x"
-// while turbo is on ("slow 0.5x" in slow mode), "framegen" while frame generation is on (F10; "framegen paused" while turbo pauses it), and the
-// upscaling filter in use for presenting
-// ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter
-// export, MetalFX only when it is actually applied), then this Mac's chip ("M3 Pro",
+// Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x" while turbo is on ("slow 0.5x" in slow
+// mode), "framegen" while frame generation is on (0/F10; "framegen paused" while turbo pauses it), the upscaling
+// filter in use for presenting ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter export,
+// MetalFX only when it is actually applied), the left stick's raw deflection before our deadzone remap ("L 42%",
+// "L --" without a controller; stick_deadzone.h), then this Mac's chip ("M3 Pro",
 // from sysctl machdep.cpu.brand_string, always last). The text uses the game's
 // UI font (src/core/fable2_turbo_notice.h) and falls back to the ImGui font.
 //
@@ -48,6 +48,7 @@
 #include "fable2_flight_recorder.h"
 #include "fable2_turbo.h"
 #include "fable2_frame_gen.h"
+#include "stick_deadzone.h"
 #include "fable2_turbo_notice.h"
 
 namespace fable2::fps_counter {
@@ -118,6 +119,11 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
       case 2: append("%sMetalFX", sep); break;
       default: break;
     }
+    // Left stick deflection before our deadzone remap (deadzone tuning): "L  5%", "L 42%", "L100%"; "L --"
+    // without a controller.
+    const int stick = fable2::stickdz::g_left_raw_percent.load(std::memory_order_relaxed);
+    if (stick >= 0) append("%sL%3d%%", sep, stick);
+    else append("%sL --", sep);
     if (*ChipName()) append("%s%s", sep, ChipName());
   }
 

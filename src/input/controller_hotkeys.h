@@ -293,6 +293,7 @@ class BackFilterDriver final : public rex::input::InputDriver {
     // so it reaches the game even when a real controller holds slot 0.
     for (size_t i = before; i < out.size(); ++i)
       if (out[i].name == kVirtualPadName) out[i].synthetic = true;
+    if (out.size() - before == 0) fable2::stickdz::g_left_raw_percent.store(-1, std::memory_order_relaxed);
     if (out.size() - before != last_count_) {
       last_count_ = out.size() - before;
       detail::OnSdkDevicesChanged();  // log MISC1 support of newly opened pads
@@ -302,6 +303,9 @@ class BackFilterDriver final : public rex::input::InputDriver {
                                rex::input::X_INPUT_STATE* out_state) override {
     const auto result = inner_->GetDeviceState(id, out_state);
     if (result != X_ERROR_SUCCESS || !out_state) return result;
+    fable2::stickdz::g_left_raw_percent.store(
+        fable2::stickdz::RadialPercent(int16_t(out_state->gamepad.thumb_lx), int16_t(out_state->gamepad.thumb_ly)),
+        std::memory_order_relaxed);
     ApplyStickDeadzones(id, out_state->gamepad);
     const uint16_t buttons = out_state->gamepad.buttons;
     const uint16_t removed = RemovedGuestButtons();

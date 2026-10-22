@@ -374,11 +374,13 @@ setting. Details: [docs/turbo.md](turbo.md) "Slow mode".
 rate and average frame time over the last ~0.5 s (guest swaps, e.g. `52 FPS · 19.2 ms`). Extra fields, in
 order: `display N`, the presented rate, always shown (while any overlay is shown, this one included, the
 presenter repaints every UI tick, so the presented rate tends toward the display refresh), `2× res` at a
-higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on (`slow 0.5x` in slow motion), and the upscaling filter in
+higher internal resolution, `turbo 2.5x` (the turbo speed) while turbo is on (`slow 0.5x` in slow motion), `framegen`
+while frame generation is on (`framegen paused` while turbo pauses it), and the upscaling filter in
 use for presenting, `Bilinear` or `MetalFX` (MetalFX only when it is actually applied: the window must be
 larger than the internal size, otherwise the presenter logs `[metalfx] not applied` and uses bilinear; read
-from the Metal plugin's `fable2_present_filter` export). Example: `52 FPS · 19.2 ms · display 120 · 2× res ·
-turbo 2.5x · MetalFX · M3 Pro`; the last field is always this Mac's chip (`machdep.cpu.brand_string` without
+from the Metal plugin's `fable2_present_filter` export), then the left stick's raw deflection for deadzone tuning
+(`L 42%`: radius before the recomp's deadzone remap, 0-100%; `L --` with no controller). Example: `52 FPS · 19.2 ms ·
+display 120 · 2× res · turbo 2.5x · MetalFX · L 42% · M3 Pro`; the last field is always this Mac's chip (`machdep.cpu.brand_string` without
 "Apple "). Digits are tabular, so the box width changes only with the digit count. The backing is a soft dark
 band (0.45 alpha behind the text) that fades out on all four edges. It uses the
 game's UI font (the monospaced ImGui font as fallback) and is off by
