@@ -283,6 +283,10 @@ With the lock on, the guest vblank worker is replaced:
   `FABLE2_VSYNC_LOCK_OFFSET_MS`, `FABLE2_VSYNC_LOCK_LATCH_MS`.
 - Other presenters (for example a frame-interpolation present thread) can schedule from the same timeline:
   `vsync_lock::DisplayGrid()` (latest `presentedTime` and refresh period), `NextVsyncAfter(t)` and `Lead()`.
+  A presenter that picks display times itself reports each real frame with `OnExternalSchedule(frame, arrival,
+  deadline, slipped)` (arrival = when it took the frame, deadline = the latest arrival that still makes the vsync
+  it targeted) plus `OnPresented`. The lock then runs in `external` mode: the cliff is that deadline's phase and
+  `p95(vblank -> arrival) + margin` lands on it. The frame-interpolation prototype branch uses this.
 
 Measured 2026-10-22 (M5 Max, 60 Hz external display, `--mode library` background sessions, 2 drawables, 30 s
 after gameplay readiness, steady = last 15 s; `out/validation/vsync-lock-20261022/`):

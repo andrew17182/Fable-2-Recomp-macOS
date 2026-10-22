@@ -1065,7 +1065,10 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     [command_buffer commit];
     frame_interp::SubmitPresent((__bridge void*)metal_layer_, (__bridge void*)command_queue_,
                                 (__bridge void*)drawable_texture, min_duration, fi_generated,
-                                fi_new_frame ? fi_ready : 0.0, fi_generated ? 0 : measured_frame_id);
+                                fi_new_frame ? fi_ready : 0.0, fi_generated ? 0 : measured_frame_id,
+                                guest_output_mailbox_index != UINT32_MAX && graphics::metal::vsync_lock::Enabled()
+                                    ? VsyncLockFrameId(guest_output_mailbox_index)
+                                    : 0);
     return PaintResult::kPresented;
   }
   if (fi_new_frame) {
@@ -1373,6 +1376,8 @@ bool MetalPresenter::RefreshGuestOutputImpl(
     flash::Detector::Get().OnRefresh((__bridge id<MTLDevice>)device_, (id<MTLCommandQueue>)command_queue_,
                                      guest_output_texture, guest_output_frame_ids_[mailbox_index]);
   }
+  // [frame-interp] wake the UI thread if it waits for the present thread (WaitPresentTick).
+  if (frame_interp::Enabled()) frame_interp::NotifyNewGuestFrame();
   return true;
 }
 

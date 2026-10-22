@@ -20,6 +20,7 @@
 #include <unistd.h>
 
 #include "rex/graphics/metal/metal_frame_log.h"
+#include "rex/graphics/metal/metal_vsync_lock.h"
 #include "rex/logging.h"
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -337,6 +338,10 @@ id<MTLBuffer> BlitToBuffer(id<MTLDevice> device, id<MTLBlitCommandEncoder> blit,
   return b;
 }
 
+bool GridSchedule();
+extern std::atomic<double> g_sched_lead;
+extern std::atomic<uint32_t> g_sched_slips, g_sched_late, g_sched_pullins;
+
 void MaybeLogStats() {
   if (++g_stat_frames < kStatEvery) return;
   const uint64_t n = g_gpu_n.exchange(0), sum = g_gpu_us_sum.exchange(0), mx = g_gpu_us_max.exchange(0);
@@ -351,12 +356,14 @@ void MaybeLogStats() {
       "[frame-interp] real={} generated={} dropped={} no_inputs={} real_interval={:.2f} ms | fi gpu mean {:.3f} ms max {:.3f} "
       "ms (n={}) | gap before generated {:.2f}+-{:.2f} ms (n={}), before real {:.2f}+-{:.2f} ms (n={}) | "
       "real ready->on screen {:.2f} ms mean, {:.2f} max (n={}) | nextDrawable wait first {:.2f} ms mean {:.2f} max, "
-      "second {:.2f} mean {:.2f} max",
+      "second {:.2f} mean {:.2f} max | sched {} lead {:.2f} ms slips {} late {} pull-ins {}",
       g_stat_frames, g_stat_generated, g_dropped, g_stat_no_inputs, g_interval_ema * 1000.0, n ? sum / 1000.0 / n : 0.0,
       mx / 1000.0, n, mean(g_gap_sum[0], g_gap_n[0]), sd(g_gap_sum[0], g_gap_sq[0], g_gap_n[0]), g_gap_n[0],
       mean(g_gap_sum[1], g_gap_n[1]), sd(g_gap_sum[1], g_gap_sq[1], g_gap_n[1]), g_gap_n[1],
       mean(g_lat_sum, g_lat_n), g_lat_max * 1000.0, g_lat_n, mean(g_wait_sum[0], g_wait_n[0]),
-      g_wait_max[0] * 1000.0, mean(g_wait_sum[1], g_wait_n[1]), g_wait_max[1] * 1000.0);
+      g_wait_max[0] * 1000.0, mean(g_wait_sum[1], g_wait_n[1]), g_wait_max[1] * 1000.0,
+      GridSchedule() ? "grid" : "legacy", g_sched_lead.load() * 1000.0, g_sched_slips.exchange(0),
+      g_sched_late.exchange(0), g_sched_pullins.exchange(0));
   g_wait_sum[0] = g_wait_sum[1] = g_wait_max[0] = g_wait_max[1] = 0;
   g_wait_n[0] = g_wait_n[1] = 0;
   g_stat_frames = g_stat_generated = g_stat_no_inputs = 0;
@@ -380,6 +387,8 @@ struct Job {
   bool generated;
   double ready;
   uint64_t frame_id;
+  uint64_t lock_frame;
+  double submitted;  // CACurrentMediaTime at SubmitPresent
   CAMetalLayer* layer;
   id<MTLCommandQueue> queue;
 };
@@ -396,6 +405,191 @@ void FreeTarget(int idx) {
   g_targets[idx].busy = false;
 }
 
+// ---- Grid scheduling (default; FABLE2_FRAME_INTERP_SCHED=legacy = the first prototype's min-duration pacing).
+// Every present gets an explicit display time on the display's vsync grid (presentAtTime): per real frame the
+// generated frame goes on vsync N and the real one on N + k/2 (k = refreshes per real frame: 2 for 30 -> 60 on a
+// 60 Hz display). N is the next planned slot (the previous pair's N + k), or, when the frame came too late for it,
+// the first vsync at least `lead` after the drawable was taken (a slip: the previous real frame stays up longer).
+// The compositor needs a present a little over two refreshes before its display time, and with 3 drawables at
+// 60 presents/s a drawable comes free about three refreshes before the vsync it will be shown on; so a pair that
+// arrives early waits for a drawable, and a backlog (after a hitch elsewhere) never drains by itself. When pairs
+// keep arriving a refresh earlier than their slot needs, one generated frame is skipped and the real frame takes
+// its slot (catch-up: one refresh less latency from then on). The vsync lock (OnExternalSchedule) moves the guest
+// vblank so pairs arrive just before the slot deadline (target - lead).
+bool GridSchedule() {
+  static const bool v = [] {
+    const char* e = std::getenv("FABLE2_FRAME_INTERP_SCHED");  // getenv-ok: once
+    return !(e && std::strcmp(e, "legacy") == 0);
+  }();
+  return v;
+}
+// Present thread only.
+double g_grid = 0;            // a known vsync (latest presentedTime), mach seconds
+double g_slot_vsync = 0;      // planned vsync of the next real frame's first present
+double g_pair_target = 0;     // vsync of the current pair's first present
+int g_pair_half = 1;          // refreshes from the pair's first present to its real frame
+bool g_pair_open = false;     // a generated frame was scheduled (or skipped); its real frame follows
+int g_slip_run = 0;           // consecutive pairs too late for their slot
+int g_behind_run = 0;         // consecutive pairs that arrived a refresh earlier than their slot needed
+int g_catchup_need = 3;       // behind_run that triggers a catch-up; doubles when a catch-up is followed by a slip
+int g_pairs_since_catchup = 1 << 20;
+std::atomic<double> g_grid_atomic{0.0};
+std::atomic<double> g_sched_lead{0.0};  // commit -> display lead needed (learned), seconds
+std::atomic<uint32_t> g_sched_slips{0}, g_sched_late{0}, g_sched_pullins{0};
+std::atomic<uint64_t> g_presents_ok{0};
+double g_lead_floor = 0.0;  // lowest lead: two refreshes (or a lower FABLE2_FRAME_INTERP_LEAD_MS)
+
+double Period() {
+  double period = 0, unused = 0;
+  graphics::metal::vsync_lock::DisplayGrid(&unused, &period);
+  return period > 0 ? period : 1.0 / 60.0;
+}
+
+double SchedLead(double period) {
+  double lead = g_sched_lead.load(std::memory_order_relaxed);
+  if (lead > 0) return lead;
+  static const double ms = [] {
+    const char* e = std::getenv("FABLE2_FRAME_INTERP_LEAD_MS");  // getenv-ok: once
+    return e ? std::strtod(e, nullptr) : 0.0;
+  }();
+  // Measured at 60 Hz: a 32 ms lead was a refresh late, 33.3+ on time.
+  lead = ms > 0 ? ms / 1000.0 : 2 * period + 0.0015;
+  g_lead_floor = std::min(2 * period, lead);
+  g_sched_lead.store(lead, std::memory_order_relaxed);
+  return lead;
+}
+
+double CeilGrid(double t, double period) {
+  return g_grid + std::ceil((t - g_grid) / period - 1e-6) * period;
+}
+
+int RefreshesPerFrame(double period) {
+  const double interval = g_interval_ema > 0 ? g_interval_ema : 2 * period;
+  return std::max(1, int(std::lround(interval / period)));
+}
+
+// Present log (FABLE2_FRAME_INTERP_PRESENT_LOG=<file>): one CSV row per present with its presentedTime.
+FILE* PresentLog() {
+  static FILE* f = [] {
+    const char* e = std::getenv("FABLE2_FRAME_INTERP_PRESENT_LOG");  // getenv-ok: once
+    FILE* file = e && *e ? std::fopen(e, "w") : nullptr;
+    if (file) std::fprintf(file, "kind,frame,taken,target,presented,ready,arrived\n");
+    return file;
+  }();
+  return f;
+}
+std::mutex g_log_mutex;
+void LogPresent(const char* kind, uint64_t frame, double taken, double target, double presented, double ready,
+                double arrived = 0) {
+  FILE* f = PresentLog();
+  if (!f) return;
+  std::lock_guard<std::mutex> lock(g_log_mutex);
+  std::fprintf(f, "%s,%llu,%.6f,%.6f,%.6f,%.6f,%.6f\n", kind, (unsigned long long)frame, taken, target, presented,
+               ready, arrived);
+  static int n = 0;
+  if (++n % 60 == 0) std::fflush(f);
+}
+
+// Catch-up check for a generated job, before taking a drawable: true = skip it (its real frame takes its slot).
+bool SkipForCatchUp(const Job& job) {
+  if (!GridSchedule() || g_grid <= 0 || g_slot_vsync <= 0 || !job.generated) return false;
+  const double period = Period();
+  const double ideal = CeilGrid(job.submitted + SchedLead(period), period);
+  if (g_slot_vsync - ideal < 0.5 * period) {
+    g_behind_run = 0;
+    return false;
+  }
+  if (++g_behind_run < g_catchup_need) return false;
+  g_behind_run = 0;
+  g_pairs_since_catchup = 0;
+  g_sched_pullins.fetch_add(1, std::memory_order_relaxed);
+  g_pair_open = true;
+  g_pair_target = g_slot_vsync;
+  g_pair_half = 0;
+  g_slot_vsync += (RefreshesPerFrame(period) - 1) * period;
+  return true;
+}
+
+// Display time for a job (0 = present as soon as possible). taken = when its drawable was taken.
+double ScheduleJob(const Job& job, double taken, double* deadline, bool* slipped) {
+  *deadline = 0;
+  *slipped = false;
+  if (!GridSchedule() || g_grid <= 0) return 0.0;
+  const double period = Period();
+  const int k = RefreshesPerFrame(period);
+  if (!job.generated && g_pair_open) {
+    // The real frame of the pair: half a real interval after its generated frame (or in its slot after a skip).
+    g_pair_open = false;
+    const double target = g_pair_target + g_pair_half * period;
+    return std::max(target, CeilGrid(taken + SchedLead(period), period));
+  }
+  const double lead = SchedLead(period);
+  const double feasible = CeilGrid(taken + lead, period);
+  double target = feasible;
+  if (g_slot_vsync > 0) {
+    const int half = std::max(1, k / 2);
+    if (feasible <= g_slot_vsync + 0.5 * period) {
+      target = g_slot_vsync;
+      g_slip_run = 0;
+    } else if (job.generated && g_slip_run++ == 0 && feasible <= g_slot_vsync + (half + 0.5) * period) {
+      // Too late for its slot but in time for the real frame's: drop the generated frame and keep the cadence
+      // (the previous real frame stays up one refresh longer; nothing after it moves). A second slip in a row
+      // means the pairs now arrive a refresh later than the cadence (the vsync lock aligns arrivals only modulo
+      // one refresh), so the next one re-anchors the cadence instead.
+      *slipped = true;
+      *deadline = g_slot_vsync - lead;
+      g_sched_slips.fetch_add(1, std::memory_order_relaxed);
+      g_pair_open = true;
+      g_pair_target = g_slot_vsync;
+      g_pair_half = half;
+      g_slot_vsync += k * period;
+      return -1.0;
+    } else {
+      *slipped = true;
+      g_behind_run = 0;
+      g_slip_run = 0;
+      g_sched_slips.fetch_add(1, std::memory_order_relaxed);
+      // A slip soon after a catch-up: the earlier slot was not sustainable (drawables), back off.
+      if (g_pairs_since_catchup < 30) g_catchup_need = std::min(g_catchup_need * 2, 960);
+    }
+  }
+  if (++g_pairs_since_catchup == 600) g_catchup_need = 3;
+  *deadline = target - lead;
+  g_slot_vsync = target + k * period;
+  if (job.generated) {
+    g_pair_open = true;
+    g_pair_target = target;
+    g_pair_half = std::max(1, k / 2);
+  } else {
+    g_pair_open = false;
+  }
+  return target;
+}
+
+void OnScheduledPresented(double target, double taken, double presented) {
+  if (presented <= 0) return;
+  const double prev = g_grid_atomic.load(std::memory_order_relaxed);
+  if (presented > prev) g_grid_atomic.store(presented, std::memory_order_relaxed);
+  if (target <= 0) return;
+  const double period = Period();
+  const double lead = g_sched_lead.load(std::memory_order_relaxed);
+  if (presented > target + 0.5 * period) {
+    g_sched_late.fetch_add(1, std::memory_order_relaxed);
+    g_presents_ok.store(0, std::memory_order_relaxed);
+    // Late with a lead near the current one: the compositor needs more. A late present with a longer lead is a
+    // hitch elsewhere (every present queued behind it is late too) or a session where WindowServer takes a refresh
+    // longer; raising the lead to chase those starves the 3 drawables (measured: stuck at 30 FPS), so it is left.
+    if (target - taken < lead + 0.002) {
+      g_sched_lead.store(std::min(2 * period + 0.006, lead + 0.001), std::memory_order_relaxed);
+    }
+  } else if (g_presents_ok.fetch_add(1, std::memory_order_relaxed) + 1 >= 600) {
+    // 10 s on time: try a little less lead (not below two refreshes, or a lower FABLE2_FRAME_INTERP_LEAD_MS).
+    g_presents_ok.store(0, std::memory_order_relaxed);
+    g_sched_lead.store(std::max(g_lead_floor > 0 ? g_lead_floor : 2 * period, lead - 0.00025),
+                       std::memory_order_relaxed);
+  }
+}
+
 void PresentThread() {
   pthread_setname_np("FrameInterpPresent");
   for (;;) {
@@ -408,13 +602,33 @@ void PresentThread() {
       g_jobs.pop_front();
     }
     @autoreleasepool {
+      g_grid = g_grid_atomic.load(std::memory_order_relaxed);
+      if (SkipForCatchUp(job)) {
+        FreeTarget(job.idx);
+        continue;
+      }
       const double t0 = CACurrentMediaTime();
       id<CAMetalDrawable> drawable = [job.layer nextDrawable];
-      NoteDrawableWait(job.generated ? 0 : 1, CACurrentMediaTime() - t0);
+      const double taken = CACurrentMediaTime();
+      NoteDrawableWait(job.generated ? 0 : 1, taken - t0);
       id<MTLTexture> src = g_targets[job.idx].tex;
       if (!drawable || drawable.texture.width != src.width || drawable.texture.height != src.height ||
           drawable.texture.framebufferOnly) {
+        if (!job.generated) g_pair_open = false;
         FreeTarget(job.idx);
+        continue;
+      }
+      double deadline = 0;
+      bool slipped = false;
+      const double target = ScheduleJob(job, taken, &deadline, &slipped);
+      if (target != 0 && deadline > 0 && job.lock_frame) {
+        // The lock times the pair's arrival (the UI thread's submit of its first present), against a deadline
+        // kSafety early: arrivals jitter by a millisecond or two (a late one costs a generated frame).
+        constexpr double kSafety = 0.002;
+        graphics::metal::vsync_lock::OnExternalSchedule(job.lock_frame, job.submitted, deadline - kSafety, slipped);
+      }
+      if (target < 0) {
+        FreeTarget(job.idx);  // generated frame dropped (slip); the drawable goes back unpresented
         continue;
       }
       id<MTLCommandBuffer> cb = [job.queue commandBuffer];
@@ -423,16 +637,30 @@ void PresentThread() {
       [blit endEncoding];
       const bool generated = job.generated;
       const double ready = job.ready;
+      const double submitted = job.submitted;
       const uint64_t frame_id = job.frame_id;
+      const uint64_t lock_frame = job.lock_frame;
       [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
-        OnPresented(generated, shown.presentedTime, ready);
+        const double presented = shown.presentedTime;
+        OnScheduledPresented(target, taken, presented);
+        OnPresented(generated, presented, ready, false);
+        LogPresent(generated ? "gen" : "real", lock_frame, taken, target, presented, ready, submitted);
+        if (!generated && lock_frame) graphics::metal::vsync_lock::OnPresented(lock_frame, presented);
         if (frame_id && graphics::metal::frame_log::Enabled()) {
-          graphics::metal::frame_log::Presented(frame_id, shown.presentedTime);
+          graphics::metal::frame_log::Presented(frame_id, presented);
         }
       }];
       const int idx = job.idx;
       [cb addCompletedHandler:^(id<MTLCommandBuffer>) { FreeTarget(idx); }];
-      if (job.min_duration > 0.0) {
+      if (target > 0) {
+        // A little before the vsync so rounding can only land on it (FABLE2_FRAME_INTERP_AT_OFFSET: fraction of a
+        // refresh before the target, experiments).
+        static const double at_offset = [] {
+          const char* e = std::getenv("FABLE2_FRAME_INTERP_AT_OFFSET");  // getenv-ok: once
+          return e ? std::strtod(e, nullptr) : 0.1;
+        }();
+        [cb presentDrawable:drawable atTime:target - at_offset * Period()];
+      } else if (job.min_duration > 0.0) {
         [cb presentDrawable:drawable afterMinimumDuration:job.min_duration];
       } else {
         [cb presentDrawable:drawable];
@@ -489,7 +717,7 @@ void* AcquireTarget(void* device_v, uint32_t width, uint32_t height) {
 }
 
 void SubmitPresent(void* layer_v, void* queue_v, void* target, double min_duration, bool generated, double ready_s,
-                   uint64_t frame_id) {
+                   uint64_t frame_id, uint64_t lock_frame) {
   CAMetalLayer* layer = (CAMetalLayer*)layer_v;
   if (layer.framebufferOnly) {
     layer.framebufferOnly = NO;  // the present thread copies into the drawable
@@ -499,8 +727,11 @@ void SubmitPresent(void* layer_v, void* queue_v, void* target, double min_durati
   // on a 60 Hz display: ready -> on screen 79 ms with 2, 94 ms with 3; pacing identical).
   static const NSUInteger drawables = [] {
     const char* v = std::getenv("FABLE2_FRAME_INTERP_DRAWABLES");  // getenv-ok: once
-    const long n = v ? std::strtol(v, nullptr, 10) : 2;
-    return NSUInteger(n == 2 || n == 3 ? n : 2);
+    // Grid scheduling needs 3: each present is committed two refreshes ahead of its display time, so with 2 the
+    // present thread can only hand over 20 presents/s (measured 2026-10-22). Legacy pacing defaulted to 2.
+    const long fallback = GridSchedule() ? 3 : 2;
+    const long n = v ? std::strtol(v, nullptr, 10) : fallback;
+    return NSUInteger(n == 2 || n == 3 ? n : fallback);
   }();
   if (drawables && layer.maximumDrawableCount != drawables) {
     layer.maximumDrawableCount = drawables;
@@ -524,7 +755,9 @@ void SubmitPresent(void* layer_v, void* queue_v, void* target, double min_durati
     g_jobs.erase(it);
     ++g_dropped;
   }
-  g_jobs.push_back(Job{idx, min_duration, generated, ready_s, frame_id, layer, (id<MTLCommandQueue>)queue_v});
+  g_jobs.push_back(
+      Job{idx, min_duration, generated, ready_s, frame_id, lock_frame, CACurrentMediaTime(), layer,
+          (id<MTLCommandQueue>)queue_v});
   g_job_cv.notify_one();
 }
 
@@ -533,6 +766,17 @@ void WaitPresentTick(double timeout_s) {
   const uint64_t start = g_ticks;
   g_tick_cv.wait_for(lock, std::chrono::microseconds(int64_t(timeout_s * 1e6)),
                      [start] { return g_ticks != start || g_stop; });
+}
+
+void NotifyNewGuestFrame() {
+  // Legacy pacing keeps the first prototype's behaviour exactly: the UI thread only wakes on presents, so a new guest
+  // frame waits up to a refresh before it is interpolated (a per-launch phase effect, docs/frame-interp-prototype.md).
+  if (!GridSchedule()) return;
+  {
+    std::lock_guard<std::mutex> lock(g_job_mutex);
+    ++g_ticks;
+  }
+  g_tick_cv.notify_all();
 }
 
 void StopPresentThread() {
@@ -998,7 +1242,8 @@ void NoteDrawableWait(int which, double seconds) {
   ++g_wait_n[which];
 }
 
-void OnPresented(bool generated, double presented_s, double ready_s) {
+void OnPresented(bool generated, double presented_s, double ready_s, bool log_row) {
+  if (log_row) LogPresent(generated ? "gen" : "real", 0, 0.0, 0.0, presented_s, ready_s);
   if (presented_s <= 0) return;
   std::lock_guard<std::mutex> lock(g_present_mutex);
   if (g_last_presented > 0 && presented_s > g_last_presented) {

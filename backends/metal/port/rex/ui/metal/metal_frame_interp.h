@@ -56,7 +56,8 @@ PresentPlan Process(void* device, void* queue, void* color, uint64_t frame_id, v
                     uint64_t wait_value);
 // Presented-time bookkeeping for the pacing / latency stats ([frame-interp] log lines). ready_s: CACurrentMediaTime
 // when the real frame reached the presenter.
-void OnPresented(bool generated, double presented_s, double ready_s);
+// log_row: also write the FABLE2_FRAME_INTERP_PRESENT_LOG row (the present thread writes its own).
+void OnPresented(bool generated, double presented_s, double ready_s, bool log_row = true);
 double Now();
 // Time the UI thread spent in nextDrawable: which 0 = first drawable of a paint, 1 = the real frame's after a
 // generated one.
@@ -67,8 +68,13 @@ void NoteDrawableWait(int which, double seconds);
 // thread waits for a drawable, copies the target into it and presents it no sooner than min_duration after the
 // previous one. frame_id: guest frame for the frame log's presented time (0 = none).
 void* AcquireTarget(void* device, uint32_t width, uint32_t height);
+// Unless FABLE2_FRAME_INTERP_SCHED=legacy, presents go on the display's vsync grid (presentAtTime): the generated
+// frame on vsync N, the real one half a real interval later; lock_frame (vsync lock frame id of the real frame)
+// feeds the vsync phase lock from this thread.
 void SubmitPresent(void* layer, void* queue, void* target, double min_duration, bool generated, double ready_s,
-                   uint64_t frame_id);
+                   uint64_t frame_id, uint64_t lock_frame);
+// A new guest output is ready: wakes WaitPresentTick so the UI thread handles it at once.
+void NotifyNewGuestFrame();
 void StopPresentThread();
 // Blocks until the present thread presents again (or the timeout): paces repaints of an unchanged frame.
 void WaitPresentTick(double timeout_s);

@@ -86,6 +86,9 @@ struct State {
   double sum_abs_err = 0, sum_ready_to_photon = 0, corr_total = 0;
   uint64_t n_err = 0;
   bool ui_mode = false;
+  bool ext_mode = false;     // OnExternalSchedule seen: cliff = ext_deadline phase
+  double ext_deadline = 0;   // latest deadline (s, absolute)
+  uint64_t n_ext_slips = 0;
   double cliff = 0;
   double w_bound = 0;
 };
@@ -186,6 +189,18 @@ void OnPaint(uint64_t frame, bool new_frame, double acquire, double wait) {
   }
 }
 
+void OnExternalSchedule(uint64_t frame, double handled, double deadline, bool slipped) {
+  if (!Enabled() || !frame) return;
+  auto& s = Get();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  s.ext_mode = true;
+  if (deadline > 0) s.ext_deadline = deadline;
+  if (slipped) ++s.n_ext_slips;
+  if (PendingFrame* f = Find(s, frame)) {
+    if (f->acquire == 0) f->acquire = handled;
+  }
+}
+
 void OnPresented(uint64_t frame, double presented) {
   if (!Enabled() || !frame) return;
   auto& s = Get();
@@ -224,7 +239,8 @@ void OnPresented(uint64_t frame, double presented) {
 
   // Work = vblank -> the frame's guest GPU work done (CPU ready if the notification has not arrived; it is
   // never later than the paint that waited on it).
-  const double finished = f.done > 0 ? f.done : f.ready;
+  // External present thread: work runs to the moment that thread took the frame (it decides the slot then).
+  const double finished = s.ext_mode && f.acquire > 0 ? f.acquire : f.done > 0 ? f.done : f.ready;
   const double work = finished - f.vblank;
   if (f.done > 0) ++s.n_done;
   const bool trusted = work >= 0 && work < 0.98 * std::max(period, frame_period);
@@ -249,12 +265,18 @@ void OnPresented(uint64_t frame, double presented) {
   // loop's wake phase. Otherwise frames are painted on arrival and the cliff is the latch before a vsync.
   size_t n_blocked = 0;
   for (uint8_t b : s.blocked) n_blocked += b;
-  s.ui_mode = s.blocked.size() >= 30 && n_blocked * 2 > s.blocked.size() && s.wakes.size() >= 30;
+  s.ui_mode = !s.ext_mode && s.blocked.size() >= 30 && n_blocked * 2 > s.blocked.size() && s.wakes.size() >= 30;
 
   if (active && trusted) {
     s.sum_ready_to_photon += presented - finished;
     double err;
-    if (s.ui_mode) {
+    if (s.ext_mode) {
+      // Cliff = the present thread's decision deadline, as a phase after the grid vsync.
+      s.cliff = Wrap(s.ext_deadline - presented, period);
+      if (s.cliff < 0) s.cliff += period;
+      s.lead = w_max + cfg.margin + cfg.offset;
+      err = Wrap(f.vblank + s.lead - (presented + s.cliff), period);
+    } else if (s.ui_mode) {
       std::vector<double> w(s.wakes.begin(), s.wakes.end());
       std::nth_element(w.begin(), w.begin() + w.size() / 50, w.end());
       s.cliff = w[w.size() / 50];  // earliest wakes (2nd percentile) after the grid vsync
@@ -325,14 +347,15 @@ void OnPresented(uint64_t frame, double presented) {
 
   if (presented - s.window_start >= 5.0) {
     REXLOG_INFO(
-        "[vsync-lock] {} {} refresh {:.2f} Hz frame {:.2f} ms | frames {} late {} (spikes {}) drains {} "
+        "[vsync-lock] {} {} refresh {:.2f} Hz frame {:.2f} ms | frames {} late {} (spikes {}) drains {} slips {} "
         "inactive {} untrusted {} gpu-timed {} | lead {:.2f} ms (work p95 {:.2f}, cliff {:+.2f}, latch {:.2f}) | |err| avg "
         "{:.3f} ms, done->photon avg {:.2f} ms, shift {:+.2f} ms",
-        active ? "active" : "inactive", s.ui_mode ? "ui-loop" : "immediate", 1.0 / period, frame_period * 1e3,
-        s.n_frames, s.n_late, s.n_spike_late, s.n_drains, s.n_inactive, s.n_untrusted, s.n_done, s.lead * 1e3, w_max * 1e3,
+        active ? "active" : "inactive", s.ext_mode ? "external" : s.ui_mode ? "ui-loop" : "immediate", 1.0 / period, frame_period * 1e3,
+        s.n_frames, s.n_late, s.n_spike_late, s.n_drains, s.n_ext_slips, s.n_inactive, s.n_untrusted, s.n_done, s.lead * 1e3, w_max * 1e3,
         s.cliff * 1e3, s.latch * 1e3, s.n_err ? s.sum_abs_err / s.n_err * 1e3 : 0.0,
         s.n_err ? s.sum_ready_to_photon / s.n_err * 1e3 : 0.0, s.corr_total * 1e3);
     s.window_start = presented;
+    s.n_ext_slips = 0;
     s.n_done = s.n_untrusted = s.n_frames = s.n_late = s.n_spike_late = s.n_drains = s.n_inactive = s.n_err = 0;
     s.sum_abs_err = s.sum_ready_to_photon = s.corr_total = 0;
   }

@@ -8,7 +8,8 @@
 // MetalGraphicsSystem replaces the SDK's vblank worker with one that keeps the same guest-tick schedule but shifts
 // its phase (at most 1 ms per frame) so the frame's guest GPU work completes `margin` before a paint wake:
 //   lead = p95(vblank -> guest GPU done, last 240 frames) + margin; target = wake phase - lead (mod refresh).
-// Without a UI paint loop (frames painted on arrival) the target is a learned latch before the presentedTime
+// With an external present thread (OnExternalSchedule, frame interpolation) the cliff is that thread's decision
+// deadline before the vsync it targets. Without a UI paint loop (frames painted on arrival) the target is a learned latch before the presentedTime
 // grid instead; a run of frames shown a refresh late there means an extra queued frame, which rate-locked
 // production never drains, so one vblank is delayed by a refresh (drain).
 // The lock is inactive (plain timer, same phase as the last lock) without presentedTime feedback (hidden or no
@@ -51,4 +52,11 @@ void OnPresented(uint64_t frame, double presented_seconds);
 bool DisplayGrid(double* last_vsync_seconds, double* period_seconds);
 double NextVsyncAfter(double t_seconds);
 double Lead();
+
+// Frames presented by another thread on the grid (frame interpolation present thread, presentAtTime). Per real
+// frame, before its OnPresented: `handled` = when that thread took the frame, `deadline` = the latest time it could
+// have taken it and still made the vsync it targeted (its cliff), `slipped` = it missed the planned vsync. From the
+// first call on, the lock targets this cliff instead of the UI paint loop's wake: vblank + p95(vblank -> handled) +
+// margin lands on the deadline phase.
+void OnExternalSchedule(uint64_t frame, double handled_seconds, double deadline_seconds, bool slipped);
 }  // namespace rex::graphics::metal::vsync_lock
