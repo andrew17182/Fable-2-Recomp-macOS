@@ -176,7 +176,8 @@ class PresetHarnessTests(unittest.TestCase):
         self.assertFalse([x for x in o if x.startswith('FABLE2_STICK_DEADZONE') or x.startswith('FABLE2_WALK_DEADZONE')])
         # Invisible fixes stay on: no kill switch is passed.
         self.assertFalse([x for x in o if x.endswith('=0') and x.split('=')[0] in (
-            'FABLE2_PRESENT_DRAWABLES', 'FABLE2_TURBO_FINE_DELAY', 'FABLE2_RING_REINIT_FIX')])
+            'FABLE2_PRESENT_DRAWABLES', 'FABLE2_TURBO_FINE_DELAY', 'FABLE2_RING_REINIT_FIX',
+            'FABLE2_VSYNC_PHASE_LOCK')])
         self.assertEqual(self.out['turboOffLabel'], ['Off', 'Off'])
 
     def test_game_treats_speed_one_as_disabled(self):

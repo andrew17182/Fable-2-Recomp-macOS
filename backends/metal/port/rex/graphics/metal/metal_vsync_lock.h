@@ -17,7 +17,7 @@
 #include <cstdint>
 
 namespace rex::graphics::metal::vsync_lock {
-// FABLE2_VSYNC_PHASE_LOCK=1 (default off). Read once.
+// FABLE2_VSYNC_PHASE_LOCK (default on; =0 turns it off). Read once.
 bool Enabled();
 // FABLE2_VSYNC_LOCK_TRACE=1: per-frame lock rows in the frame CSV (vlock_*).
 bool TraceEnabled();

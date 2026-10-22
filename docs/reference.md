@@ -344,7 +344,7 @@ Use `tools/fable2_dev_session.py launch --mode library --save hero1-dog-live --t
 Display latency: the Metal presenter queues at most 2 frames for the display (`FABLE2_PRESENT_DRAWABLES`, default
 `2`; `3` or `0` = the old 3-drawable queue, about one refresh more delay). Launcher: Fixes > Display > "Lower
 display latency". Details and measurements: `docs/macos-metal.md` "Present queue".
-`FABLE2_VSYNC_PHASE_LOCK=1` (Fixes > Display > "Sync frames to the display", default off) locks the guest vblank
+The vsync phase lock (`FABLE2_VSYNC_PHASE_LOCK`, default on, `=0` off; Fixes > Display > "Sync frames to the display") locks the guest vblank
 phase to the display so each finished frame is painted ~3 ms later instead of 0-16 ms, and removes the per-launch
 judder/dropped-frame phase: `docs/macos-metal.md` "Vsync phase lock".
 
@@ -488,7 +488,7 @@ Preset settings (code: `LaunchSettings.presetRules`; Enhanced is the launcher de
 Not part of a preset (the same in all three):
 
 - **Invisible fixes, always on**: every Fixes switch except the game-logic fix above (dog fur, memexport, render
-  target and resolve work, ring re-init, lower display latency, turbo precise sleeps, vsync phase-lock when it lands)
+  target and resolve work, ring re-init, lower display latency, turbo precise sleeps, vsync phase lock)
   and every Performance switch (native shaders, specialization, prewarm, CPU trims, native save compressor and
   inflate, real occlusion queries, adaptive terrain opt-in). They don't change what the game looks or plays like.
 - **Preferences**: display mode (windowed/fullscreen), FPS counter (F9 still toggles it), boot straight into save,
@@ -517,7 +517,7 @@ verify modes, extra env, source checkout). The **Tools** menu has Close Game, Re
 Dev Options: Save Library…, Run Benchmark…, Run Flash Kit…, Export Portable Build…, Update Playtest Build and the
 save library / sessions / benchmark report folders. Default-on kill switches
 (`FABLE2_NATIVE_SHADERS`, `FABLE2_NS_SPECIALIZE`, `FABLE2_SHADOWS_NATIVE`, `FABLE2_DEFERRED_CLEARS`, `FABLE2_ALIAS_CLEAR_NATIVE`, `FABLE2_MAIN_DEPTH_NATIVE`, `FABLE2_EFFECTS_FOOTPRINT_VARIANT`, `FABLE2_CLEAR_LOAD_ACTION`, `FABLE2_SSM_STENCIL_FOLD`, `FABLE2_CLEAR_CONST_SOURCE`, `FABLE2_TILE_EDRAM`,
-`FABLE2_RING_REINIT_FIX`, `FABLE2_TURBO_FINE_DELAY`, `FABLE2_PRESENT_DRAWABLES`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
+`FABLE2_RING_REINIT_FIX`, `FABLE2_TURBO_FINE_DELAY`, `FABLE2_PRESENT_DRAWABLES`, `FABLE2_VSYNC_PHASE_LOCK`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
 when turned on (`=1`). Every on/off setting also has `--<name>` / `--no-<name>` for `--launch`, and `--print-args`
 prints the backend arguments without launching.
 

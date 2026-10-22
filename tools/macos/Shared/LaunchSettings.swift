@@ -606,7 +606,7 @@ struct LaunchSettings: Equatable {
   var ssmStencilFold = true
   var ringReinitFix = true
   var presentDrawables2 = true  // docs/macos-metal.md "Present queue"
-  var vsyncPhaseLock = false  // docs/macos-metal.md "Vsync phase lock"
+  var vsyncPhaseLock = true  // docs/macos-metal.md "Vsync phase lock"
   var turboFineDelay = true  // docs/turbo.md "Precise sleeps"
   var fixLodSizeCache = false
   var fastPacing = false  // docs/load-fixes-20261016.md section F (pacing change, opt-in; replaces "Shorter load fades")

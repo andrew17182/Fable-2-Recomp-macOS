@@ -241,8 +241,8 @@ it as `swap->first present_submit` near 0 or near 16 ms per frame. The vsync pha
 
 ## Vsync phase lock
 
-`FABLE2_VSYNC_PHASE_LOCK=1` (launcher: Fixes > Display > "Sync frames to the display"; default off while
-measured) fixes the per-launch phase problem above and removes the random wait between a finished guest frame
+`FABLE2_VSYNC_PHASE_LOCK` (default on since 2026-10-22, `=0` off; launcher: Fixes > Display > "Sync frames to the
+display", an always-on fix that presets don't change) fixes the per-launch phase problem above and removes the random wait between a finished guest frame
 and the paint that samples it. Code: `backends/metal/port/rex/graphics/metal/metal_vsync_lock.{h,cc}` (controller),
 `MetalGraphicsSystem::StartPhaseLockedVblankWorker` (vblank thread), hooks in `metal_presenter.mm`.
 
@@ -295,7 +295,7 @@ after gameplay readiness, steady = last 15 s; `out/validation/vsync-lock-2026102
 | 30 FPS, lock on | 30.0 each | 0 % | 3.4-3.5 ms |
 
 An earlier 5+5 round on the previous build gave the same split (lock 10/10 clean; off: bad phase in 2/5 at 60 and
-3/5 at 30). Latency (latrun inject -> photon, 2 sessions per arm, n = 15 stick trials each, all frames):
+3/5 at 30). Over both rounds: lock 20/20 launches clean, off 9/20 in a bad phase, so it became the default. Latency (latrun inject -> photon, 2 sessions per arm, n = 15 stick trials each, all frames):
 swap -> `present_submit` p50 12.3/13.3 ms off vs 3.3/3.3 ms locked at 60, 12.6/13.4 vs 3.7/3.7 ms at 30, i.e.
 about -9 ms on the queueing part this lock controls. The stick inject -> photon medians (182/182 off,
 165/182 locked at 60; 215/215 off, 198/232 locked at 30) are dominated by the game's 30 Hz input poll and 15 Hz

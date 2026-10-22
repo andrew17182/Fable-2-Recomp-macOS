@@ -39,7 +39,8 @@ const Config& Cfg() {
   static const Config cfg = [] {
     Config c;
     const char* v = std::getenv("FABLE2_VSYNC_PHASE_LOCK");  // getenv-ok: once (static)
-    c.enabled = v && *v && std::strcmp(v, "0") != 0 && std::strcmp(v, "off") != 0 && std::strcmp(v, "false") != 0;
+    // Default on (2026-10-22); 0/off/false turns it off.
+    c.enabled = !v || !*v || (std::strcmp(v, "0") != 0 && std::strcmp(v, "off") != 0 && std::strcmp(v, "false") != 0);
     c.c0 = EnvMs("FABLE2_VSYNC_LOCK_LATCH_MS", 3.0) / 1000.0;  // beyond one refresh
     c.margin = EnvMs("FABLE2_VSYNC_LOCK_MARGIN_MS", 1.5) / 1000.0;
     c.offset = EnvMs("FABLE2_VSYNC_LOCK_OFFSET_MS", 0.0) / 1000.0;  // experiments: extra phase lead

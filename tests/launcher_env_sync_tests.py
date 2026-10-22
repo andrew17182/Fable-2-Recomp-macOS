@@ -53,8 +53,8 @@ CASES = [
     ({'turboFineDelay': False}, ['--no-turbo-fine-delay']),
     # Fixes > Display > Lower display latency (FABLE2_PRESENT_DRAWABLES, default on, passed only when off).
     ({'presentDrawables2': False}, ['--no-present-drawables-2']),
-    # Fixes > Display > Sync frames to the display (FABLE2_VSYNC_PHASE_LOCK, default off while measured).
-    ({'vsyncPhaseLock': True}, ['--vsync-phase-lock']),
+    # Fixes > Display > Sync frames to the display (FABLE2_VSYNC_PHASE_LOCK, default on, passed only when off).
+    ({'vsyncPhaseLock': False}, ['--no-vsync-phase-lock']),
     # Controls > Game controllers > Works in background (default on).
     ({'padBackground': False}, ['--no-pad-background']),
     # Diagnostics > Record input (src/diagnostics/fable2_session_journal.h).
