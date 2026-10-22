@@ -2,15 +2,16 @@
 // Vsync phase lock (FABLE2_VSYNC_PHASE_LOCK, docs/macos-metal.md "Vsync phase lock").
 //
 // The guest vblank interrupt comes from a host timer (60 Hz guest video mode) that is not aligned with the
-// display. Each launch the guest frame therefore reaches the presenter at a random phase relative to vsync: frames
-// wait in CAMetalLayer's queue (2-3 refreshes swap->photon), and near the bad phase swap jitter flips frames
-// between two vsyncs (judder, dropped frames). With the lock on, MetalGraphicsSystem replaces the SDK's vblank
-// worker with one that keeps the same guest-tick schedule but shifts its phase, a fraction of a millisecond per
-// frame, so the guest frame is painted a learned lead before a display vsync (presentedTime feedback):
-//   lead = max(vblank -> paint, last ~4 s) + paint -> latch (learned, only grows on a miss) + margin.
-// A frame presented a refresh later than targeted means a miss; a run of them means the queue holds an extra
-// frame, which rate-locked production never drains, so one vblank is delayed by a refresh (drain).
-// The lock is inactive (plain timer, same phase as the last lock) without presentedTime feedback (occluded or no
+// display. Each launch the finished guest frame therefore lands at a random phase before the UI thread's paint loop
+// samples it (the loop wakes from a blocked nextDrawable just after each vsync): 0-16 ms of extra wait, and near
+// the edge swap jitter flips frames between two paints (dropped frames at 60, judder at 30). With the lock on,
+// MetalGraphicsSystem replaces the SDK's vblank worker with one that keeps the same guest-tick schedule but shifts
+// its phase (at most 1 ms per frame) so the frame's guest GPU work completes `margin` before a paint wake:
+//   lead = p95(vblank -> guest GPU done, last 240 frames) + margin; target = wake phase - lead (mod refresh).
+// Without a UI paint loop (frames painted on arrival) the target is a learned latch before the presentedTime
+// grid instead; a run of frames shown a refresh late there means an extra queued frame, which rate-locked
+// production never drains, so one vblank is delayed by a refresh (drain).
+// The lock is inactive (plain timer, same phase as the last lock) without presentedTime feedback (hidden or no
 // window), when the guest clock is scaled (turbo, slow mode), uncapped (vsync off), or when the frame interval is
 // not a whole number of display refreshes.
 #include <cstdint>
