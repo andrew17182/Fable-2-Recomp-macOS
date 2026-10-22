@@ -39,6 +39,7 @@
 #include "fable2_turbo.h"
 #include "fable2_turbo_notice.h"
 #include "fable2_fps_counter.h"
+#include "fable2_frame_gen.h"
 #include "fable2_version.h"  // generated: FABLE2_VERSION_STRING (tools/fable2_version.py)
 #include "recomp_hotkeys.h"
 #include "fable2_state_path.h"
@@ -310,6 +311,8 @@ class Fable2App : public rex::ReXApp {
     // Frame-rate mode (fps_60 true/false/auto); logs "[fps]"/"[fps-auto]" once.
     fable2::fps::Use60();
     fable2::fr::SetTag(fable2::fr::kTagFpsMode, fable2::fps::Use60() ? 60 : 30);
+    // Frame generation (FABLE2_FRAME_INTERP; src/core/fable2_frame_gen.h): needs the frame-rate decision above.
+    fable2::frame_gen::Configure();
     fable2::fr::SetTag(fable2::fr::kTagTurbo, fable2::turbo::Active() ? 1 : 0);
     fable2::turbo_notice::Install(game_data_root(), [this] { return immediate_drawer(); });
     fable2::character_editor::SetGameDataRoot(game_data_root());  // opt-in mod (docs/character-editor.md)

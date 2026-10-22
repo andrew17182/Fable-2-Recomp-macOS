@@ -20,18 +20,30 @@ enum LauncherLayout {
 /// A form row: label, then a pop-up menu of fixed width at the right edge (a selection never resizes it).
 struct FixedPicker<Value: Hashable, Content: View>: View {
   let title: String
+  /// A second line under the title (pass one for every state, so the row height never changes).
+  let caption: String?
   @Binding var selection: Value
   let content: Content
-  init(_ title: String, selection: Binding<Value>, @ViewBuilder content: () -> Content) {
+  init(_ title: String, caption: String? = nil, selection: Binding<Value>, @ViewBuilder content: () -> Content) {
     self.title = title
+    self.caption = caption
     _selection = selection
     self.content = content()
   }
   var body: some View {
-    LabeledContent(title) {
+    LabeledContent {
       Picker(title, selection: $selection) { content }
         .labelsHidden()
         .frame(width: LauncherLayout.pickerWidth, alignment: .trailing)
+    } label: {
+      if let caption = caption {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+          Text(caption).font(.caption).foregroundStyle(.secondary)
+        }
+      } else {
+        Text(title)
+      }
     }
   }
 }

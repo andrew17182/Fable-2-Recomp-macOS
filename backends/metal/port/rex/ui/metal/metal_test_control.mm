@@ -49,7 +49,7 @@ SDL_Scancode Key(const std::string& name) {
     {"5", SDL_SCANCODE_5}, {"6", SDL_SCANCODE_6},
     {"7", SDL_SCANCODE_7}, {"8", SDL_SCANCODE_8},
     {"f5", SDL_SCANCODE_F5}, {"f6", SDL_SCANCODE_F6}, {"f7", SDL_SCANCODE_F7},
-    {"f8", SDL_SCANCODE_F8}, {"f9", SDL_SCANCODE_F9}};
+    {"f8", SDL_SCANCODE_F8}, {"f9", SDL_SCANCODE_F9}, {"f10", SDL_SCANCODE_F10}};
   auto it = keys.find(name); return it == keys.end() ? SDL_SCANCODE_UNKNOWN : it->second;
 }
 // Background test mode (FABLE2_TEST_BACKGROUND=1, see src/input/test_background.h).

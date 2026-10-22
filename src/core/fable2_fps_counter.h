@@ -7,7 +7,8 @@
 // this one included, is shown, so it tends toward the display refresh) is always
 // shown. Digits are tabular, so the width changes only with the digit count.
 // Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x"
-// while turbo is on ("slow 0.5x" in slow mode), and the upscaling filter in use for presenting
+// while turbo is on ("slow 0.5x" in slow mode), "framegen" while frame generation is on (F10; "framegen paused" while turbo pauses it), and the
+// upscaling filter in use for presenting
 // ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter
 // export, MetalFX only when it is actually applied), then this Mac's chip ("M3 Pro",
 // from sysctl machdep.cpu.brand_string, always last). The text uses the game's
@@ -46,6 +47,7 @@
 #include "fable2_config.h"
 #include "fable2_flight_recorder.h"
 #include "fable2_turbo.h"
+#include "fable2_frame_gen.h"
 #include "fable2_turbo_notice.h"
 
 namespace fable2::fps_counter {
@@ -110,6 +112,7 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     if (res_scale_ > 1) append("%s%d%s res", sep, res_scale_, times_);
     if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::ConfiguredScale());
     if (fable2::turbo::SlowActive()) append("%sslow %gx", sep, fable2::turbo::SlowScale());
+    if (fable2::frame_gen::Active()) append(fable2::frame_gen::Paused() ? "%sframegen paused" : "%sframegen", sep);
     switch (PresentFilter()) {
       case 1: append("%sBilinear", sep); break;
       case 2: append("%sMetalFX", sep); break;

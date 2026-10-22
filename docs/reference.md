@@ -165,22 +165,22 @@ environment route (below).
 - **Hotkeys:** the SDK overlay keys are cvars and can be rebound here: console (`bind_console`, Backtick),
   settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
   overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 8); **None** unbinds. Fixed in code
-  and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F8 slow motion, F9 FPS counter, ⌃⌘F full screen
+  and only listed: F5/5 quick save, F6/6 Lua script menu, F7/7 turbo, F8 slow motion, F9 FPS counter, F10 frame generation, ⌃⌘F full screen
   (SDL's window menu), ⌘Q quit; the controller hotkeys show their button next to the keys.
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
   controllers (GameController framework), a live **Button test** (the buttons held now) and **Share button**
   (Works / Not seen yet: whether macOS passes Share to apps; see "Share button" below), the controller hotkeys
-  (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
+  (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**, **Frame generation**: None / View / Share / Left stick click / Right stick
   click; see "Controller hotkeys" below) and
   **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`), **Left/Right stick deadzone**
   (Original, 0–50%) and **Walk deadzone** (Original, 0–25%; see "Stick deadzones" below).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
-settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
-`mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
+settings key); a changed controller hotkey adds all five `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
+`mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`, `padFrameGen`
 (+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight`, `walkDeadzone` (no entry = Original; a stored `stickAntiDeadzone` from the old toggle is removed on load)
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
@@ -257,7 +257,7 @@ string-build + `RunScript` call in `src/core/fable2_f5_lua.h`.
 
 ### Controller hotkeys
 
-Four actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = stick clicks):
+Five actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = stick clicks):
 
 | Action | Env | Default |
 |---|---|---|
@@ -265,6 +265,7 @@ Four actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = 
 | Slow motion on/off (same as F8) | `FABLE2_PAD_SLOW` | none |
 | Quick save (same as F5) | `FABLE2_PAD_QUICKSAVE` | share |
 | Screenshot | `FABLE2_PAD_SCREENSHOT` | none |
+| Frame generation on/off (same as F10) | `FABLE2_PAD_FRAMEGEN` | none |
 
 A screenshot is the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png` in the game data root
 (override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). A bound button no longer reaches the game
@@ -347,6 +348,12 @@ display latency". Details and measurements: `docs/macos-metal.md` "Present queue
 The vsync phase lock (`FABLE2_VSYNC_PHASE_LOCK`, default on, `=0` off; Fixes > Display > "Sync frames to the display") locks the guest vblank
 phase to the display so each finished frame is painted ~3 ms later instead of 0-16 ms, and removes the per-launch
 judder/dropped-frame phase: `docs/macos-metal.md` "Vsync phase lock".
+Frame generation (`FABLE2_FRAME_INTERP=1`, default `0`; Settings > Display > Frame rate "Frame generation", Custom
+preset only): MetalFX frame interpolation shows a generated frame between every two real ones, 30 rendered -> 60
+shown, about 20 ms more delay. Needs the 30 FPS cap (at 60 FPS or uncapped the game leaves it off and logs
+`[frame-gen] off: needs the 30 FPS cap`), macOS 26 and a supported GPU; 3 drawables while on. Paused while turbo is on
+(resumes when turbo turns off); keeps running in slow mode. F10 (or the controller action `FABLE2_PAD_FRAMEGEN`) toggles it live with an on/off notice; without
+the requirements it only shows why ("Frame generation needs 30 FPS"). The setting stays the start state. Details and measurements: `docs/macos-metal.md` "Frame generation".
 
 Front-end audio preloading uses a 10 ms yield between banks instead of the original 400 ms throttle. It retains every bank load and completion check, shortening the forest painting pause when booting into a save. Set `FABLE2_AUDIO_PRELOAD_DELAY_MS=400` to compare original pacing; accepted overrides are 1–400 ms.
 
@@ -470,6 +477,7 @@ Preset settings (code: `LaunchSettings.presetRules`; Enhanced is the launcher de
 | Frame rate (`frameRate`) | 30 FPS | Auto | `FABLE2_FPS_60`, `REX_VSYNC` |
 | Auto 2× uncapped rule (`auto2x`) | on (no effect at 1×/30) | on | `FABLE2_AUTO_2X` |
 | Upscaling (`upscaling`) | Bilinear | Bilinear | `FABLE2_UPSCALING` |
+| Frame generation (`frameGeneration`; changes how motion looks, ~20 ms more delay) | Off | Off | `FABLE2_FRAME_INTERP` |
 | Bloom and effects (`effectsSize`) | Native 1× | Native 1× | `FABLE2_EFFECTS_NATIVE` |
 | Skip intro movies (`skipIntro`) | off | off | `FABLE2_SKIP_INTRO_MOVIES` |
 | Skip cosmetic waits (`fastPacing`; title fade, save notice) | off | off | `FABLE2_FAST_PACING` |
@@ -509,8 +517,8 @@ button, boots straight in), the save menu (newest first), **Resolution** and **F
 status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when
 shown). When a game ends the launcher comes back to the front; after a crash it shows a note with **Show Logs**.
 **Settings** is a page of the same window (the Settings / Launcher button, bottom-left on both pages; ⌘,), with these
-tabs: General (intro, extras, turbo notice), Display (resolution, upscaling, effects, window, frame rate, FPS
-counter), Controls (keyboard map, mouse look, hotkeys, controllers; see **Settings > Controls** above), Mods
+tabs: General (intro, extras, turbo notice), Display (resolution, upscaling, effects, window, frame rate, frame
+generation, FPS counter), Controls (keyboard map, mouse look, hotkeys, controllers; see **Settings > Controls** above), Mods
 (Character Editor), and with Dev Options on: Performance (shader cache and specialization switches), Fixes (the
 correctness switches, all on by default; **Reset All to Defaults**) and Diagnostics (trace preset, hitch trace,
 verify modes, extra env, source checkout). The **Tools** menu has Close Game, Refresh and Open Logs Folder, and with

@@ -1,6 +1,6 @@
-// fable_2 - controller hotkeys: bindable turbo / slow / quick save / screenshot.
+// fable_2 - controller hotkeys: bindable turbo / slow / quick save / screenshot / frame generation.
 //
-// Four actions, each bound to one controller button (or none):
+// Five actions, each bound to one controller button (or none):
 //   FABLE2_PAD_TURBO       default view   - same toggle as F7 (fable2::turbo::Toggle)
 //   FABLE2_PAD_SLOW        default none   - same toggle as F8 (fable2::turbo::ToggleSlow)
 //   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as F5
@@ -9,6 +9,7 @@
 //                                           <dir>/Fable II YYYY-MM-DD HH-MM-SS.png. <dir> is
 //                                           FABLE2_SCREENSHOT_DIR, else the `screenshot_dir` cvar,
 //                                           else <game_data_root>/Screenshots.
+//   FABLE2_PAD_FRAMEGEN    default none   - same toggle as F10 (fable2::frame_gen::Toggle)
 // Buttons: none | view (SDL BACK, the 360 Back) | share (SDL MISC1) | ls | rs (stick clicks).
 // The launcher sets these (tools/macos/Shared/ControlsView.swift, Controls > Game controllers).
 // One button acts for one action: an explicitly set action takes its button first, and a
@@ -80,6 +81,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "fable2_turbo.h"
+#include "fable2_frame_gen.h"
 #include "stick_deadzone.h"
 #include "test_background.h"
 
@@ -126,7 +128,7 @@ inline bool pad_debug() {
 
 // ---------------------------------------------------------------------------
 // Bindings (FABLE2_PAD_TURBO / FABLE2_PAD_SLOW / FABLE2_PAD_QUICKSAVE / FABLE2_PAD_SCREENSHOT).
-enum class Action : uint8_t { kNone, kTurbo, kQuickSave, kScreenshot, kSlow };
+enum class Action : uint8_t { kNone, kTurbo, kQuickSave, kScreenshot, kSlow, kFrameGen };
 enum Button : int { kView, kShare, kLeftStick, kRightStick, kButtonCount };
 
 inline const char* ActionName(Action a) {
@@ -135,6 +137,7 @@ inline const char* ActionName(Action a) {
     case Action::kSlow: return "slow";
     case Action::kQuickSave: return "quick save";
     case Action::kScreenshot: return "screenshot";
+    case Action::kFrameGen: return "frame generation";
     default: return "nothing";
   }
 }
@@ -187,7 +190,8 @@ inline Bindings ResolveBindings() {
   const Slot slots[] = {{Action::kTurbo, "FABLE2_PAD_TURBO", kView},
                         {Action::kSlow, "FABLE2_PAD_SLOW", -1},
                         {Action::kQuickSave, "FABLE2_PAD_QUICKSAVE", kShare},
-                        {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", -1}};
+                        {Action::kScreenshot, "FABLE2_PAD_SCREENSHOT", -1},
+                        {Action::kFrameGen, "FABLE2_PAD_FRAMEGEN", -1}};
   constexpr int kSlots = int(sizeof(slots) / sizeof(slots[0]));
   Bindings out;
   int chosen[kSlots];
@@ -592,6 +596,12 @@ inline void Dispatch(Action action, const std::string& what) {
       // Same toggle as F8.
       if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::ToggleSlow(); }))
         REXLOG_WARN("[pad-hotkeys] slow skipped: UI thread unavailable");
+      return;
+    case Action::kFrameGen:
+      REXLOG_INFO("[pad-hotkeys] {} pressed -> frame generation", what);
+      // Same toggle as F10.
+      if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::frame_gen::Toggle(); }))
+        REXLOG_WARN("[pad-hotkeys] frame generation skipped: UI thread unavailable");
       return;
     case Action::kQuickSave:
       REXLOG_INFO("[pad-hotkeys] {} pressed -> quick save", what);

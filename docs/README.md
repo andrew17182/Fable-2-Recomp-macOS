@@ -52,6 +52,7 @@ what was decided, the rest is the evidence. Finished, superseded investigations 
 | [adaptive-terrain-flashes-20261014.md](adaptive-terrain-flashes-20261014.md) | White terrain flashes with adaptive tessellation on the M3 Pro; fix `FABLE2_TERRAIN_LAYER_MATCH` (default on) |
 | [hle-census-20261013.md](hle-census-20261013.md) | HLE census of draws, passes and EDRAM use |
 | [frame-pacing-20261012.md](frame-pacing-20261012.md) | Frame pacing and hitches |
+| [frame-interp-prototype.md](frame-interp-prototype.md) | Frame generation research: MetalFX interpolation inputs (colour vs depth vs camera motion), quality vs ground truth, pacing history (shipped: macos-metal.md "Frame generation") |
 | [shader-precompile-20261015.md](shader-precompile-20261015.md) | First-play shader hitches: the install prep compiles the disc's own shader bank (`FABLE2_SHADER_PREP_BANK`); measurements, M3 estimate, what still compiles at first use |
 | [prologue-stutter-20261014.md](prologue-stutter-20261014.md) | New-game stutter: native geometry pipelines persisted (`FABLE2_NATIVE_GEOM_PERSIST`); per-slot bundle ids for agent games |
 | [area-load-profile-20261015.md](area-load-profile-20261015.md) | Area-transition load profile (Cullis Gate → Bower Lake, 4.39 s) and proposed fixes A–F |

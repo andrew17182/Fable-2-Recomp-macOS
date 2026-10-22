@@ -79,7 +79,6 @@ DEFINE_int32(metal_probe_capture_interval, 0,
 #include "rex/system/xthread.h"
 #include "rex/system/user_module.h"
 #include "rex/ui/metal/metal_presenter.h"
-#include "rex/ui/metal/metal_frame_interp.h"
 
 // Metal IR Converter Runtime - defines IRDescriptorTableEntry and bind points.
 #ifndef IR_RUNTIME_METALCPP
@@ -2749,11 +2748,6 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   hitch::OnSwap(frame_log::CurrentFrame());
   converter_census::MaybeLog();
   frame_log::BeginFrame();
-  if (ui::metal::frame_interp::SceneInputsWanted()) {
-    // [frame-interp] the presenter stamps this guest output with CurrentFrame() (RefreshGuestOutputImpl).
-    ui::metal::frame_interp::CommitFrame(frame_log::CurrentFrame());
-    ui::metal::frame_interp::OnSwap();
-  }
   ProcessCompletedSubmissions();
   MaybeLogMemReport();
   saw_swap_ = true;
@@ -6043,26 +6037,6 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       MTL::RenderStages(NS::UInteger(shared_memory_consumer_stages) |
                         NS::UInteger(memexport_write_stages));
 
-  // [frame-interp] prototype (FABLE2_FRAME_INTERP=1): tally the c0..c3 clip transform of depth-tested draws
-  // into a full-screen scene viewport (Fable II: 1120x720); the most common one is the camera view-projection.
-  if (render_target_cache_ && ui::metal::frame_interp::SceneInputsWanted() &&
-      (regs[XE_GPU_REG_RB_DEPTHCONTROL] & 0x2) && render_target_cache_->GetDepthTarget()) {
-    const float vw = std::fabs(regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE)) * 2.0f;
-    const float vh = std::fabs(regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE)) * 2.0f;
-    if (vw >= 1000.0f && vw <= 1300.0f && vh >= 600.0f && vh <= 760.0f) {
-      float c[16], vport[6];
-      for (uint32_t i = 0; i < 16; ++i) {
-        c[i] = regs.Get<float>(XE_GPU_REG_SHADER_CONSTANT_000_X + i);
-      }
-      vport[0] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE);
-      vport[1] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET);
-      vport[2] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE);
-      vport[3] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET);
-      vport[4] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE);
-      vport[5] = regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET);
-      ui::metal::frame_interp::NoteDraw(c, vport);
-    }
-  }
   // [shadows-native] diagnostic: one line per draw in the trace window, with
   // the bound render targets and every fetched texture (FABLE2_SHADOW_TRACE).
   if (render_target_cache_ && MetalRenderTargetCache::ShadowTraceActive()) {
@@ -6110,12 +6084,7 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       const char* v = std::getenv("FABLE2_TRACE_VSC");  // getenv-ok: once
       if (!v) return r;
       char* end = nullptr;
-      if (v[0] == '*') {  // '*' = every vertex shader
-        r.first = ~0ull;
-        end = const_cast<char*>(v + 1);
-      } else {
-        r.first = std::strtoull(v, &end, 16);
-      }
+      r.first = std::strtoull(v, &end, 16);
       while (end && (*end == ':' || *end == ',')) {
         const char* b = end + 1;
         const unsigned long c = std::strtoul(b, &end, 10);
@@ -6124,8 +6093,7 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
       }
       return r;
     }();
-    if (trace_vsc.first && (trace_vsc.first == ~0ull ||
-                            vertex_shader->ucode_data_hash() == trace_vsc.first)) {
+    if (trace_vsc.first && vertex_shader->ucode_data_hash() == trace_vsc.first) {
       std::string cs;
       for (uint32_t c : trace_vsc.second) {
         const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4;
@@ -6173,20 +6141,11 @@ bool MetalCommandProcessor::IssueDrawImpl(xenos::PrimitiveType primitive_type,
                            regs.Get<float>(base + 1), regs.Get<float>(base + 2),
                            regs.Get<float>(base + 3));
       }
-      REXLOG_INFO("[trace-vsc] f{} vs={:016X} ps={:016X} n={} aref={} cc={:08X} zc={:08X} "
-                  "vte={:08X} vp=({},{},{},{},{},{}) {}{}{}",
+      REXLOG_INFO("[trace-vsc] f{} vs={:016X} ps={:016X} n={} aref={} cc={:08X}{}{}",
                   frame_log::CurrentFrame(), vertex_shader->ucode_data_hash(),
                   pixel_shader ? pixel_shader->ucode_data_hash() : 0,
                   index_count, regs.Get<float>(XE_GPU_REG_RB_ALPHA_REF),
-                  regs[XE_GPU_REG_RB_COLORCONTROL], regs[XE_GPU_REG_RB_DEPTHCONTROL],
-                  regs[XE_GPU_REG_PA_CL_VTE_CNTL],
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XSCALE),
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_XOFFSET),
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YSCALE),
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_YOFFSET),
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZSCALE),
-                  regs.Get<float>(XE_GPU_REG_PA_CL_VPORT_ZOFFSET),
-                  render_target_cache_->DescribeCurrentTargetsForTrace(), cs, pcs);
+                  regs[XE_GPU_REG_RB_COLORCONTROL], cs, pcs);
     }
   }
   const uint32_t trace_texture_base = REXCVAR_GET(metal_draw_trace_texture_base);
@@ -10037,24 +9996,6 @@ bool MetalCommandProcessor::IssueCopy() {
   if (!resolved) {
     REXLOG_ERROR("MetalCommandProcessor::IssueCopy - Resolve failed");
     return false;
-  }
-
-  // [frame-interp] prototype: the game's full-screen depth resolve (after the z prepass) is where the scene depth
-  // is complete and still bound; copy it and derive camera motion for the presenter's MetalFX interpolator.
-  if (ui::metal::frame_interp::SceneInputsWanted() && resolve_plan.resolve_info.IsCopyingDepth() &&
-      resolve_plan.resolve_info.coordinate_info.width_div_8 * 8 >= 1000 &&
-      resolve_plan.resolve_info.height_div_8 * 8 >= 600) {
-    if (MTL::Texture* depth = render_target_cache_->GetDepthTarget()) {
-      EndRenderEncoder(RenderEncoderEndReason::kResolveNeedsBoundary);
-      if (MTL::CommandBuffer* cb = EnsureCommandBuffer()) {
-        // Float24 host depth stores guest window z * 0.5 (measured: camera reprojection only matches the
-        // block-matched motion with z = 2 * host depth).
-        ui::metal::frame_interp::EncodeSceneInputs(device_, cb, depth,
-                                                   render_target_cache_->draw_resolution_scale_x(),
-                                                   render_target_cache_->draw_resolution_scale_y(),
-                                                   render_target_cache_->IsDepthTargetFloat24() ? 2.0f : 1.0f);
-      }
-    }
   }
 
   DiagResolveDump(written_address, written_length);

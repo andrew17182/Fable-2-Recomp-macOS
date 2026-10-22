@@ -308,7 +308,7 @@ class ControlsHarnessTests(unittest.TestCase):
         self.assertEqual(self.out['envCLI'], [
             'REX_KEYBOARD_GAMEPAD_MAP=Return:pause', 'REX_MOUSE_LOOK=true', 'REX_MOUSE_LOOK_SCALE=700',
             'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1',
-            'FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=view'])
+            'FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=view', 'FABLE2_PAD_FRAMEGEN=none'])
 
     def test_stick_deadzones(self):
         # --no-stick-anti-deadzone is gone (2026-10-22): the game's deadzone is always skipped with a value set.
@@ -341,22 +341,22 @@ class ControlsHarnessTests(unittest.TestCase):
     def test_controller_hotkeys(self):
         self.assertEqual(self.out['padDefault'], [])
         self.assertEqual(self.out['padLs'], ['FABLE2_PAD_TURBO=ls', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share',
-                                             'FABLE2_PAD_SCREENSHOT=none'])
+                                             'FABLE2_PAD_SCREENSHOT=none', 'FABLE2_PAD_FRAMEGEN=none'])
         self.assertEqual(self.out['padMove'], ['FABLE2_PAD_TURBO=share', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=none',
-                                               'FABLE2_PAD_SCREENSHOT=none'])
+                                               'FABLE2_PAD_SCREENSHOT=none', 'FABLE2_PAD_FRAMEGEN=none'])
         self.assertEqual(self.out['padBack'], ['FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none',
-                                               'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none', 'set'])
+                                               'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=none', 'FABLE2_PAD_FRAMEGEN=none', 'set'])
 
     def test_controller_hotkey_defaults_load(self):
-        new = ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none']
+        new = ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none', 'frameGen=none']
         self.assertEqual(self.out['padLoadFresh'], new + ['-', '-', '2'])
         self.assertEqual(self.out['padLoadOldDefaults'], new + ['-', '-', '2'])
         self.assertEqual(self.out['padLoadOldCustom'],
-                         ['turbo=none', 'slow=none', 'quickSave=none', 'screenshot=view', '-', 'view', '2'])
+                         ['turbo=none', 'slow=none', 'quickSave=none', 'screenshot=view', 'frameGen=none', '-', 'view', '2'])
         self.assertEqual(self.out['padLoadOldCustomFree'],
-                         ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=ls', '-', 'ls', '2'])
+                         ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=ls', 'frameGen=none', '-', 'ls', '2'])
         self.assertEqual(self.out['padLoadNew'],
-                         ['turbo=none', 'slow=none', 'quickSave=share', 'screenshot=view', 'none', 'view', '2'])
+                         ['turbo=none', 'slow=none', 'quickSave=share', 'screenshot=view', 'frameGen=none', 'none', 'view', '2'])
         # Defaults are stored as no entry.
         self.assertEqual(self.out['padSaveDefaults'], ['-', '-'])
 
@@ -366,12 +366,14 @@ class ControlsHarnessTests(unittest.TestCase):
         names = {'kView': 'view', 'kShare': 'share', 'kLeftStick': 'ls', 'kRightStick': 'rs', '-1': 'none'}
         game = {k: names[v] for k, v in game.items()}
         self.assertEqual(game, {'FABLE2_PAD_TURBO': 'view', 'FABLE2_PAD_SLOW': 'none',
-                                'FABLE2_PAD_QUICKSAVE': 'share', 'FABLE2_PAD_SCREENSHOT': 'none'})
-        self.assertEqual(self.out['padLoadFresh'][:4], ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none'])
+                                'FABLE2_PAD_QUICKSAVE': 'share', 'FABLE2_PAD_SCREENSHOT': 'none',
+                                'FABLE2_PAD_FRAMEGEN': 'none'})
+        self.assertEqual(self.out['padLoadFresh'][:5], ['turbo=view', 'slow=none', 'quickSave=share', 'screenshot=none', 'frameGen=none'])
 
     def test_game_reads_launcher_names(self):
         header = (ROOT / 'src/input/controller_hotkeys.h').read_text()
-        for name in ('FABLE2_PAD_TURBO', 'FABLE2_PAD_SLOW', 'FABLE2_PAD_QUICKSAVE', 'FABLE2_PAD_SCREENSHOT'):
+        for name in ('FABLE2_PAD_TURBO', 'FABLE2_PAD_SLOW', 'FABLE2_PAD_QUICKSAVE', 'FABLE2_PAD_SCREENSHOT',
+                     'FABLE2_PAD_FRAMEGEN'):
             self.assertIn('"%s"' % name, header)
         for value in ('none', 'view', 'share', 'ls', 'rs'):
             self.assertIn('"%s"' % value, header)

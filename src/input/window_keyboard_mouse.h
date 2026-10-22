@@ -135,11 +135,12 @@ class WindowKeyboardMouse final
     // F6 opens and closes the F6 menu even while an overlay has keyboard focus (a function key, never typed text).
     if (key == uint16_t(K::kF6)) request_lua_(6);
     // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h; number-row 8 stays
-    // the SDK achievements overlay), F9 = FPS counter (src/core/fable2_fps_counter.h);
-    // function keys, never typed text.
+    // the SDK achievements overlay), F9 = FPS counter (src/core/fable2_fps_counter.h), F10 = frame
+    // generation (src/core/fable2_frame_gen.h); function keys, never typed text.
     if (key == uint16_t(K::kF7)) request_lua_(7);
     if (key == uint16_t(K::kF8)) request_lua_(8);
     if (key == uint16_t(K::kF9)) request_lua_(9);
+    if (key == uint16_t(K::kF10)) request_lua_(10);
     if (key && key == options_().unlock_key) {
       manual_release_ = !manual_release_;
       Refresh();
@@ -203,6 +204,7 @@ class WindowKeyboardMouse final
     if (key == uint16_t(K::kF7)) self->request_lua_(7);
     if (key == uint16_t(K::kF8)) self->request_lua_(8);
     if (key == uint16_t(K::kF9)) self->request_lua_(9);
+    if (key == uint16_t(K::kF10)) self->request_lua_(10);
     return true;
   }
 

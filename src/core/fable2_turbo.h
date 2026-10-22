@@ -224,6 +224,8 @@ inline void SlowPaceFrame(double fps) {
 
 // Optional on-screen notice, installed by the app (src/core/fable2_turbo_notice.h).
 inline void (*g_notice)(const std::string& text) = nullptr;
+// Called after every mode change (src/core/fable2_frame_gen.h pauses frame generation while turbo is on).
+inline void (*g_on_mode_change)() = nullptr;
 
 // Turbo wait fix for the prebuilt runtime (default on; FABLE2_TURBO_WAIT_FIX=0 restores the SDK
 // behaviour). The source-built runtime has the real fix (patches/sdk/clock-duration-scaling.patch,
@@ -310,6 +312,7 @@ inline void SetMode(Mode want) {
   SlowPaceEpoch().fetch_add(1, std::memory_order_relaxed);
   if (applied) ApplyAudioRate(speed != 1.0, speed);
   fable2::fr::SetTag(fable2::fr::kTagTurbo, now == Mode::kTurbo ? 1 : 0);
+  if (g_on_mode_change) g_on_mode_change();
   REXSYS_INFO(
       "[turbo] {} -> {} (speed {:.2f}x, guest speed {:.2f}, duration scalar {:.2f}{}, frame interval {}, "
       "audio {}, guest ticks {} -> {})",

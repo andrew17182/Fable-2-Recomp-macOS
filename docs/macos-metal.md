@@ -286,7 +286,7 @@ With the lock on, the guest vblank worker is replaced:
   A presenter that picks display times itself reports each real frame with `OnExternalSchedule(frame, arrival,
   deadline, slipped)` (arrival = when it took the frame, deadline = the latest arrival that still makes the vsync
   it targeted) plus `OnPresented`. The lock then runs in `external` mode: the cliff is that deadline's phase and
-  `p95(vblank -> arrival) + margin` lands on it. The frame-interpolation prototype branch uses this.
+  `p95(vblank -> arrival) + margin` lands on it. Frame generation (next section) uses this.
 
 Measured 2026-10-22 (M5 Max, 60 Hz external display, `--mode library` background sessions, 2 drawables, 30 s
 after gameplay readiness, steady = last 15 s; `out/validation/vsync-lock-20261022/`):
@@ -313,6 +313,77 @@ Not covered by the lock, seen in both arms: `present_submit` -> `presentedTime` 
 had none. Presenter GPU work ends 0.2-6.5 ms after submit either way (a separate paint queue that made it 0.2 ms
 did not change it), so it looks like a WindowServer state. Not tested yet: 120 Hz / ProMotion and VRR
 displays, moving the window between displays, a minimized window, and a visible, focused game window (these runs are background test windows).
+
+## Frame generation
+
+MetalFX frame interpolation (`MTLFXFrameInterpolator`) shows one generated frame between every two real frames:
+the game renders 30 FPS and the display gets 60. Off by default; it changes how motion looks (moving characters can
+smear, very fast pans turn soft) and adds about 20 ms of delay, so it is not part of Original or Enhanced.
+Research and quality comparison: `docs/frame-interp-prototype.md`.
+
+- **Turning it on:** `FABLE2_FRAME_INTERP=1` (start state; launcher Settings > Display > Frame rate "Frame
+  generation", Off / 30 → 60, Custom preset only). **F10** toggles it live; the controller action
+  `FABLE2_PAD_FRAMEGEN` (Controls > Game controllers, default none) does the same. The toggle shows an on/off notice
+  in the turbo-notice style and never changes the launcher setting. The F9 overlay shows "framegen" while it is on.
+- **Requirements** (checked once at startup, `src/core/fable2_frame_gen.h`): the 30 FPS cap, macOS 26, a GPU for
+  which `MTLFXFrameInterpolatorDescriptor supportsDevice` is true, and the Metal renderer. Otherwise it stays off
+  with a `[frame-gen] off: ...` log line, F10 shows "Frame generation needs 30 FPS" (or the other reason) and does
+  nothing, and the launcher disables the picker with that reason. At 60 FPS or uncapped the frame rate is left as
+  chosen (not forced to 30). 60 → 120 on 120 Hz displays is not offered: untested (only a 60 Hz display here).
+- **Turbo pauses it** (only real frames are shown while turbo is on; it resumes when turbo turns off, with no notice
+  of its own; the F9 overlay shows "framegen paused"). With it running, turbo dropped 10-37 generated frames a
+  minute (the vsync lock does not steer a scaled guest clock), and fast motion is where interpolation looks worst.
+  **Slow mode keeps it running** (about 30 real frames per second at the 30 cap, 0-12 drops a minute, measured
+  below).
+- **How it works** (`backends/metal/port/rex/ui/metal/metal_frame_interp.{h,mm}`, hooks in `metal_presenter.mm`):
+  per new guest frame the presenter copies the guest output into a 2-frame ring and runs the interpolator on
+  (previous, current) with colour only: zero motion vectors and a flat depth, so MetalFX estimates the motion
+  itself and no game data or guest-side hook is needed. The UI thread paints the generated frame and then the real
+  one (with the ImGui overlays) into offscreen targets; a present thread copies each into a drawable and presents
+  it at an explicit display time on the vsync grid (`presentDrawable:atTime:`): generated on vsync N, real on N+1.
+  Repaints of an unchanged frame wait for the next present or new guest frame (overlays update with the game's
+  frames while it is on).
+- **Pacing rules** (docs/bug-patterns.md rows 112, 113): commit each present at least 2 refreshes + 1.5 ms before
+  its vsync (learned up after a late present, down slowly while on time); a pair too late for its slot drops its
+  generated frame and keeps the 2-refresh cadence; a second late pair re-anchors the cadence; pairs a refresh early
+  skip one generated frame to catch up. The vsync phase lock stays active in `external` mode: the present thread
+  reports each pair's arrival and deadline (`OnExternalSchedule`) and the lock moves the guest vblank so pairs
+  arrive just before the deadline.
+- **Drawables:** 3 while it is on (with 2 only 20 presents/s get through: each drawable is held from commit, 2+
+  refreshes ahead, until the next one is shown). Turning it off (F10) drains the present thread's queue and goes
+  back to the 2-drawable UI-thread path (`FABLE2_PRESENT_DRAWABLES`).
+- **Dev switches:** `FABLE2_FRAME_INTERP_PRESENT_LOG=<csv>` (one row per present: kind, frame, drawable taken,
+  target vsync, `presentedTime`, ready, arrival), `FABLE2_FRAME_INTERP_LEAD_MS=<ms>` (initial lead). A
+  `[frame-interp]` line every 300 real frames gives counts, drops, GPU time, gaps, latency and the lead.
+
+Measured 2026-10-22 (M5 Max, 60 Hz external display, macOS 27.0.1, `--mode library` background sessions with the
+perf lock held exclusively, Bower Lake, 30 FPS cap, 40 s camera pan + 15 s walk, first 2 s of each phase skipped;
+`out/validation/frame-gen-20261022/`, `scripts/stats.py`). Latency = real frame reaches the presenter -> on screen
+(`presentedTime`), median; "guest ready -> on screen" from the frame CSV is comparable across arms:
+
+| arm | launches | presents/s | intervals off cadence | drops/min | latency | guest ready -> on screen | GPU per real frame |
+|---|---|---|---|---|---|---|---|
+| off (2 drawables, lock on; same path as before) | 2 | 30.0 (real) | 0-0.08 % | 0 | | 34.9-35.2 ms | |
+| on, 1× | 3 | 59.97-60.0 | 0-0.04 % | 0-1.6 | 54.2-55.0 ms | 54.6-54.7 ms | 1.3 ms (max 2.6) |
+| on, 2× (2560×1440) | 3 | 59.89-60.0 | 0-0.18 % | 0-6.3 | 56.2-57.1 ms (73 in the late state) | 56.8-73.2 ms | 5.1 ms (max 5.6) |
+| on, slow 0.5× (20 s) | 2 | 60.0 | 0 % | 0 | 55-74 ms | | |
+| on, turbo 2× (20 s, paused) | 2 | 30.0 real frames while paused, 60.0 after | 0-0.35 % | 0-3.2 | | | |
+| (before the pause rule) on, turbo 2× running | 2 | 59.39-59.83 | 0.3-1.0 % | 10-37 | 61-69 ms | | |
+
+- **Switching** (F10 off -> on -> off -> on in one session, 2 launches at 1×, 1 at 2×; turbo pause and resume, 2
+  launches): every switch is seamless apart from at most one longer gap: 50 ms (the previous frame shown one refresh
+  longer) at most switches, 66.7 ms once at an F10 switch and at each turbo pause (turbo's own frame-interval change
+  lands there too). No black frame (the screen timeline never has a gap over 66.7 ms). Pacing after each switch is
+  clean: 60.0 presents/s while on, 30.0 real frames/s and 0 % off cadence while off. F10 at 60 FPS logs
+  `toggle: Frame generation needs 30 FPS`, shows that notice and changes nothing.
+- About +20 ms over off at 1× (half a real frame, 16.7 ms, for showing the generated frame first, plus the longer
+  `atTime` lead). The "late state" (73 ms, every present a refresh after its target, no drops) is the WindowServer
+  state described under "Vsync phase lock" (2- vs 3-refresh queue); it came and went within sessions.
+- GPU cost is the colour copy plus the interpolation, on the presenter queue; the present thread adds one
+  drawable-sized copy per present. Expect roughly 3-4× this on a base M1 (unmeasured); at 2× there that is
+  15-20 ms per real frame, inside the 33 ms budget only if the game itself leaves room.
+- Not tested: 120 Hz / ProMotion (30 → 60 then targets every 4th refresh for real frames), VRR displays, a
+  focused foreground window (these are background test windows), base M1/M3 GPUs.
 
 ## Stable 30 FPS and app-owned testing
 

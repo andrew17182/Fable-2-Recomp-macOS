@@ -57,6 +57,6 @@ double Lead();
 // frame, before its OnPresented: `handled` = when that thread took the frame, `deadline` = the latest time it could
 // have taken it and still made the vsync it targeted (its cliff), `slipped` = it missed the planned vsync. From the
 // first call on, the lock targets this cliff instead of the UI paint loop's wake: vblank + p95(vblank -> handled) +
-// margin lands on the deadline phase.
+// margin lands on the deadline phase. The next OnPaint (the UI thread presenting again) ends external mode.
 void OnExternalSchedule(uint64_t frame, double handled_seconds, double deadline_seconds, bool slipped);
 }  // namespace rex::graphics::metal::vsync_lock

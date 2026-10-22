@@ -19,12 +19,13 @@
 //       [--preset original|enhanced|custom|NAME] (that preset's settings, NAME a saved one; later flags still win)
 //       [--turbo-notice overlay|game] [--turbo-speed 1.0-4.0 (1.0 = off)] [--slow-speed 0.25-1.0 (1.0 = off)] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
 //       [--resolution auto|native|2|3] [--upscaling off|metalfx-spatial] [--effects original|full]
+//       [--frame-generation off|on]
 //       [--display windowed|fullscreen] [--build playtest|latest] [--extra-env "NAME=VALUE ..."]
 //       [--<switch>|--no-<switch>] for every on/off setting (LaunchSettings.flags: fur-fix,
 //       memexport-readback, unlock-extras, fps-counter, shader-autolearn, rtt-1x, rt-shrink, ...)
 //       [--keyboard-map KEY:INPUT,...] [--mouse-look|--no-mouse-look] [--mouse-look-scale N]
 //       [--bind bind_console|bind_settings|bind_debug_overlay|bind_achievements=KEY] [--view-button-to-game]
-//       [--pad-turbo|--pad-quicksave|--pad-screenshot none|view|share|ls|rs]
+//       [--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot|--pad-framegen none|view|share|ls|rs]
 //       [--print-args]   print the fable2_dev_session.py arguments as JSON instead of launching
 // With no --pick it uses the choices last made in the window.
 //   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics] [--scroll bottom]
@@ -927,6 +928,9 @@ func cliLaunch(_ argv: [String]) -> Int32 {
     case "--upscaling", "--upscaler":
       guard let v = value.flatMap(Upscaling.init(argument:)) else { return fail("--upscaling expects off or metalfx-spatial") }
       s.upscaling = v; i += 1
+    case "--frame-generation":
+      guard let v = value.flatMap(FrameGeneration.init(rawValue:)) else { return fail("--frame-generation expects off or on") }
+      s.frameGeneration = v; i += 1
     case "--effects":
       guard let v = value.flatMap(EffectsSize.init(rawValue:)) else { return fail("--effects expects original or full") }
       s.effects = v; i += 1

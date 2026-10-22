@@ -42,6 +42,8 @@ CASES = [
       '--no-portable-shader-cache', '--no-hitch-trace', '--extra-env', 'FABLE2_SYNC_TEST=1 REX_SYNC_TEST=x']),
     ({'frameRate': 'settings', 'unlockExtras': False, 'ringReinitFix': False, 'tileEdram': False, 'resolutionScale': '3'},
      ['--fps', 'settings', '--no-unlock-extras', '--no-ring-reinit-fix', '--no-tile-edram', '--resolution', '3']),
+    # Frame generation (FABLE2_FRAME_INTERP, docs/macos-metal.md "Frame generation"); always explicit.
+    ({'frameGeneration': 'on', 'frameRate': '30'}, ['--frame-generation', 'on', '--fps', '30']),
     # "Skip cosmetic waits" (docs/load-fixes-20261016.md section F).
     ({'fastPacing': True}, ['--fast-pacing']),
     # Controls tab (tools/macos/Shared/ControlsView.swift).
@@ -169,6 +171,13 @@ class LauncherEnvSyncTests(unittest.TestCase):
                 self.assertEqual(player['FABLE2_FAST_PACING'], '0' if name == 'fp-off' else '1')
                 self.assertNotIn('FABLE2_LOAD_FADE_FRAMES', player)
                 self.assertNotIn('FABLE2_SAVE_NOTICE_MS', player)
+
+    def test_frame_generation(self):
+        # Default off and always explicit (docs/macos-metal.md "Frame generation").
+        self.assertEqual(self.dev_env([])['FABLE2_FRAME_INTERP'], '0')
+        self.assertEqual(self.dev_env(['--frame-generation', 'on'])['FABLE2_FRAME_INTERP'], '1')
+        player, _ = self.player_run({'frameGeneration': 'on'}, ['--play'], 'fg-on')
+        self.assertEqual(player['FABLE2_FRAME_INTERP'], '1')
 
     def test_extra_env_never_makes_play_background(self):
         # A saved FABLE2_TEST_BACKGROUND in Extra environment must not start Play games in the background (note 21).

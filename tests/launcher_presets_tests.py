@@ -162,7 +162,8 @@ class PresetHarnessTests(unittest.TestCase):
         self.assertTrue(self.out['defaultMatchesEnhanced'])
         e = self.out['enhancedEnv']
         for item in ('FABLE2_FPS_60=auto', 'FABLE2_RES_SCALE=auto', 'FABLE2_SKIP_INTRO_MOVIES=0', 'FABLE2_TURBO_SPEED=2.0',
-                     'FABLE2_SLOW_SPEED=0.50', 'FABLE2_UNLOCK_EXTRAS=0', 'FABLE2_FAST_PACING=0'):
+                     'FABLE2_SLOW_SPEED=0.50', 'FABLE2_UNLOCK_EXTRAS=0', 'FABLE2_FAST_PACING=0',
+                     'FABLE2_FRAME_INTERP=0'):
             self.assertIn(item, e)
 
     def test_original_values(self):
@@ -171,7 +172,7 @@ class PresetHarnessTests(unittest.TestCase):
                      'FABLE2_EFFECTS_NATIVE=1', 'FABLE2_SKIP_INTRO_MOVIES=0', 'FABLE2_TURBO_SPEED=1.0',
                      'FABLE2_SLOW_SPEED=1.00', 'FABLE2_UNLOCK_EXTRAS=0', 'FABLE2_FAST_PACING=0',
                      'FABLE2_CHARACTER_EDITOR=0', 'FABLE2_FIX_LOD_SIZE_CACHE=0', 'FABLE2_PAD_TURBO=none',
-                     'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_SCREENSHOT=none'):
+                     'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_SCREENSHOT=none', 'FABLE2_FRAME_INTERP=0'):
             self.assertIn(item, o)
         self.assertFalse([x for x in o if x.startswith('FABLE2_STICK_DEADZONE') or x.startswith('FABLE2_WALK_DEADZONE')])
         # Invisible fixes stay on: no kill switch is passed.

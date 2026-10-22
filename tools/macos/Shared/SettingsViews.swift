@@ -327,6 +327,24 @@ struct FlagRow: View {
   }
 }
 
+/// Frame generation picker (FrameGeneration): always the same two lines; the caption gives the cost, or why it
+/// stays off (unsupported Mac: picker disabled and shown Off; another frame rate: disabled, choice kept).
+struct FrameGenerationRow: View {
+  @ObservedObject var model: SettingsModel
+  var body: some View {
+    let s = model.settings
+    let unsupported = FrameGeneration.unsupportedReason != nil
+    let blocked = FrameGeneration.blockedReason(frameRate: s.frameRate, resolution: s.resolution, rule2x: s.auto2x)
+    FixedPicker("Frame generation", caption: blocked ?? "Smoother motion, about 20 ms more delay",
+                selection: unsupported ? .constant(.off) : $model.settings.frameGeneration) {
+      ForEach(FrameGeneration.allCases) { mode in Text(mode.title).tag(mode) }
+    }
+    .disabled(blocked != nil)
+    .help("MetalFX makes a frame between every two: 30 FPS shows as 60. Moving characters can smear. "
+          + "Needs the 30 FPS cap and macOS 26.")
+  }
+}
+
 /// The switches of one tab and section, in table order.
 struct FlagSection: View {
   @ObservedObject var model: SettingsModel
@@ -414,6 +432,7 @@ struct SettingsTabView: View {
           ForEach(FrameRate.allCases) { fps in Text(fps.title(resolution: model.settings.resolution, rule2x: model.settings.auto2x)).tag(fps) }
         }
         .help(ResolutionHelp.frameRate)
+        FrameGenerationRow(model: model)
         ForEach(LaunchSettings.flags(in: .display)) { row($0) }
       }
     case .controls:

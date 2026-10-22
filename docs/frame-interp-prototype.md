@@ -1,9 +1,12 @@
 # MetalFX frame interpolation prototype (2026-10-22)
 
-Prototype branch only, not merged. `FABLE2_FRAME_INTERP=1` (default off) shows one MetalFX-generated frame between
-every two real frames: 30 rendered gives 60 shown. It uses `MTLFXFrameInterpolator` (macOS 26 MetalFX), which
-`supportsDevice` reports on the M5 Max (macOS 27.0.1). Code: `backends/metal/port/rex/ui/metal/metal_frame_interp.{h,mm}`,
-plus hooks in `metal_presenter.mm` and `metal_command_processor.cc`.
+Research record. The shipped feature is "Frame generation" in `docs/macos-metal.md` (colour inputs and grid pacing
+only, `FABLE2_FRAME_INTERP=1`, launcher Settings > Display). Everything else below (depth and camera inputs, the
+ground-truth evaluation, frame dumps, legacy pacing, `=stats`, the drawable-count switch) existed only in the
+prototype commits 6d0b174 and 7ead964 and was dropped at the merge; check those commits out to reproduce it.
+
+The prototype showed one MetalFX-generated frame between every two real frames: 30 rendered gives 60 shown. It uses
+`MTLFXFrameInterpolator` (macOS 26 MetalFX), which `supportsDevice` reports on the M5 Max (macOS 27.0.1).
 
 ## How it works
 
@@ -141,7 +144,7 @@ on screen (`presentedTime`), median per launch:
 - Not tested: 120 Hz / ProMotion (k = 4 refreshes per real frame: generated on N, real on N+2), a focused
   foreground window, very long sessions.
 
-## Switches
+## Switches (prototype commits only)
 
 | variable | effect |
 |---|---|

@@ -170,6 +170,7 @@ void OnPaint(uint64_t frame, bool new_frame, double acquire, double wait) {
     frame_log::RecordUptime(new_frame ? "vlock_paint_new" : "vlock_paint", frame, acquire, uint64_t(wait * 1e6));
   }
   std::lock_guard<std::mutex> lock(s.mutex);
+  s.ext_mode = false;  // the UI thread presents again (frame generation turned off)
   const bool was_blocked = wait > 0.001;
   s.blocked.push_back(was_blocked ? 1 : 0);
   if (s.blocked.size() > 120) s.blocked.pop_front();

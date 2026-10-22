@@ -9,12 +9,12 @@
 // - Mouse look: the mouse_look / mouse_look_scale cvars (REX_MOUSE_LOOK, REX_MOUSE_LOOK_SCALE).
 // - Hotkeys: the SDK overlay binds are cvars (bind_console, bind_settings, bind_debug_overlay,
 //   bind_achievements; recomp defaults in src/input/recomp_hotkeys.h), so they are rebindable here
-//   (REX_BIND_*; the settings key is also mouse_unlock_key). F5/F6/F7/F8/F9 and 5/6/7 are fixed in
+//   (REX_BIND_*; the settings key is also mouse_unlock_key). F5/F6/F7/F8/F9/F10 and 5/6/7 are fixed in
 //   src/input/window_keyboard_mouse.h and only listed.
 // - Controllers: macOS remaps controller buttons system-wide (System Settings > Game Controllers); this
 //   tab links there and lists connected controllers (GameController framework). Controller hotkeys
-//   (turbo, slow, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_SLOW, FABLE2_PAD_QUICKSAVE,
-//   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h);
+//   (turbo, slow, quick save, screenshot, frame generation on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_SLOW, FABLE2_PAD_QUICKSAVE,
+//   FABLE2_PAD_SCREENSHOT, FABLE2_PAD_FRAMEGEN; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h);
 //   "Works in background": FABLE2_PAD_BACKGROUND=0 when off (default on, src/input/test_background.h).
 //   Stick deadzones: FABLE2_STICK_DEADZONE_LEFT / _RIGHT (percent; unset = the game's own). With a value set the
 //   game's own deadzone is always skipped (the game's FABLE2_STICK_ANTI_DEADZONE, default 1, has no launcher
@@ -262,7 +262,7 @@ enum PadButton: String, CaseIterable, Identifiable {
 
 /// Controller hotkeys: one button each (FABLE2_PAD_*).
 enum PadAction: String, CaseIterable, Identifiable {
-  case turbo, slow, quickSave, screenshot
+  case turbo, slow, quickSave, screenshot, frameGen
   var id: String { rawValue }
   var title: String {
     switch self {
@@ -270,20 +270,21 @@ enum PadAction: String, CaseIterable, Identifiable {
     case .slow: return "Slow motion"
     case .quickSave: return "Quick save"
     case .screenshot: return "Screenshot"
+    case .frameGen: return "Frame generation"
     }
   }
   /// Same as the game's defaults (ResolveBindings in src/input/controller_hotkeys.h).
   var defaultButton: PadButton {
     switch self {
     case .turbo: return .view
-    case .slow, .screenshot: return .none
+    case .slow, .screenshot, .frameGen: return .none
     case .quickSave: return .share
     }
   }
   /// Defaults before padDefaultsVersion 2 (2026-10-21): View took screenshots, turbo was unbound.
   var oldDefaultButton: PadButton {
     switch self {
-    case .turbo, .slow: return .none
+    case .turbo, .slow, .frameGen: return .none
     case .quickSave: return .share
     case .screenshot: return .view
     }
@@ -296,6 +297,7 @@ enum PadAction: String, CaseIterable, Identifiable {
     case .slow: return "FABLE2_PAD_SLOW"
     case .quickSave: return "FABLE2_PAD_QUICKSAVE"
     case .screenshot: return "FABLE2_PAD_SCREENSHOT"
+    case .frameGen: return "FABLE2_PAD_FRAMEGEN"
     }
   }
   var storeKey: String { "pad" + rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
@@ -305,6 +307,7 @@ enum PadAction: String, CaseIterable, Identifiable {
     case .slow: return "--pad-slow"
     case .quickSave: return "--pad-quicksave"
     case .screenshot: return "--pad-screenshot"
+    case .frameGen: return "--pad-framegen"
     }
   }
 }
@@ -325,6 +328,9 @@ enum Hotkeys {
     Hotkey(title: "Turbo on/off", keys: "F7 or 7", detail: "The whole game runs faster (Turbo speed on the launcher page).", pad: .turbo),
     Hotkey(title: "Slow motion on/off", keys: "F8", detail: "The whole game runs slower (Slow speed on the launcher page).", pad: .slow),
     Hotkey(title: "FPS counter", keys: "F9", detail: "Shows or hides the frame-rate counter."),
+    Hotkey(title: "Frame generation on/off", keys: "F10",
+           detail: "30 FPS shows as 60 (needs the 30 FPS cap and macOS 26). The setting is the start state.",
+           pad: .frameGen),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
     Hotkey(title: "Quit", keys: "⌘Q", detail: "Closes the game (it does not save)."),
     Hotkey(title: "Screenshot", keys: "", detail: "Saves a PNG in the Screenshots folder. Controller only.", pad: .screenshot),
@@ -333,6 +339,7 @@ enum Hotkeys {
   static let fixedKeys: [String: String] = [
     "F5": "Quick save", "5": "Quick save", "F6": "Lua script menu", "6": "Lua script menu",
     "F7": "Turbo", "7": "Turbo", "F8": "Slow motion", "F9": "FPS counter",
+    "F10": "Frame generation",
   ]
 }
 

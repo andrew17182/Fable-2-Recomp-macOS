@@ -10,6 +10,8 @@
 import AppKit
 import Foundation
 import IOKit
+import Metal
+import MetalFX
 
 /// Where settings are stored: UserDefaults (Dev Launcher) or a plist in the game's state folder (player app).
 protocol SettingsStore: AnyObject {
@@ -378,6 +380,42 @@ enum Upscaling: String, CaseIterable, Identifiable {
   }
 }
 
+/// Frame generation (FABLE2_FRAME_INTERP; src/core/fable2_frame_gen.h, docs/macos-metal.md "Frame generation"):
+/// MetalFX frame interpolation shows a generated frame between every two real ones (30 rendered -> 60 shown). Needs
+/// the 30 FPS cap (the game leaves it off at 60 FPS or uncapped), macOS 26 and a supported GPU. Changes how motion
+/// looks and adds about 20 ms of delay, so it is off in Original and Enhanced (Custom only).
+enum FrameGeneration: String, CaseIterable, Identifiable {
+  case off, on
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .off: return "Off"
+    case .on: return "30 → 60"
+    }
+  }
+  static func saved(in defaults: SettingsStore) -> FrameGeneration {
+    FrameGeneration(rawValue: defaults.string(forKey: "frameGeneration") ?? "") ?? .off
+  }
+  /// Why this Mac can't use it (nil: it can): macOS 26 and MTLFXFrameInterpolatorDescriptor.supportsDevice.
+  static let unsupportedReason: String? = {
+    guard #available(macOS 26.0, *) else { return "Needs macOS 26" }
+    guard let device = MTLCreateSystemDefaultDevice(), MTLFXFrameInterpolatorDescriptor.supportsDevice(device) else {
+      return "Not supported on this Mac"
+    }
+    return nil
+  }()
+  /// Why it would stay off with these settings (nil: it runs): unsupported Mac, or a frame rate other than 30 FPS
+  /// (Auto: what it picks on this Mac; "Use game settings" is not known here).
+  static func blockedReason(frameRate: FrameRate, resolution: InternalResolution, rule2x: Bool) -> String? {
+    if let reason = unsupportedReason { return reason }
+    switch frameRate {
+    case .thirty, .settings: return nil
+    case .auto: return AutoFrameRate.onThisMac(resolution: resolution, rule2x: rule2x) == 30 ? nil : "Needs 30 FPS"
+    case .sixty, .uncapped: return "Needs 30 FPS"
+    }
+  }
+}
+
 /// Bloom/blur/glow effect size at a higher internal resolution (FABLE2_EFFECTS_NATIVE ->
 /// draw_resolution_scaled_texture_offsets; game config [graphics] effects_native_scale).
 /// Original keeps the effects' texel offsets at native 1x size (the original look); full
@@ -536,6 +574,7 @@ struct LaunchSettings: Equatable {
   var frameRate = FrameRate.auto
   var resolution = InternalResolution.auto
   var upscaling = Upscaling.off
+  var frameGeneration = FrameGeneration.off
   var display = DisplayMode.windowed
   var effects = EffectsSize.original
   var fpsCounter = false
@@ -992,6 +1031,7 @@ struct LaunchSettings: Equatable {
     s.frameRate = FrameRate.saved(in: defaults)
     s.resolution = InternalResolution.saved(in: defaults)
     s.upscaling = Upscaling.saved(in: defaults)
+    s.frameGeneration = FrameGeneration.saved(in: defaults)
     s.display = DisplayMode.saved(in: defaults)
     s.effects = EffectsSize.saved(in: defaults)
     s.tracePreset = TracePreset.saved(in: defaults)
@@ -1017,6 +1057,7 @@ struct LaunchSettings: Equatable {
     put(frameRate, old.frameRate, "frameRate", frameRate.rawValue)
     put(resolution, old.resolution, "resolutionScale", resolution.rawValue)
     put(upscaling, old.upscaling, "upscaling", upscaling.rawValue)
+    put(frameGeneration, old.frameGeneration, "frameGeneration", frameGeneration.rawValue)
     put(display, old.display, "displayMode", display.rawValue)
     put(effects, old.effects, "effectsSize", effects.rawValue)
     put(tracePreset, old.tracePreset, "tracePreset", tracePreset.rawValue)
@@ -1057,6 +1098,7 @@ extension LaunchSettings {
     .make("frameRate", \.frameRate, original: .thirty),
     .make("auto2x", \.auto2x, original: true),
     .make("upscaling", \.upscaling, original: .off),
+    .make("frameGeneration", \.frameGeneration, original: .off),
     .make("effectsSize", \.effects, original: .original),
     .make("skipIntro", \.skipIntro, original: false),
     .make("fastPacing", \.fastPacing, original: false),
@@ -1173,6 +1215,9 @@ extension LaunchSettings {
     // not [graphics] in the TOML, decides.
     env.append("FABLE2_RES_SCALE=\(resolution.rawValue)")
     env.append("FABLE2_UPSCALING=\(upscaling.rawValue)")
+    // Frame generation (docs/macos-metal.md "Frame generation"); always explicit. The game turns it off unless it
+    // runs at the 30 FPS cap on a supported Mac.
+    env.append("FABLE2_FRAME_INTERP=\(frameGeneration == .on ? 1 : 0)")
     // Bloom/blur effect size at 2x/3x (docs/resolution-scale.md section 12); explicit so the
     // launcher, not [graphics] effects_native_scale in the TOML, decides.
     env.append("FABLE2_EFFECTS_NATIVE=\(effects == .original ? 1 : 0)")
