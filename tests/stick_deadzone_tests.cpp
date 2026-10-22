@@ -19,6 +19,11 @@ Out Run(const Config& c, int x, int y) {
   Apply(c, ox, oy);
   return {ox, oy};
 }
+Out RunLeft(const Config& c, const WalkConfig& w, int x, int y) {
+  int16_t ox = int16_t(x), oy = int16_t(y);
+  ApplyLeft(c, w, ox, oy);
+  return {ox, oy};
+}
 // The game: v = raw * (1/32767); |v|^2 < 0.09 -> 0; else (|v| - 0.3) * (1/0.7) along v, clamped per axis.
 struct Game { float x, y, mag; };
 Game GameSees(Out o) {
@@ -37,6 +42,7 @@ int main() {
   CHECK(!Parse(nullptr, nullptr).enabled);
   CHECK(!Parse("", nullptr).enabled);
   CHECK(!Parse("game", nullptr).enabled);
+  CHECK(!Parse("original", nullptr).enabled);
   CHECK(Parse("5", nullptr).enabled);
   CHECK(std::abs(Parse("5", nullptr).deadzone - 0.05) < 1e-9);
   CHECK(std::abs(Parse("80", nullptr).deadzone - 0.5) < 1e-9);
@@ -96,6 +102,67 @@ int main() {
   const Config plain = Parse("35", "0");
   CHECK(Run(plain, 11000, 0).x == 0);
   CHECK(Run(plain, 12000, 0).x == 12000);
+  // Walk deadzone parsing: game/original off, percent clamped to 0..25.
+  CHECK(!ParseWalk(nullptr).enabled && !ParseWalk("").enabled);
+  CHECK(!ParseWalk("game").enabled && !ParseWalk("original").enabled);
+  CHECK(ParseWalk("0").enabled && ParseWalk("0").band == 0.0);
+  CHECK(std::abs(ParseWalk("5").band - 0.05) < 1e-9);
+  CHECK(std::abs(ParseWalk("60").band - 0.25) < 1e-9);
+  // Inverse ramp: the raw radius that gives a post-ramp value.
+  CHECK(std::abs(RawForPost(0) - 0.3) < 1e-12 && std::abs(RawForPost(1) - 1.0) < 1e-12);
+  CHECK(std::abs(RawForPost(kWalkPost) - 0.475) < 1e-12);
+  CHECK(GameSees({int(kTurnTopRaw * 32767), 0}).mag < kWalkPost);
+  CHECK(GameSees({int(std::lround(kWalkRaw * 32767)), 0}).mag > kWalkPost);
+  // Walk deadzone off: identical to Apply.
+  {
+    const Config c = Parse("6", nullptr);
+    const WalkConfig w = ParseWalk("game");
+    for (int v = 0; v <= 32767; v += 211) CHECK(RunLeft(c, w, v, -v / 3).x == Run(c, v, -v / 3).x);
+  }
+  // Walk deadzone on: [d, d+B] turns only (0 < post < 0.25), [d+B, 1] walks (0.25 < post, linear to 1).
+  for (const char* dz : {"game", "0", "6", "20", "50"}) {
+    for (const char* band : {"0", "5", "12", "25"}) {
+      const Config c = Parse(dz, nullptr);
+      const WalkConfig w = ParseWalk(band);
+      const double d = c.enabled ? c.deadzone : 0.3, b = w.band;
+      CHECK(RunLeft(c, w, 0, 0).x == 0 && RunLeft(c, w, 0, 0).y == 0);
+      if (c.enabled && d > 0.01) CHECK(RunLeft(c, w, int(d * 0.9 * 32767), 0).x == 0);
+      if (!c.enabled) CHECK(RunLeft(c, w, 8000, 0).x == 8000);  // under the game's 30%: unchanged
+      double prev = -1;
+      for (int v = int(d * 32767) + 7; v < 32767; v += 53) {
+        const double m = v / 32767.0;
+        for (int deg : {0, 45, 90, 200, 300}) {
+          const double a = deg * M_PI / 180;
+          const Out o = RunLeft(c, w, int(std::lround(v * std::cos(a))), int(std::lround(v * std::sin(a))));
+          const Game g = GameSees(o);
+          const double mm = std::hypot(std::lround(v * std::cos(a)), std::lround(v * std::sin(a))) / 32767.0;
+          if (mm >= 1.0 || mm <= d) continue;
+          CHECK(g.mag > 0);
+          if (mm < d + b - 0.0005) CHECK(g.mag < kWalkPost);
+          if (mm > d + b + 0.0005) {
+            CHECK(g.mag > kWalkPost);
+            const double want = kWalkPost + (1 - kWalkPost) * (mm - d - b) / (1 - d - b);
+            CHECK(std::abs(g.mag - want) < 0.004);
+          }
+          if (v >= 300)  // tiny inputs: integer rounding of the input itself dominates the angle
+            CHECK(std::abs(std::remainder(std::atan2(o.y, o.x) - std::atan2(std::sin(a), std::cos(a)), 2 * M_PI)) < 0.01);
+        }
+        const double mag = GameSees(RunLeft(c, w, v, 0)).mag;
+        CHECK(mag >= prev);
+        prev = mag;
+        (void)m;
+      }
+      // Full deflection unchanged.
+      CHECK(RunLeft(c, w, 32767, 0).x == 32767 && RunLeft(c, w, 0, -32768).y == -32768);
+    }
+  }
+  // Example from the design: deadzone 6%, band 5% -> walking starts at ~11%.
+  {
+    const Config c = Parse("6", nullptr);
+    const WalkConfig w = ParseWalk("5");
+    CHECK(GameSees(RunLeft(c, w, int(0.105 * 32767), 0)).mag < kWalkPost);
+    CHECK(GameSees(RunLeft(c, w, int(0.112 * 32767), 0)).mag > kWalkPost);
+  }
   std::puts("stick_deadzone_tests: ok");
   return 0;
 }

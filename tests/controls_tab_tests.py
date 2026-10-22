@@ -185,6 +185,24 @@ stickStore.set(false, forKey: "stickAntiDeadzone")
 let stickStale = ControlSettings.load(from: stickStore)
 out["stickStaleKey"] = stickStore.object(forKey: "stickAntiDeadzone") == nil ? "removed" : "kept"
 out["stickStaleEnv"] = stickStale.environment.filter { $0.hasPrefix("FABLE2_STICK_ANTI") }
+// Walk deadzone (FABLE2_WALK_DEADZONE, 0...25; game/original = off).
+var walk = ControlSettings()
+var walkResults: [String] = []
+for (arg, value) in [("--walk-deadzone", "5"), ("--walk-deadzone", "26"), ("--walk-deadzone", "x"),
+                     ("--walk-deadzone", "original"), ("--walk-deadzone", "0"), ("--stick-deadzone-left", "original")] {
+  switch walk.applyCLI(arg, value) {
+  case .notMine: walkResults.append("notMine")
+  case .ok(let n): walkResults.append("ok\(n)")
+  case .error: walkResults.append("error")
+  }
+}
+out["walkCLI"] = walkResults
+out["walkEnv"] = walk.environment.filter { $0.hasPrefix("FABLE2_WALK_") || $0.hasPrefix("FABLE2_STICK_") }
+out["walkDefaultEnv"] = ControlSettings().environment.filter { $0.hasPrefix("FABLE2_WALK_") }
+var walkSaved = ControlSettings()
+walkSaved.walkDeadzone = 7
+walkSaved.save(to: stickStore, old: ControlSettings())
+out["walkPersist"] = ControlSettings.load(from: stickStore).walkDeadzone.map(String.init) ?? "game"
 var pads = ControlSettings()
 out["padDefault"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
 pads.setPad(.ls, for: .turbo)
@@ -305,8 +323,20 @@ class ControlsHarnessTests(unittest.TestCase):
         self.assertEqual(self.out['stickPersist'], ['game', '12'])
         self.assertEqual(self.out['stickReset'], 'game')
         header = (ROOT / 'src/input/stick_deadzone.h').read_text()
-        for name in ('FABLE2_STICK_DEADZONE_LEFT', 'FABLE2_STICK_DEADZONE_RIGHT', 'FABLE2_STICK_ANTI_DEADZONE'):
+        for name in ('FABLE2_STICK_DEADZONE_LEFT', 'FABLE2_STICK_DEADZONE_RIGHT', 'FABLE2_STICK_ANTI_DEADZONE',
+                     'FABLE2_WALK_DEADZONE'):
             self.assertIn('"%s"' % name, header)
+        # The sliders' off position reads "Original" (2026-10-22; was "Game"); `game` stays the CLI/env value.
+        self.assertIn('?? "Original"', swift)
+        self.assertNotIn('?? "Game"', swift)
+
+    def test_walk_deadzone(self):
+        self.assertEqual(self.out['walkCLI'], ['ok1', 'error', 'error', 'ok1', 'ok1', 'ok1'])
+        self.assertEqual(self.out['walkEnv'], ['FABLE2_WALK_DEADZONE=0'])
+        self.assertEqual(self.out['walkDefaultEnv'], [])
+        self.assertEqual(self.out['walkPersist'], '7')
+        swift = (ROOT / 'tools/macos/Shared/ControlsView.swift').read_text()
+        self.assertIn('deadzoneRow("Walk deadzone"', swift)
 
     def test_controller_hotkeys(self):
         self.assertEqual(self.out['padDefault'], [])

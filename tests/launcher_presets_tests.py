@@ -173,7 +173,7 @@ class PresetHarnessTests(unittest.TestCase):
                      'FABLE2_CHARACTER_EDITOR=0', 'FABLE2_FIX_LOD_SIZE_CACHE=0', 'FABLE2_PAD_TURBO=none',
                      'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_SCREENSHOT=none'):
             self.assertIn(item, o)
-        self.assertFalse([x for x in o if x.startswith('FABLE2_STICK_DEADZONE')])
+        self.assertFalse([x for x in o if x.startswith('FABLE2_STICK_DEADZONE') or x.startswith('FABLE2_WALK_DEADZONE')])
         # Invisible fixes stay on: no kill switch is passed.
         self.assertFalse([x for x in o if x.endswith('=0') and x.split('=')[0] in (
             'FABLE2_PRESENT_DRAWABLES', 'FABLE2_TURBO_FINE_DELAY', 'FABLE2_RING_REINIT_FIX')])

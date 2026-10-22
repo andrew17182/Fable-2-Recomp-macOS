@@ -18,7 +18,8 @@
 //   "Works in background": FABLE2_PAD_BACKGROUND=0 when off (default on, src/input/test_background.h).
 //   Stick deadzones: FABLE2_STICK_DEADZONE_LEFT / _RIGHT (percent; unset = the game's own). With a value set the
 //   game's own deadzone is always skipped (the game's FABLE2_STICK_ANTI_DEADZONE, default 1, has no launcher
-//   control; src/input/stick_deadzone.h).
+//   control; src/input/stick_deadzone.h). Walk deadzone: FABLE2_WALK_DEADZONE (percent; unset = the game's walk
+//   threshold): the left-stick band past the deadzone where the hero only turns on the spot.
 import AppKit
 import GameController
 import SwiftUI
@@ -352,10 +353,13 @@ struct ControlSettings: Equatable {
   /// Stick deadzones in percent (0...50); nil = the game's own (unchanged input).
   var stickDeadzoneLeft: Int? = nil
   var stickDeadzoneRight: Int? = nil
+  /// Walk deadzone in percent (0...25): the left-stick turn-on-the-spot band; nil = the game's walk threshold.
+  var walkDeadzone: Int? = nil
 
   static let scaleRange = 1...4096
   static let deadzoneRange = 0...50
-  var sticksDefault: Bool { stickDeadzoneLeft == nil && stickDeadzoneRight == nil }
+  static let walkDeadzoneRange = 0...25
+  var sticksDefault: Bool { stickDeadzoneLeft == nil && stickDeadzoneRight == nil && walkDeadzone == nil }
 
   func padButton(_ action: PadAction) -> PadButton { pad[action] ?? action.defaultButton }
 
@@ -387,6 +391,7 @@ struct ControlSettings: Equatable {
     if let on = store.object(forKey: "padBackground") as? Bool { c.padBackground = on }
     c.stickDeadzoneLeft = (store.object(forKey: "stickDeadzoneLeft") as? Int).map(clampDeadzone)
     c.stickDeadzoneRight = (store.object(forKey: "stickDeadzoneRight") as? Int).map(clampDeadzone)
+    c.walkDeadzone = (store.object(forKey: "walkDeadzone") as? Int).map(clampWalkDeadzone)
     // The game-deadzone skip had a toggle until 2026-10-22; it is always on now, so drop a stored choice.
     if store.object(forKey: "stickAntiDeadzone") != nil { store.set(nil, forKey: "stickAntiDeadzone") }
     var stored: [PadAction: PadButton] = [:]
@@ -420,6 +425,7 @@ struct ControlSettings: Equatable {
     if padBackground != old.padBackground { store.set(padBackground, forKey: "padBackground") }
     if stickDeadzoneLeft != old.stickDeadzoneLeft { store.set(stickDeadzoneLeft, forKey: "stickDeadzoneLeft") }
     if stickDeadzoneRight != old.stickDeadzoneRight { store.set(stickDeadzoneRight, forKey: "stickDeadzoneRight") }
+    if walkDeadzone != old.walkDeadzone { store.set(walkDeadzone, forKey: "walkDeadzone") }
     for action in PadAction.allCases where padButton(action) != old.padButton(action) {
       // A default is stored as no entry, so a later change of defaults reaches it.
       store.set(pad[action].map(\.rawValue), forKey: action.storeKey)
@@ -444,6 +450,7 @@ struct ControlSettings: Equatable {
     // Stick deadzones: unset = the game's own.
     if let v = stickDeadzoneLeft { env.append("FABLE2_STICK_DEADZONE_LEFT=\(Self.clampDeadzone(v))") }
     if let v = stickDeadzoneRight { env.append("FABLE2_STICK_DEADZONE_RIGHT=\(Self.clampDeadzone(v))") }
+    if let v = walkDeadzone { env.append("FABLE2_WALK_DEADZONE=\(Self.clampWalkDeadzone(v))") }
     // Controller hotkeys: all four once any differs, so the game never mixes them with its defaults.
     if PadAction.allCases.contains(where: { padButton($0) != $0.defaultButton }) {
       for action in PadAction.allCases { env.append("\(action.envName)=\(padButton(action).rawValue)") }
@@ -452,12 +459,15 @@ struct ControlSettings: Equatable {
   }
 
   static func clampDeadzone(_ v: Int) -> Int { min(max(v, deadzoneRange.lowerBound), deadzoneRange.upperBound) }
+  static func clampWalkDeadzone(_ v: Int) -> Int {
+    min(max(v, walkDeadzoneRange.lowerBound), walkDeadzoneRange.upperBound)
+  }
 
-  /// "game" -> nil, "0"..."50" -> percent; anything else is invalid.
-  static func parseDeadzone(_ text: String?) -> Int?? {
+  /// "game" or "original" -> nil, a number in `range` -> percent; anything else is invalid.
+  static func parseDeadzone(_ text: String?, range: ClosedRange<Int> = deadzoneRange) -> Int?? {
     guard let text else { return .none }
-    if text == "game" { return .some(nil) }
-    guard let v = Int(text), deadzoneRange.contains(v) else { return .none }
+    if text == "game" || text == "original" { return .some(nil) }
+    guard let v = Int(text), range.contains(v) else { return .none }
     return .some(v)
   }
 
@@ -466,7 +476,7 @@ struct ControlSettings: Equatable {
   /// Dev Launcher --launch options: --keyboard-map MAP, --mouse-look / --no-mouse-look, --mouse-look-scale N,
   /// --bind CVAR=KEY (bind_console, bind_settings, bind_debug_overlay, bind_achievements),
   /// --view-button-to-game / --no-view-button-to-game, --pad-background / --no-pad-background, --pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs,
-  /// --stick-deadzone-left|--stick-deadzone-right game|0...50.
+  /// --stick-deadzone-left|--stick-deadzone-right game|0...50, --walk-deadzone game|0...25 (original = game).
   mutating func applyCLI(_ arg: String, _ value: String?) -> CLIResult {
     switch arg {
     case "--keyboard-map":
@@ -496,6 +506,11 @@ struct ControlSettings: Equatable {
       guard let v = Self.parseDeadzone(value) else { return .error("\(arg) expects game or 0 to 50") }
       if arg == "--stick-deadzone-left" { stickDeadzoneLeft = v } else { stickDeadzoneRight = v }
       return .ok(consumed: 1)
+    case "--walk-deadzone":
+      guard let v = Self.parseDeadzone(value, range: Self.walkDeadzoneRange) else {
+        return .error("--walk-deadzone expects game or 0 to 25")
+      }
+      walkDeadzone = v; return .ok(consumed: 1)
     default:
       guard let action = PadAction.allCases.first(where: { $0.cliFlag == arg }) else { return .notMine }
       guard let button = value.flatMap(PadButton.init(rawValue:)) else {
@@ -999,6 +1014,10 @@ struct ControlsTabContent: View {
                   env: "FABLE2_STICK_DEADZONE_LEFT")
       deadzoneRow("Right stick deadzone", value: $model.settings.controls.stickDeadzoneRight,
                   env: "FABLE2_STICK_DEADZONE_RIGHT")
+      deadzoneRow("Walk deadzone", value: $model.settings.controls.walkDeadzone, env: "FABLE2_WALK_DEADZONE",
+                  range: ControlSettings.walkDeadzoneRange,
+                  help: "Original: the hero walks past about half tilt. A value: walking starts that far past the left "
+                    + "stick deadzone; below it he turns on the spot.")
     } header: {
       Text("Game controllers")
     } footer: {
@@ -1010,25 +1029,27 @@ struct ControlsTabContent: View {
           model.settings.controls.pad = [:]
           model.settings.controls.stickDeadzoneLeft = nil
           model.settings.controls.stickDeadzoneRight = nil
+          model.settings.controls.walkDeadzone = nil
         }
         .disabled(model.settings.controls.pad.isEmpty && model.settings.controls.sticksDefault)
       }
     }
   }
 
-  /// Slider from Game (the game's own deadzone, input unchanged) through 0...50%.
-  private func deadzoneRow(_ title: String, value: Binding<Int?>, env: String) -> some View {
+  /// Slider from Original (the game's own behaviour, input unchanged) through the range in %.
+  private func deadzoneRow(_ title: String, value: Binding<Int?>, env: String,
+                           range: ClosedRange<Int> = ControlSettings.deadzoneRange,
+                           help: String = "Original: the game's own 30%. Lower values react to smaller moves.") -> some View {
     LabeledContent(title) {
       HStack {
         Slider(value: Binding(
           get: { Double(value.wrappedValue ?? -1) },
-          set: { value.wrappedValue = $0 < -0.5 ? nil : ControlSettings.clampDeadzone(Int($0.rounded())) }),
-               in: -1...Double(ControlSettings.deadzoneRange.upperBound), step: 1)
-        Text(value.wrappedValue.map { "\($0)%" } ?? "Game")
-          .monospacedDigit().frame(width: 44, alignment: .trailing)
+          set: { value.wrappedValue = $0 < -0.5 ? nil : min(max(Int($0.rounded()), range.lowerBound), range.upperBound) }),
+               in: -1...Double(range.upperBound), step: 1)
+        Text(value.wrappedValue.map { "\($0)%" } ?? "Original")
+          .monospacedDigit().frame(width: 60, alignment: .trailing)
       }
     }
-    .help((variant == .dev ? "\(env) (src/input/stick_deadzone.h). " : "")
-          + "Game: the game's own 30%. Lower values react to smaller moves.")
+    .help((variant == .dev ? "\(env) (src/input/stick_deadzone.h). " : "") + help)
   }
 }

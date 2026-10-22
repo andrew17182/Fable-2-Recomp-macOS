@@ -70,6 +70,8 @@ CASES = [
     ({'stickDeadzoneLeft': 5, 'stickDeadzoneRight': 0}, ['--stick-deadzone-left', '5', '--stick-deadzone-right', '0']),
     # A stored value of the old "Skip game deadzone" toggle (until 2026-10-22) is ignored by both apps.
     ({'stickDeadzoneLeft': 5, 'stickAntiDeadzone': False}, ['--stick-deadzone-left', '5']),
+    # Walk deadzone (FABLE2_WALK_DEADZONE): the left-stick turn-on-the-spot band.
+    ({'walkDeadzone': 5, 'stickDeadzoneLeft': 6}, ['--walk-deadzone', '5', '--stick-deadzone-left', '6']),
 ]
 # Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.
 PLAYER_ONLY = {'FABLE2_PLAYER_LAUNCH': '1'}

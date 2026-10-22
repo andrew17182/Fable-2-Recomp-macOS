@@ -343,20 +343,22 @@ class BackFilterDriver final : public rex::input::InputDriver {
   }
 
  private:
-  // Stick deadzone remap (stick_deadzone.h; FABLE2_STICK_DEADZONE_LEFT/RIGHT, default game = unchanged).
+  // Stick deadzone remap (stick_deadzone.h; FABLE2_STICK_DEADZONE_LEFT/RIGHT and FABLE2_WALK_DEADZONE,
+  // default game = unchanged).
   void ApplyStickDeadzones(rex::input::DeviceId id, rex::input::X_INPUT_GAMEPAD& pad) {
     const auto& left = fable2::stickdz::Left();
     const auto& right = fable2::stickdz::Right();
+    const auto& walk = fable2::stickdz::Walk();
     static const bool logged = [&] {
-      REXLOG_INFO("[pad-hotkeys] stick deadzone: left {}, right {}", fable2::stickdz::Describe(left),
-                  fable2::stickdz::Describe(right));
+      REXLOG_INFO("[pad-hotkeys] stick deadzone: left {}, right {}, walk: {}", fable2::stickdz::Describe(left),
+                  fable2::stickdz::Describe(right), fable2::stickdz::DescribeWalk(walk));
       return true;
     }();
     (void)logged;
-    if (!left.enabled && !right.enabled && !pad_debug()) return;
+    if (!left.enabled && !right.enabled && !walk.enabled && !pad_debug()) return;
     const int16_t raw[4] = {int16_t(pad.thumb_lx), int16_t(pad.thumb_ly), int16_t(pad.thumb_rx), int16_t(pad.thumb_ry)};
     int16_t lx = raw[0], ly = raw[1], rx = raw[2], ry = raw[3];
-    fable2::stickdz::Apply(left, lx, ly);
+    fable2::stickdz::ApplyLeft(left, walk, lx, ly);
     fable2::stickdz::Apply(right, rx, ry);
     pad.thumb_lx.set(lx);
     pad.thumb_ly.set(ly);

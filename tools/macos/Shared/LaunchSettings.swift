@@ -1066,6 +1066,7 @@ extension LaunchSettings {
     .make("padSlow", \.padSlow, original: PadButton.none),
     .make("stickDeadzoneLeft", \.controls.stickDeadzoneLeft, original: nil),
     .make("stickDeadzoneRight", \.controls.stickDeadzoneRight, original: nil),
+    .make("walkDeadzone", \.controls.walkDeadzone, original: nil),
   ]
 
   /// The preset's values (Custom: the defaults, never applied).

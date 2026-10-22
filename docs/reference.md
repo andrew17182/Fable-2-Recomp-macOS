@@ -175,17 +175,17 @@ environment route (below).
   (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
   click; see "Controller hotkeys" below) and
   **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`), **Left/Right stick deadzone**
-  (Game, 0–50%; see "Stick deadzones" below).
+  (Original, 0–50%) and **Walk deadzone** (Original, 0–25%; see "Stick deadzones" below).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
 settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
 `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
-(+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight` (no entry = Game; a stored `stickAntiDeadzone` from the old toggle is removed on load)
+(+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight`, `walkDeadzone` (no entry = Original; a stored `stickAntiDeadzone` from the old toggle is removed on load)
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
 `--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`,
-`--stick-deadzone-left|--stick-deadzone-right game|0..50`.
+`--stick-deadzone-left|--stick-deadzone-right game|0..50`, `--walk-deadzone game|0..25` (`original` = `game`).
 
 ### Mouse look (right stick)
 
@@ -287,6 +287,9 @@ Settings > Controls > Game controllers:
 |---|---|---|
 | Left stick deadzone | `FABLE2_STICK_DEADZONE_LEFT` = `game` or 0–50 (%) | game (unchanged) |
 | Right stick deadzone | `FABLE2_STICK_DEADZONE_RIGHT` = `game` or 0–50 (%) | game (unchanged) |
+| Walk deadzone | `FABLE2_WALK_DEADZONE` = `game` or 0–25 (%) | game (unchanged) |
+
+The launcher shows the off position (`game`) as **Original**; `original` is accepted as an alias.
 
 With a deadzone N set, a stick is zero inside N% (radial; drift suppression) and past it the range N–100% is
 rescaled onto 30–100% before the game sees it, so the game's own ramp gives a near-linear 0–1 from N% to the
@@ -297,6 +300,19 @@ edge. Full deflection is passed unchanged. This skip of the game's deadzone is a
 look). `FABLE2_PAD_DEBUG=1` logs each stick change as raw -> remapped. Test pad:
 `fable2_test_control.py stick <session> lx|ly|rx|ry <value>` holds a virtual-pad axis (SDL units; ly/ry positive
 = down). Unit test: `tests/stick_deadzone_tests.cpp` (models the guest function).
+
+**Walk deadzone (left stick).** The hero has a second, larger threshold: he turns to face the stick for any
+value past the game's 30%, but only walks when the game's post-ramp magnitude is above **0.25** (raw 47.5% with
+the game's deadzone, 29.5% with a 6% deadzone), starting or already moving (no hysteresis: below it a moving
+hero stops and turns on the spot). Speed then rises about linearly, ~1.2 m/s just past 0.25 to ~5 m/s at full
+tilt. The 0.25 test applies to the camera-relative move vector built by guest `sub_827ECDA0` (scaling that
+vector by 2 moved the threshold to 0.125), downstream of the hero input handler `sub_82743E48`; it is not a
+code constant nearby (likely hero locomotion data in `globals.gdb`, e.g. `HeroLocomotionData` /
+`MaxSpeedForStaticTurn`). With a walk deadzone B set, the left stick past its deadzone d (d = 30% when the
+left deadzone is Original) is split: d to d+B turns on the spot (post-ramp 0 to just under 0.25), d+B to full
+walks (post-ramp 0.25 to 1, linear). B = 0 walks right past the deadzone. Values below d are zero (own
+deadzone) or passed unchanged (Original). Example: deadzone 6%, walk deadzone 5% → turns at 6–11%, walks
+from 11%. Evidence: `out/validation/stick-movestart-20261022/`.
 
 **Share button.** SDL reads Xbox pads on macOS through Apple's GameController framework and maps Share to
 MISC1. macOS reserves Share for its own screenshot/recording gesture unless an app asks for it
@@ -463,7 +479,8 @@ Preset settings (code: `LaunchSettings.presetRules`; Enhanced is the launcher de
 | Turbo notice (`turboNotice`) | overlay | overlay | `FABLE2_TURBO_NOTICE` |
 | Controller turbo button (`padTurbo`) | none | View | `FABLE2_PAD_TURBO` |
 | Controller slow button (`padSlow`) | none | none | `FABLE2_PAD_SLOW` |
-| Left / right stick deadzone (`stickDeadzoneLeft`, `stickDeadzoneRight`) | Game | Game | `FABLE2_STICK_DEADZONE_*` |
+| Left / right stick deadzone (`stickDeadzoneLeft`, `stickDeadzoneRight`) | Original | Original | `FABLE2_STICK_DEADZONE_*` |
+| Walk deadzone (`walkDeadzone`) | Original | Original | `FABLE2_WALK_DEADZONE` |
 
 Not part of a preset (the same in all three):
 
