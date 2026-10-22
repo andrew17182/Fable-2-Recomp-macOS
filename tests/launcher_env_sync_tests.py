@@ -61,6 +61,11 @@ CASES = [
     ({'padTurbo': 'rs', 'padScreenshot': 'view'}, ['--pad-turbo', 'rs', '--pad-screenshot', 'view']),
     ({'padTurbo': 'none', 'padScreenshot': 'none'}, ['--pad-turbo', 'none', '--pad-screenshot', 'none']),
     ({'padSlow': 'ls'}, ['--pad-slow', 'ls']),
+    # Presets (docs/reference.md "Presets"): a stored preset applies its values; --preset does the same for one launch.
+    ({'preset': 'original'}, ['--preset', 'original']),
+    ({'preset': 'original', 'resolutionScale': '2'}, ['--preset', 'original']),  # stored Original wins over stale keys
+    ({'preset': 'custom', 'customPreset': {'resolutionScale': '3', 'turboSpeed': 1.0}},
+     ['--resolution', '3', '--turbo-speed', '1.0']),
     # Stick deadzones (FABLE2_STICK_*, src/input/stick_deadzone.h).
     ({'stickDeadzoneLeft': 5, 'stickDeadzoneRight': 0}, ['--stick-deadzone-left', '5', '--stick-deadzone-right', '0']),
     # A stored value of the old "Skip game deadzone" toggle (until 2026-10-22) is ignored by both apps.

@@ -225,7 +225,8 @@ var s = LaunchSettings()
 let old = s
 s.controls = c
 s.save(to: store, old: old)
-let reloaded = LaunchSettings.load(from: PlistSettingsStore(path: CommandLine.arguments[1]))
+var reloaded = LaunchSettings.load(from: PlistSettingsStore(path: CommandLine.arguments[1]))
+reloaded.preset = s.preset  // the moved turbo button makes it Custom on load (tests/launcher_presets_tests.py)
 out["persisted"] = reloaded.controls == c && reloaded == s
 print(String(decoding: try! JSONSerialization.data(withJSONObject: out, options: [.sortedKeys]), as: UTF8.self))
 '''

@@ -49,6 +49,17 @@ class SettingsModel: ObservableObject {
     guard commandLine.contains("--snapshot"), let value = argument(after: "--dev-options") else { return nil }
     return value == "on"
   }
+  /// The saved preset last loaded or saved (Custom shows its name), and whether Custom changed since.
+  @Published var customName: String? { didSet { if persist { store.set(customName, forKey: "customPresetName") } } }
+  @Published var customEdited: Bool { didSet { if persist { store.set(customEdited, forKey: "customPresetEdited") } } }
+  /// Saved named presets (Save Preset…): name -> preset settings (LaunchSettings.presetDictionary).
+  @Published private(set) var savedPresets: [String: [String: Any]]
+  var savedPresetNames: [String] { savedPresets.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+  /// The Presets menu's label: the loaded saved preset while Custom is selected.
+  var presetMenuTitle: String {
+    guard settings.preset == .custom, let name = customName else { return "Presets" }
+    return customEdited ? name + " (edited)" : name
+  }
   var visibleTabs: [SettingsTab] { SettingsTab.visible(developer: developerMode) }
   @Published var settings: LaunchSettings {
     didSet {
@@ -56,6 +67,19 @@ class SettingsModel: ObservableObject {
       // not call it again).
       if let probe = converterProbe, settings.build != oldValue.build {
         settings.converterBuiltIn = probe(settings.build)
+      }
+      // A change to a preset setting (not a preset switch, which changes the preset too) saves the values as the
+      // Custom preset and selects it (docs/reference.md "Presets").
+      // On Original or Enhanced that starts a new Custom (replacing the unsaved one; saved presets are untouched).
+      if settings.preset == oldValue.preset && settings.presetSettingsDiffer(from: oldValue) {
+        if settings.preset != .custom {
+          settings.preset = .custom
+          customName = nil
+          customEdited = false
+        } else if customName != nil {
+          customEdited = true  // a loaded saved preset shows "(edited)" until saved
+        }
+        if persist { settings.storeCustom(to: store) }
       }
       if settings != oldValue { settings.save(to: store, old: oldValue) }
     }
@@ -79,6 +103,13 @@ class SettingsModel: ObservableObject {
     var loaded = LaunchSettings.load(from: store)
     // --snapshot: on/off switches given as --<cli> / --no-<cli> apply to that picture only (never stored).
     if commandLine.contains("--snapshot") { for arg in commandLine { _ = loaded.applyFlag(arg) } }
+    // --preset for one snapshot, --print-env or --play (assigned before init ends: never stored).
+    if ["--snapshot", "--print-env", "--play"].contains(where: commandLine.contains), let preset = argument(after: "--preset") {
+      _ = loaded.applyCLIPreset(preset, store: store)
+    }
+    customName = store.string(forKey: "customPresetName")
+    customEdited = store.object(forKey: "customPresetEdited") as? Bool ?? false
+    savedPresets = LaunchSettings.namedPresets(in: store)
     settings = loaded
     let developer = Self.snapshotDeveloper ?? (store.object(forKey: "developerMode") as? Bool ?? false)
     developerMode = developer
@@ -86,6 +117,143 @@ class SettingsModel: ObservableObject {
     showStarredSaves = store.object(forKey: "showStarredSaves") as? Bool ?? false
     let tab = SettingsTab(rawValue: store.string(forKey: "settingsTab") ?? "") ?? .general
     settingsTab = !developer && tab.devOnly ? .general : tab
+  }
+
+  /// The front page's preset picker: Original and Enhanced apply their fixed values, Custom the saved Custom values.
+  /// Nothing is lost: Custom stays saved while another preset is selected.
+  func choosePreset(_ preset: SettingsPreset) {
+    guard preset != settings.preset else { return }
+    let custom = LaunchSettings.savedCustom(in: store)
+    var s = settings
+    s.applyPreset(preset, custom: custom)
+    settings = s
+    // Custom chosen before any was saved: the current values become it.
+    if preset == .custom && custom == nil && persist { settings.storeCustom(to: store) }
+  }
+
+  /// Saves the current preset settings under `name` (an existing one is overwritten) and selects it as Custom.
+  /// False for an empty name or a built-in one (Original, Enhanced, Custom).
+  @discardableResult func savePreset(named raw: String) -> Bool {
+    guard let name = Self.cleanPresetName(raw) else { return false }
+    var all = savedPresets
+    all[name] = settings.presetDictionary
+    savedPresets = all
+    store.set(all, forKey: LaunchSettings.namedKey)
+    var s = settings
+    s.preset = .custom
+    settings = s
+    settings.storeCustom(to: store)
+    customName = name
+    customEdited = false
+    return true
+  }
+
+  /// Applies a saved preset: its values become Custom, selected, with its name shown.
+  @discardableResult func loadPreset(named name: String) -> Bool {
+    guard let values = savedPresets[name] else { return false }
+    var s = settings
+    s.applyPreset(.custom, custom: LaunchSettings.fromPresetDictionary(values))
+    settings = s
+    settings.storeCustom(to: store)
+    customName = name
+    customEdited = false
+    return true
+  }
+
+  /// Deletes a saved preset (the current values stay; Custom no longer shows its name).
+  func deletePreset(named name: String) {
+    var all = savedPresets
+    guard all.removeValue(forKey: name) != nil else { return }
+    savedPresets = all
+    store.set(all, forKey: LaunchSettings.namedKey)
+    if customName == name { customName = nil; customEdited = false }
+  }
+
+  /// A preset name as stored (trimmed); nil when empty or a built-in name (Original, Enhanced, Custom).
+  static func cleanPresetName(_ raw: String) -> String? {
+    let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty || LaunchSettings.isReservedPresetName(name) ? nil : name
+  }
+
+  /// The Save Preset… name suggestion: the loaded preset's name while Custom is selected, else the first free
+  /// "Custom N".
+  var suggestedPresetName: String {
+    if settings.preset == .custom, let name = customName { return name }
+    var n = 1
+    while savedPresets[ "Custom \(n)"] != nil { n += 1 }
+    return "Custom \(n)"
+  }
+
+  /// Renames a saved preset. False for an unknown preset or an invalid name, or a name another preset has unless
+  /// `replace` (that preset is then replaced).
+  @discardableResult func renamePreset(_ old: String, to raw: String, replace: Bool = false) -> Bool {
+    guard let values = savedPresets[old], let name = Self.cleanPresetName(raw) else { return false }
+    if name == old { return true }
+    if savedPresets[name] != nil && !replace { return false }
+    var all = savedPresets
+    all.removeValue(forKey: old)
+    all[name] = values
+    savedPresets = all
+    store.set(all, forKey: LaunchSettings.namedKey)
+    if customName == old { customName = name } else if customName == name { customName = nil; customEdited = false }
+    return true
+  }
+
+  /// Asks for a name (field prefilled); returns it once valid and, when another preset has it, after
+  /// confirming the replacement. nil when cancelled.
+  private func askPresetName(title: String, button: String, initial: String, taken: (String) -> Bool) -> String? {
+    var initial = initial
+    while true {
+      let alert = NSAlert()
+      alert.messageText = title
+      let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+      field.placeholderString = "Name"
+      field.stringValue = initial
+      alert.accessoryView = field
+      alert.window.initialFirstResponder = field
+      alert.addButton(withTitle: button)
+      alert.addButton(withTitle: "Cancel")
+      guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+      initial = field.stringValue
+      guard let name = Self.cleanPresetName(field.stringValue) else {
+        let note = NSAlert()
+        note.messageText = "Choose another name."
+        note.informativeText = "Names can't be empty or Original, Enhanced or Custom."
+        note.runModal()
+        continue
+      }
+      if taken(name) {
+        let confirm = NSAlert()
+        confirm.messageText = "Replace \u{201C}\(name)\u{201D}?"
+        confirm.addButton(withTitle: "Replace")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { continue }
+      }
+      return name
+    }
+  }
+
+  /// Save Preset…: a name field prefilled with the loaded preset's name or "Custom N".
+  func promptSavePreset() {
+    guard let name = askPresetName(title: "Save Preset", button: "Save", initial: suggestedPresetName,
+                                   taken: { self.savedPresets[$0] != nil }) else { return }
+    savePreset(named: name)
+  }
+
+  /// Rename…: built-ins are not in the list, so they can't be renamed.
+  func promptRenamePreset(_ old: String) {
+    guard let name = askPresetName(title: "Rename Preset", button: "Rename", initial: old,
+                                   taken: { $0 != old && self.savedPresets[$0] != nil }) else { return }
+    renamePreset(old, to: name, replace: true)
+  }
+
+  /// Delete: asks first.
+  func promptDeletePreset(named name: String) {
+    let alert = NSAlert()
+    alert.messageText = "Delete \u{201C}\(name)\u{201D}?"
+    alert.addButton(withTitle: "Delete")
+    alert.addButton(withTitle: "Cancel")
+    if alert.runModal() == .alertFirstButtonReturn { deletePreset(named: name) }
   }
 
   /// ⌘, and the Settings button.

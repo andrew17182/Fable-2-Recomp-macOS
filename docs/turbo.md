@@ -12,8 +12,10 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
 - **F8** toggles slow motion (below 1x; see "Slow mode").
 - Controller: Settings > Controls > Game controllers > **Turbo** puts the same toggle on View, Share or a
   stick click (`FABLE2_PAD_TURBO=none|view|share|ls|rs`, default view: the View button; docs/reference.md "Controller hotkeys").
-- Speed: launcher front page → **Turbo speed** (slider and stepper, 1.1× to 4.0×
-  in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Without a launcher:
+- Speed: launcher front page → **Turbo speed** (slider and stepper, Off or 1.1× to 4.0×
+  in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Off (1.0) is the Original preset: F7, 7 and the
+  controller button do nothing; **Slow speed** Off (`FABLE2_SLOW_SPEED=1.00`) does the same for F8
+  (docs/reference.md "Presets"). Without a launcher:
   `[patches] turbo_scale` in `fable2_config.toml` (state directory,
   `~/Library/Application Support/Fable II Recomp/` for the app). Default 2.0;
   1.1 to 4.0 in 0.1 steps (the SDK quantizes the clock scalar to tenths);

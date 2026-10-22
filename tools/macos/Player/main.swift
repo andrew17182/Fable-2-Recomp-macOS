@@ -23,6 +23,7 @@
 //   --play               start the game as soon as the game files are ready (exec, as "Skip launcher")
 //   --press-play         select the newest save and press Load Saved Game (child game; the launcher returns when it exits)
 //   --print-env          print the environment items Play would set (JSON) and exit
+//   --preset original|enhanced|custom   with --print-env, --play or --snapshot: that preset for this run (not stored)
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
 //   --show-launcher      as holding Option
@@ -41,7 +42,7 @@ import UniformTypeIdentifiers
 /// Flags this app consumes; the rest are passed to the game.
 let playerFlags: Set<String> = ["--play", "--press-play", "--print-env", "--reuse", "--show-launcher", "--start-fresh",
                                  "--archive-saves", "--list-archives", "--relaunched"]
-let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive"]
+let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive", "--preset"]
 var gameArguments: [String] {
   var out: [String] = []
   var i = 0
@@ -1511,6 +1512,7 @@ struct PlayView: View {
     VStack(spacing: 0) {
       Header()
       Form {
+        Section { PresetPicker(model: model) }
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.startPick, busy: false, disabled: model.gameRunning,
                    startTitle: { model.startTitle() }, load: { model.loadSave() },

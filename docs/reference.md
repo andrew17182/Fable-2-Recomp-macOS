@@ -333,10 +333,10 @@ Front-end audio preloading uses a 10 ms yield between banks instead of the origi
 
 ### Turbo (macOS)
 
-**F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** 1.1×–4.0×, default 2.0×; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
+**F7** or **7** toggles turbo (the achievements overlay moved to **8**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** Off or 1.1×–4.0×, default 2.0×, Off in the Original preset; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
 
 **F8** toggles **slow motion**: the whole game runs at a fraction of normal speed (default 0.5x; launcher
-**Slow speed** 0.25×–0.9× in 0.05 steps, `FABLE2_SLOW_SPEED`, `[patches] slow_scale`). The frame rate stays at
+**Slow speed** 0.25×–0.9× in 0.05 steps or Off, `FABLE2_SLOW_SPEED`, `[patches] slow_scale`). The frame rate stays at
 the cap (60 or 30) or uncapped. Turbo and slow motion turn each other off. Audio follows with the turbo audio
 setting. Details: [docs/turbo.md](turbo.md) "Slow mode".
 
@@ -419,6 +419,63 @@ deterministic, so long replays drift and can diverge (a missed hit, a different 
 happens fails the replay after `FABLE2_REPLAY_TIMEOUT_S` (60 s) and returns control to the player. Code:
 `src/diagnostics/fable2_session_journal.h`.
 
+### Presets
+
+The launcher's front page starts with **Preset**: **Original · Enhanced · Custom** (both roles; 2026-10-22).
+
+- **Original**: as close to an Xbox 360 as possible: 1280×720 internal resolution, 30 FPS, the original image path,
+  intro movies, original pacing, no extras, turbo and slow motion off (F7, 7, F8 and the controller buttons do
+  nothing; View goes back to the game), the game's own stick deadzones.
+- **Enhanced** (the default): the original feel at the resolution and frame rate this Mac holds (Auto), plus the
+  turbo options. Turbo and slow motion (speeds, audio, F7/F8, controller buttons) are the one feel-changing exception,
+  on by choice as the recomp's own feature; everything else that changes feel is off.
+- **Custom**: a saved slot. Changing any preset setting below (on any page) copies the current values plus the change
+  into Custom and selects it. Switching to Original or Enhanced and back to Custom restores it exactly. The launcher
+  opens with the last preset selected and applies it. **Presets ▾** next to the picker saves the current settings
+  under a name (**Save Preset…**; the same name overwrites; Original, Enhanced and Custom are built in and can't be
+  taken), loads one (it becomes Custom, the menu shows its name, "(edited)" after a change until saved again) and
+  deletes one. Stored with the other launcher settings (`preset`, `customPreset`, `savedPresets`,
+  `customPresetName`; UserDefaults or `player-settings.plist`).
+- Every control stays enabled in every preset; none is greyed out.
+- Migration: settings from before presets are Enhanced when they match it, else Custom (saved once as the Custom
+  slot). CLI: `--preset original|enhanced|custom|NAME` (Dev Launcher `--launch`, `--snapshot`; player `--print-env`,
+  `--play`, `--snapshot`): that preset for one run, never stored; later flags still win.
+- Turbo/slow "Off" is speed 1.0 (`FABLE2_TURBO_SPEED=1.0`, `FABLE2_SLOW_SPEED=1.00`): the game already refuses a
+  mode whose speed is 1.0, so no game-side switch was needed.
+
+Preset settings (code: `LaunchSettings.presetRules`; Enhanced is the launcher default):
+
+| Setting (key) | Original | Enhanced | Env |
+|---|---|---|---|
+| Resolution (`resolutionScale`) | Native 1× (1280×720) | Auto | `FABLE2_RES_SCALE` |
+| Frame rate (`frameRate`) | 30 FPS | Auto | `FABLE2_FPS_60`, `REX_VSYNC` |
+| Auto 2× uncapped rule (`auto2x`) | on (no effect at 1×/30) | on | `FABLE2_AUTO_2X` |
+| Upscaling (`upscaling`) | Bilinear | Bilinear | `FABLE2_UPSCALING` |
+| Bloom and effects (`effectsSize`) | Native 1× | Native 1× | `FABLE2_EFFECTS_NATIVE` |
+| Skip intro movies (`skipIntro`) | off | off | `FABLE2_SKIP_INTRO_MOVIES` |
+| Skip cosmetic waits (`fastPacing`; title fade, save notice) | off | off | `FABLE2_FAST_PACING` |
+| Unlock CE and website gear (`unlockExtras`) | off | off (was on before 2026-10-22) | `FABLE2_UNLOCK_EXTRAS` |
+| Character Editor mod (`characterEditor`) | off | off | `FABLE2_CHARACTER_EDITOR` |
+| Game texture-detail fix (`fixLodSizeCache`) | off | off | `FABLE2_FIX_LOD_SIZE_CACHE` |
+| Turbo speed (`turboSpeed`) | Off (1.0) | 2.0× | `FABLE2_TURBO_SPEED` |
+| Slow speed (`slowSpeed`) | Off (1.0) | 0.5× | `FABLE2_SLOW_SPEED` |
+| Turbo audio (`turboAudio`) | natural pitch | natural pitch | `FABLE2_TURBO_AUDIO` |
+| Turbo notice (`turboNotice`) | overlay | overlay | `FABLE2_TURBO_NOTICE` |
+| Controller turbo button (`padTurbo`) | none | View | `FABLE2_PAD_TURBO` |
+| Controller slow button (`padSlow`) | none | none | `FABLE2_PAD_SLOW` |
+| Left / right stick deadzone (`stickDeadzoneLeft`, `stickDeadzoneRight`) | Game | Game | `FABLE2_STICK_DEADZONE_*` |
+
+Not part of a preset (the same in all three):
+
+- **Invisible fixes, always on**: every Fixes switch except the game-logic fix above (dog fur, memexport, render
+  target and resolve work, ring re-init, lower display latency, turbo precise sleeps, vsync phase-lock when it lands)
+  and every Performance switch (native shaders, specialization, prewarm, CPU trims, native save compressor and
+  inflate, real occlusion queries, adaptive terrain opt-in). They don't change what the game looks or plays like.
+- **Preferences**: display mode (windowed/fullscreen), FPS counter (F9 still toggles it), boot straight into save,
+  keyboard map, mouse look, overlay key binds, controller quick save and **screenshot** buttons (screenshots work in
+  Original), View button to game, controllers in background.
+- **Dev options**: build choice, trace preset, hitch trace, verify modes, input recording, extra environment.
+
 ### Fable II Launcher (macOS: the way to play from source)
 
 Normal launcher play retains in-game subtitles and audio preferences across launches, including library-only play with no hero write-back. The options profile is saved independently of hero saves after a completed, stable write; previous preferences are backed up under `out/save-backups`. Automated test sessions keep their options isolated.
@@ -426,7 +483,7 @@ Normal launcher play retains in-game subtitles and audio preferences across laun
 `Fable II Launcher.app` (source `tools/macos/DevLauncher/*.swift` with the player app's entry point, build with
 `tools/macos/build_dev_launcher.sh [--install]`; named "Fable II Dev Launcher" before 2026-10-15) picks a save and
 boots straight into it. Opening `Fable II.app`, `fable_2` or `run_macos_*.command` directly still works (advanced).
-The front page (2026-10-19, docs/player-app.md): **Start at Title Screen** and **Load Saved Game** (the default
+The front page (2026-10-19, docs/player-app.md): **Preset** (see Presets above), **Start at Title Screen** and **Load Saved Game** (the default
 button, boots straight in), the save menu (newest first), **Resolution** and **Frame rate**, **Skip intro movies**, **Turbo speed**,
 **Slow speed** and **Turbo audio**, then the running
 status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when

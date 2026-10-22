@@ -12,7 +12,7 @@ import SwiftUI
 /// The launcher window's fixed content size, both pages and both roles.
 enum LauncherLayout {
   static let width: CGFloat = 620
-  static let height: CGFloat = 560
+  static let height: CGFloat = 610  // 560 until the preset row (2026-10-22)
   /// Width of every pop-up menu in a form row (the label left, the menu at the right edge).
   static let pickerWidth: CGFloat = 270
 }
@@ -48,6 +48,57 @@ struct SaveChoice: Identifiable, Hashable {
   let id: String
   let label: String
   static let titleID = "title"
+}
+
+/// The preset row at the top of the front page (2026-10-22): Original · Enhanced · Custom, then the Presets menu
+/// (Save Preset…, the saved presets, Rename, Delete), both fixed width. Every control stays enabled; changing a preset setting
+/// selects Custom (SettingsModel.settings). The menu's label shows the loaded saved preset ("Name (edited)").
+struct PresetPicker: View {
+  @ObservedObject var model: SettingsModel
+  static let width: CGFloat = 250
+  static let menuWidth: CGFloat = 170
+  var body: some View {
+    let selection = Binding(get: { model.settings.preset }, set: { model.choosePreset($0) })
+    LabeledContent("Preset") {
+      HStack(spacing: 10) {
+        Picker("Preset", selection: selection) {
+          ForEach(SettingsPreset.allCases) { Text($0.title).tag($0) }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .frame(width: Self.width)
+        .help("Original: as on the Xbox 360. Enhanced: higher resolution and frame rate, plus turbo. "
+              + "Custom: your own settings.")
+        Menu {
+          Button("Save Preset…") { model.promptSavePreset() }
+          if !model.savedPresetNames.isEmpty {
+            Divider()
+            ForEach(model.savedPresetNames, id: \.self) { name in
+              Button(name) { model.loadPreset(named: name) }
+            }
+            Divider()
+            Menu("Rename") {
+              ForEach(model.savedPresetNames, id: \.self) { name in
+                Button(name + "…") { model.promptRenamePreset(name) }
+              }
+            }
+            Menu("Delete") {
+              ForEach(model.savedPresetNames, id: \.self) { name in
+                Button(name) { model.promptDeletePreset(named: name) }
+              }
+            }
+          }
+        } label: {
+          Text(model.presetMenuTitle).lineLimit(1).truncationMode(.tail)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(width: Self.menuWidth, alignment: .trailing)
+        .clipped()
+        .help("Save the current settings as a preset, or load one.")
+      }
+    }
+  }
 }
 
 /// The top of the front page (2026-10-19): [Start at Title Screen] [Load Saved Game], equal fixed widths, then the
@@ -102,7 +153,7 @@ struct SaveMenu: View {
         }
       }
         .labelsHidden()
-        .frame(width: Self.menuWidth, alignment: .leading)  // fixed: a long save label truncates
+        .frame(width: Self.menuWidth, alignment: .trailing)  // fixed: a long save label truncates
         .disabled(!hasSaves)
         .help("Newest save first.")
         Spacer(minLength: 0)
@@ -177,7 +228,7 @@ struct TurboControls: View {
           .monospacedDigit()
       }
     }
-    .help("Game speed while turbo is on. F7 or 7 toggles turbo; a controller button can too (Controls).")
+    .help("Game speed while turbo is on. F7 or 7 toggles turbo; a controller button can too (Controls). Off: no turbo.")
     let slow = Binding(get: { model.settings.slowSpeed }, set: { model.settings.slowSpeed = SlowSpeed.clean($0) })
     LabeledContent("Slow speed") {
       HStack {
@@ -186,7 +237,7 @@ struct TurboControls: View {
           .monospacedDigit()
       }
     }
-    .help("F8 toggles slow motion; a controller button can too (Controls).")
+    .help("F8 toggles slow motion; a controller button can too (Controls). Off: no slow motion.")
     FixedPicker("Turbo audio", selection: $model.settings.turboAudio) {
       ForEach(TurboAudio.allCases) { mode in Text(mode.title).tag(mode) }
     }

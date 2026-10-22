@@ -40,6 +40,15 @@ final class PlistSettingsStore: SettingsStore {
   }
 }
 
+/// An in-memory settings store (the saved Custom preset is kept as one dictionary of setting keys).
+final class MemorySettingsStore: SettingsStore {
+  private(set) var values: [String: Any]
+  init(_ values: [String: Any] = [:]) { self.values = values }
+  func object(forKey defaultName: String) -> Any? { values[defaultName] }
+  func string(forKey defaultName: String) -> String? { values[defaultName] as? String }
+  func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+}
+
 /// GPU identity from the IORegistry, as the game reads it (src/core/fable2_fps_auto.cpp QueryGpu).
 enum GpuInfo {
   static let read: (cores: Int?, model: String?) = {
@@ -248,9 +257,11 @@ enum TurboAudio: String, CaseIterable, Identifiable {
   }
 }
 
-/// Turbo speed (FABLE2_TURBO_SPEED, [patches] turbo_scale): 1.1x to 4.0x in 0.1 steps.
+/// Turbo speed (FABLE2_TURBO_SPEED, [patches] turbo_scale): 1.1x to 4.0x in 0.1 steps; 1.0 is Off (the game
+/// refuses F7, 7 and the controller button: the Original preset).
 enum TurboSpeed {
-  static let range: ClosedRange<Double> = 1.1...4.0
+  static let range: ClosedRange<Double> = 1.0...4.0
+  static let off = 1.0
   static let defaultValue = 2.0
   /// Clamped to the range and rounded to tenths (the game quantizes the same way).
   static func clean(_ value: Double) -> Double {
@@ -260,12 +271,14 @@ enum TurboSpeed {
     guard let value = defaults.object(forKey: "turboSpeed") as? Double else { return defaultValue }
     return clean(value)
   }
-  static func label(_ value: Double) -> String { String(format: "%.1f×", value) }
+  static func label(_ value: Double) -> String { value == off ? "Off" : String(format: "%.1f×", value) }
 }
 
-/// Slow-motion speed (FABLE2_SLOW_SPEED, [patches] slow_scale): 0.25x to 0.9x in 0.05 steps (F8).
+/// Slow-motion speed (FABLE2_SLOW_SPEED, [patches] slow_scale): 0.25x to 0.9x in 0.05 steps (F8); 1.0 is Off (the
+/// game refuses F8 and the controller button: the Original preset).
 enum SlowSpeed {
-  static let range: ClosedRange<Double> = 0.25...0.9
+  static let range: ClosedRange<Double> = 0.25...1.0
+  static let off = 1.0
   static let defaultValue = 0.5
   /// Clamped to the range and rounded to twentieths (the game rounds the same way).
   static func clean(_ value: Double) -> Double {
@@ -275,7 +288,31 @@ enum SlowSpeed {
     guard let value = defaults.object(forKey: "slowSpeed") as? Double else { return defaultValue }
     return clean(value)
   }
-  static func label(_ value: Double) -> String { String(format: "%.2f×", value) }
+  static func label(_ value: Double) -> String { value == off ? "Off" : String(format: "%.2f×", value) }
+}
+
+/// Settings presets (docs/reference.md "Presets"). Original: as close to the Xbox 360 as possible (1×, 30 FPS,
+/// intros, no extras, turbo and slow motion off). Enhanced (the default): the original feel at the resolution and
+/// frame rate this Mac can hold, plus turbo and slow motion. Custom: a saved slot; any change to a preset setting
+/// (LaunchSettings.presetRules) saves the current values there and selects it. Original and Enhanced are fixed in
+/// code, so switching presets never loses the Custom values. Invisible fixes are never part of a preset.
+enum SettingsPreset: String, CaseIterable, Identifiable {
+  case original, enhanced, custom
+  var id: String { rawValue }
+  var title: String { rawValue.capitalized }
+}
+
+/// One setting a preset decides: copies it from the preset's values, or tells whether it differs from them.
+struct PresetRule {
+  let key: String
+  let setOriginal: (inout LaunchSettings) -> Void
+  let copy: (inout LaunchSettings, LaunchSettings) -> Void
+  let differs: (LaunchSettings, LaunchSettings) -> Bool
+  static func make<T: Equatable>(_ key: String, _ path: WritableKeyPath<LaunchSettings, T>, original: T) -> PresetRule {
+    PresetRule(key: key, setOriginal: { $0[keyPath: path] = original },
+               copy: { $0[keyPath: path] = $1[keyPath: path] },
+               differs: { $0[keyPath: path] != $1[keyPath: path] })
+  }
 }
 
 /// Internal resolution (FABLE2_RES_SCALE; game config [graphics] resolution_scale,
@@ -487,7 +524,8 @@ struct LaunchSettings: Equatable {
   /// changed, so an install that never touched it follows this default; a saved choice is kept.
   var skipIntro = false
   var boot = true
-  var unlockExtras = true
+  /// Off by default since 2026-10-22 (Enhanced keeps the original game's items; Custom can turn it on).
+  var unlockExtras = false
   /// Mods (opt-in, off by default): the Character Editor in the F6 menu (docs/character-editor.md).
   var characterEditor = false
   var turboNotice = TurboNotice.overlay
@@ -585,6 +623,8 @@ struct LaunchSettings: Equatable {
   var recordInput = false
   var extraEnv = ""
   // Main window
+  /// Original, Enhanced (default) or Custom (SettingsPreset; stored as "preset").
+  var preset = SettingsPreset.enhanced
   var build = BuildChoice.latest
   /// Whether the game build these settings launch has the shader converter; set by the app from the build it
   /// launches (hasConverter(macOSFolder:)), never saved. False: the requiredWithoutConverter switches are not
@@ -913,7 +953,25 @@ struct LaunchSettings: Equatable {
 
   static func flags(in tab: SettingsTab) -> [Flag] { flags.filter { $0.tab == tab } }
 
+  /// The stored settings with the stored preset applied (Original and Enhanced: their fixed values; Custom: the saved
+  /// Custom values). Before presets (2026-10-22, no "preset" stored): Enhanced when the settings match it, else
+  /// Custom, saved once as the Custom slot.
   static func load(from defaults: SettingsStore) -> LaunchSettings {
+    var s = loadStored(from: defaults)
+    if let preset = SettingsPreset(rawValue: defaults.string(forKey: "preset") ?? "") {
+      s.applyPreset(preset, custom: savedCustom(in: defaults))
+    } else if s.matches(.enhanced) {
+      s.preset = .enhanced
+    } else {
+      s.preset = .custom
+      s.storeCustom(to: defaults)
+      defaults.set(SettingsPreset.custom.rawValue, forKey: "preset")
+    }
+    return s
+  }
+
+  /// The per-setting keys only (no preset handling).
+  static func loadStored(from defaults: SettingsStore) -> LaunchSettings {
     var s = LaunchSettings()
     for flag in flags {
       if let value = defaults.object(forKey: flag.key) as? Bool { s[keyPath: flag.path] = value }
@@ -935,6 +993,7 @@ struct LaunchSettings: Equatable {
     s.extraEnv = defaults.string(forKey: "extraEnv") ?? ""
     s.controls = ControlSettings.load(from: defaults)
     s.build = BuildChoice.saved(in: defaults)
+    s.preset = SettingsPreset(rawValue: defaults.string(forKey: "preset") ?? "") ?? .enhanced
     return s
   }
 
@@ -958,6 +1017,7 @@ struct LaunchSettings: Equatable {
     put(tracePreset, old.tracePreset, "tracePreset", tracePreset.rawValue)
     put(extraEnv, old.extraEnv, "extraEnv", extraEnv)
     put(build, old.build, "build", build.rawValue)
+    put(preset, old.preset, "preset", preset.rawValue)
     controls.save(to: defaults, old: old.controls)
   }
 
@@ -968,6 +1028,125 @@ struct LaunchSettings: Equatable {
       if arg == "--no-" + flag.cli { self[keyPath: flag.path] = false; return true }
     }
     return false
+  }
+}
+
+// MARK: - Presets
+
+extension LaunchSettings {
+  /// Controller turbo and slow-motion buttons (part of the turbo options a preset decides).
+  var padTurbo: PadButton {
+    get { controls.padButton(.turbo) }
+    set { if newValue != controls.padButton(.turbo) { controls.setPad(newValue, for: .turbo) } }
+  }
+  var padSlow: PadButton {
+    get { controls.padButton(.slow) }
+    set { if newValue != controls.padButton(.slow) { controls.setPad(newValue, for: .slow) } }
+  }
+
+  /// The settings a preset decides, with their Original values. Enhanced is LaunchSettings()'s value (the default
+  /// install). Everything else (invisible fixes, performance, window, keys, controls mapping, diagnostics) is not
+  /// part of a preset. docs/reference.md "Presets" lists them (tests/launcher_presets_tests.py checks it).
+  static let presetRules: [PresetRule] = [
+    .make("resolutionScale", \.resolution, original: .native),
+    .make("frameRate", \.frameRate, original: .thirty),
+    .make("auto2x", \.auto2x, original: true),
+    .make("upscaling", \.upscaling, original: .off),
+    .make("effectsSize", \.effects, original: .original),
+    .make("skipIntro", \.skipIntro, original: false),
+    .make("fastPacing", \.fastPacing, original: false),
+    .make("unlockExtras", \.unlockExtras, original: false),
+    .make("characterEditor", \.characterEditor, original: false),
+    .make("fixLodSizeCache", \.fixLodSizeCache, original: false),
+    .make("turboSpeed", \.turboSpeed, original: TurboSpeed.off),
+    .make("slowSpeed", \.slowSpeed, original: SlowSpeed.off),
+    .make("turboAudio", \.turboAudio, original: .natural),
+    .make("turboNotice", \.turboNotice, original: .overlay),
+    .make("padTurbo", \.padTurbo, original: PadButton.none),
+    .make("padSlow", \.padSlow, original: PadButton.none),
+    .make("stickDeadzoneLeft", \.controls.stickDeadzoneLeft, original: nil),
+    .make("stickDeadzoneRight", \.controls.stickDeadzoneRight, original: nil),
+  ]
+
+  /// The preset's values (Custom: the defaults, never applied).
+  static func presetValues(_ preset: SettingsPreset) -> LaunchSettings {
+    var s = LaunchSettings()
+    if preset == .original { for rule in presetRules { rule.setOriginal(&s) } }
+    s.preset = preset
+    return s
+  }
+
+  /// Whether every preset setting has the preset's value (Custom always matches).
+  func matches(_ preset: SettingsPreset) -> Bool {
+    guard preset != .custom else { return true }
+    let target = Self.presetValues(preset)
+    return !Self.presetRules.contains { $0.differs(self, target) }
+  }
+
+  /// Selects a preset and applies its settings (nothing else changes): Original and Enhanced their fixed values,
+  /// Custom the saved Custom values (none saved: the current values stay).
+  mutating func applyPreset(_ preset: SettingsPreset, custom: LaunchSettings?) {
+    if let target = preset == .custom ? custom : Self.presetValues(preset) {
+      for rule in Self.presetRules { rule.copy(&self, target) }
+    }
+    self.preset = preset
+  }
+
+  /// Settings key of the saved Custom preset: a dictionary of the preset settings' keys (those that differ from
+  /// Enhanced), written whenever a preset setting changes (SettingsModel.settings).
+  static let customKey = "customPreset"
+
+  /// Settings key of the saved named presets: name -> dictionary as the Custom preset (Save Preset…).
+  static let namedKey = "savedPresets"
+  /// Names the built-in presets keep (case-insensitive): a saved preset can't take them.
+  static func isReservedPresetName(_ name: String) -> Bool {
+    SettingsPreset.allCases.contains { $0.title.lowercased() == name.lowercased() }
+  }
+
+  /// The preset settings as a dictionary of setting keys (only those that differ from Enhanced).
+  var presetDictionary: [String: Any] {
+    var custom = LaunchSettings()
+    for rule in Self.presetRules { rule.copy(&custom, self) }
+    let memory = MemorySettingsStore()
+    custom.save(to: memory, old: LaunchSettings())
+    memory.set(nil, forKey: "padDefaultsVersion")
+    return memory.values
+  }
+  /// Settings read from a preset dictionary (only the preset settings are meaningful).
+  static func fromPresetDictionary(_ values: [String: Any]) -> LaunchSettings {
+    var dict = values
+    dict["padDefaultsVersion"] = PadAction.defaultsVersion  // never migrated as old defaults
+    return loadStored(from: MemorySettingsStore(dict))
+  }
+
+  /// The saved Custom values (only the preset settings are used); nil when none were saved.
+  static func savedCustom(in store: SettingsStore) -> LaunchSettings? {
+    (store.object(forKey: customKey) as? [String: Any]).map(fromPresetDictionary)
+  }
+
+  /// Saves this settings' preset settings as the Custom preset.
+  func storeCustom(to store: SettingsStore) { store.set(presetDictionary, forKey: Self.customKey) }
+
+  /// The saved named presets.
+  static func namedPresets(in store: SettingsStore) -> [String: [String: Any]] {
+    store.object(forKey: namedKey) as? [String: [String: Any]] ?? [:]
+  }
+
+  /// Whether a preset setting differs between the two.
+  func presetSettingsDiffer(from other: LaunchSettings) -> Bool {
+    Self.presetRules.contains { $0.differs(self, other) }
+  }
+
+  /// --preset original|enhanced|custom|NAME (a saved preset) for one CLI launch, snapshot, --print-env or --play
+  /// (never stored); false when NAME is unknown.
+  mutating func applyCLIPreset(_ value: String, store: SettingsStore) -> Bool {
+    if let preset = SettingsPreset(rawValue: value) {
+      applyPreset(preset, custom: Self.savedCustom(in: store))
+      return true
+    }
+    guard let values = Self.namedPresets(in: store)[value] else { return false }
+    applyPreset(.custom, custom: Self.fromPresetDictionary(values))
+    return true
   }
 }
 

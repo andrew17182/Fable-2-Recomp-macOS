@@ -16,7 +16,8 @@
 //   "Fable II Dev Launcher.app/Contents/MacOS/FableIIDevLauncher" --launch
 //       [--pick title|live:Hero000|library:NAME] [--no-skip-intro] [--no-boot]
 //       [--target-slot HeroNNN|none] [--test-control] [--fps settings|auto|30|60|uncapped]
-//       [--turbo-notice overlay|game] [--turbo-speed 1.1-4.0] [--slow-speed 0.25-0.9] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
+//       [--preset original|enhanced|custom|NAME] (that preset's settings, NAME a saved one; later flags still win)
+//       [--turbo-notice overlay|game] [--turbo-speed 1.0-4.0 (1.0 = off)] [--slow-speed 0.25-1.0 (1.0 = off)] [--turbo-audio natural|high-pitch|normal] [--trace-preset standard|off|loading|gpu|everything]
 //       [--resolution auto|native|2|3] [--upscaling off|metalfx-spatial] [--effects original|full]
 //       [--display windowed|fullscreen] [--build playtest|latest] [--extra-env "NAME=VALUE ..."]
 //       [--<switch>|--no-<switch>] for every on/off setting (LaunchSettings.flags: fur-fix,
@@ -27,7 +28,7 @@
 //       [--print-args]   print the fable2_dev_session.py arguments as JSON instead of launching
 // With no --pick it uses the choices last made in the window.
 //   --snapshot PATH.png [--tab main|picker|general|display|controls|mods|performance|fixes|diagnostics] [--scroll bottom]
-//       [--pick ...] [--dev-options on|off] [--dev-options-sequence on,off]
+//       [--pick ...] [--dev-options on|off] [--dev-options-sequence on,off] [--preset original|enhanced|custom]
 //       shows the front page, the save library sheet (picker) or a Settings tab (without taking focus), saves the
 //       window to a PNG, quits. Nothing is stored (--dev-options applies to that picture only).
 //   --press-load / --press-continue (testing): select the newest save and press Load Saved Game once the list is in
@@ -594,6 +595,7 @@ struct LauncherView: View {
   var body: some View {
     VStack(spacing: 0) {
       Form {
+        Section { PresetPicker(model: model) }
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.pick, busy: model.busy, disabled: !model.canLaunch,
                    startTitle: { model.startTitle() }, load: { model.loadSave() },
@@ -893,14 +895,19 @@ func cliLaunch(_ argv: [String]) -> Int32 {
     case "--turbo-notice":
       guard let v = value.flatMap(TurboNotice.init(rawValue:)) else { return fail("--turbo-notice expects overlay or game") }
       s.turboNotice = v; i += 1
+    case "--preset":
+      guard let v = value, s.applyCLIPreset(v, store: defaults) else {
+        return fail("--preset expects original, enhanced, custom or a saved preset's name")
+      }
+      i += 1
     case "--turbo-speed":
       guard let v = value.flatMap(Double.init), TurboSpeed.range.contains(v) else {
-        return fail("--turbo-speed expects 1.1 to 4.0")
+        return fail("--turbo-speed expects 1.0 (off) to 4.0")
       }
       s.turboSpeed = TurboSpeed.clean(v); i += 1
     case "--slow-speed":
       guard let v = value.flatMap(Double.init), SlowSpeed.range.contains(v) else {
-        return fail("--slow-speed expects 0.25 to 0.9")
+        return fail("--slow-speed expects 0.25 to 1.0 (off)")
       }
       s.slowSpeed = SlowSpeed.clean(v); i += 1
     case "--turbo-audio":
