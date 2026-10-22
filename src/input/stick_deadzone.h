@@ -49,7 +49,7 @@ inline std::atomic<int> g_left_raw_percent{-1};
 // The same while an input replay drives the pad (src/diagnostics/fable2_session_journal.h Journal::Input),
 // else -1: the replayed left stick the game's pad is built from (schema 3: the raw stick fed into this
 // session's remap; schema 1/2 and keyboard-pad sticks: as recorded). A replay replaces the whole pad, so
-// the overlay shows this instead of the live controller ("R 42%").
+// the overlay shows this instead of the live controller (same "L 42%" format).
 inline std::atomic<int> g_left_replay_percent{-1};
 inline int RadialPercent(int16_t x, int16_t y) {
   const double r = std::sqrt(double(x) * x + double(y) * y) / 32767.0;

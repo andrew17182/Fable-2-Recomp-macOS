@@ -10,7 +10,7 @@
 // mode), "framegen" while frame generation is on (0/F10; "framegen paused" while turbo pauses it), the upscaling
 // filter in use for presenting ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter export,
 // MetalFX only when it is actually applied), the left stick's raw deflection before our deadzone remap ("L 42%",
-// "L --" without a controller; "R 42%", the replayed stick, while an input replay drives the pad;
+// "L --" without a controller; while an input replay drives the pad, the replayed stick;
 // stick_deadzone.h), then this Mac's chip ("M3 Pro", from sysctl machdep.cpu.brand_string, always last).
 // The text uses the game's UI font (src/core/fable2_turbo_notice.h) and falls back to the ImGui font.
 //
@@ -121,11 +121,10 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     }
     // Left stick deflection before our deadzone remap (deadzone tuning): "L  5%", "L 42%", "L100%"; "L --"
     // without a controller. While an input replay drives the pad the game reads the replayed stick, not the
-    // live one: "R 42%" (same width).
+    // live one, so that is shown instead (same format, no mark).
     const int replayed = fable2::stickdz::g_left_replay_percent.load(std::memory_order_relaxed);
-    const int stick = fable2::stickdz::g_left_raw_percent.load(std::memory_order_relaxed);
-    if (replayed >= 0) append("%sR%3d%%", sep, replayed);
-    else if (stick >= 0) append("%sL%3d%%", sep, stick);
+    const int stick = replayed >= 0 ? replayed : fable2::stickdz::g_left_raw_percent.load(std::memory_order_relaxed);
+    if (stick >= 0) append("%sL%3d%%", sep, stick);
     else append("%sL --", sep);
     if (*ChipName()) append("%s%s", sep, ChipName());
   }
