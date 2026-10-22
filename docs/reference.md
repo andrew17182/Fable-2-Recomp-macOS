@@ -325,6 +325,10 @@ any of this. Code: `src/input/test_background.h`, `src/input/controller_hotkeys.
 
 Use `tools/fable2_dev_session.py launch --mode library --save hero1-dog-live --target-slot none --fps 60` to try 60 FPS without writing back to live saves. `--fps 30` selects original pacing, and `--fps uncapped` removes the guest vblank limit. For the GPU-based choice, pass `--env FABLE2_FPS_60=auto --env REX_VSYNC=1` instead of `--fps`. Omit `--fps` to retain existing preferences (the copied config's `fps_60`, which defaults to `"auto"` when unset). 60 FPS mode targets one guest vblank per frame with the normal guest clock; it does not accelerate simulation time. The tested childhood market scene produced about 58–60 unique gameplay frames/s, with one settled window at 60.00; demanding scenes may run slower.
 
+Display latency: the Metal presenter queues at most 2 frames for the display (`FABLE2_PRESENT_DRAWABLES`, default
+`2`; `3` or `0` = the old 3-drawable queue, about one refresh more delay). Launcher: Fixes > Display > "Lower
+display latency". Details and measurements: `docs/macos-metal.md` "Present queue".
+
 Front-end audio preloading uses a 10 ms yield between banks instead of the original 400 ms throttle. It retains every bank load and completion check, shortening the forest painting pause when booting into a save. Set `FABLE2_AUDIO_PRELOAD_DELAY_MS=400` to compare original pacing; accepted overrides are 1–400 ms.
 
 ### Turbo (macOS)
@@ -436,7 +440,7 @@ verify modes, extra env, source checkout). The **Tools** menu has Close Game, Re
 Dev Options: Save Library…, Run Benchmark…, Run Flash Kit…, Export Portable Build…, Update Playtest Build and the
 save library / sessions / benchmark report folders. Default-on kill switches
 (`FABLE2_NATIVE_SHADERS`, `FABLE2_NS_SPECIALIZE`, `FABLE2_SHADOWS_NATIVE`, `FABLE2_DEFERRED_CLEARS`, `FABLE2_ALIAS_CLEAR_NATIVE`, `FABLE2_MAIN_DEPTH_NATIVE`, `FABLE2_EFFECTS_FOOTPRINT_VARIANT`, `FABLE2_CLEAR_LOAD_ACTION`, `FABLE2_SSM_STENCIL_FOLD`, `FABLE2_CLEAR_CONST_SOURCE`, `FABLE2_TILE_EDRAM`,
-`FABLE2_RING_REINIT_FIX`, `FABLE2_TURBO_FINE_DELAY`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
+`FABLE2_RING_REINIT_FIX`, `FABLE2_TURBO_FINE_DELAY`, `FABLE2_PRESENT_DRAWABLES`, `FABLE2_HITCH_TRACE`, `FABLE2_NATIVE_XLATE`, `FABLE2_NATIVE_XLATE_VS`, `FABLE2_NATIVE_TESS`, `FABLE2_NATIVE_RECTS`, `FABLE2_NATIVE_POINTS`, `FABLE2_NATIVE_TESS_BLENDED`) are passed only when turned off (`=0`). Verify modes are passed only
 when turned on (`=1`). Every on/off setting also has `--<name>` / `--no-<name>` for `--launch`, and `--print-args`
 prints the backend arguments without launching.
 

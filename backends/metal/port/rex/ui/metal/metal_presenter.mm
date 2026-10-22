@@ -571,6 +571,25 @@ bool MetalPresenter::CaptureScreen(RawImage& image_out, uint32_t timeout_ms, uin
   return ok;
 }
 
+// Present queue depth (docs/macos-metal.md "Present queue", 2026-10-22). With display sync on, the game renders
+// faster than the display takes frames, so CAMetalLayer's queue stays full: with the default 3 drawables every
+// frame waits behind two older ones (55-61 ms swap->photon at 60 FPS). 2 drawables keep at most one frame
+// waiting (41-45 ms) with the same pacing. FABLE2_PRESENT_DRAWABLES: unset/2 = 2 (fix, default on);
+// 3 or 0 = 3 (old behaviour; 0 is the launcher's "off"). Read once (static).
+namespace {
+NSUInteger PresentDrawableCount() {
+  static const NSUInteger count = [] {
+    const char* v = std::getenv("FABLE2_PRESENT_DRAWABLES");  // getenv-ok: cached in a static
+    const bool old = v && (std::strcmp(v, "3") == 0 || std::strcmp(v, "0") == 0);
+    const NSUInteger n = old ? 3 : 2;
+    REXLOG_INFO("[present] maximumDrawableCount = {} (FABLE2_PRESENT_DRAWABLES={})", uint32_t(n),
+                v ? v : "unset");
+    return n;
+  }();
+  return count;
+}
+}  // namespace
+
 Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
   if (!metal_layer_) {
     REXLOG_WARN("Metal PaintAndPresentImpl called without connected surface");
@@ -616,7 +635,19 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     metal_layer_.framebufferOnly = YES;
     screen_capture_restore_fbo_ = false;
   }
+  // nextDrawable blocks while every drawable is queued for the display; the wait is logged as drawable_wait
+  // (frame CSV + recorder) so the UI-thread cost of the smaller queue is visible.
+  const bool log_drawable_wait = graphics::metal::frame_log::Enabled();
+  const auto drawable_wait_t0 =
+      log_drawable_wait ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   id<CAMetalDrawable> drawable = [metal_layer_ nextDrawable];
+  if (log_drawable_wait) {
+    graphics::metal::frame_log::Record(
+        "drawable_wait", graphics::metal::frame_log::CurrentFrame(),
+        uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                       drawable_wait_t0)
+                     .count()));
+  }
   if (!drawable) {
     REXLOG_WARN("Metal PaintAndPresentImpl failed to get drawable");
     return PaintResult::kNotPresented;
@@ -1094,6 +1125,7 @@ MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
   metal_layer.displaySyncEnabled = tearing_allowed ? NO : YES;
   is_vsync_implicit_out = !tearing_allowed;
 #endif
+  metal_layer.maximumDrawableCount = PresentDrawableCount();
 
   metal_layer_ = metal_layer;
 

@@ -257,6 +257,8 @@ struct SettingsTabView: View {
     case .fixes:
       section(.fixes, "Dog")
       section(.fixes, "Render targets")
+      section(.fixes, "Display")
+      section(.fixes, "Turbo")
       Section {
         ForEach(LaunchSettings.flags(in: .fixes).filter { $0.section == "Game bug fixes (changes original behaviour)" }) {
           row($0)

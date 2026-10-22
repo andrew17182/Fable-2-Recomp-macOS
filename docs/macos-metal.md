@@ -200,6 +200,45 @@ CPU/GPU execution profiling and changes to frame pacing follow a gameplay
 baseline; this recorder does not enable the SDK performance-counter overlay.
 
 
+## Present queue (display latency)
+
+With display sync on (the default), the game renders faster than the display takes frames, so CAMetalLayer's
+drawable queue stays full: each new frame waits behind every older queued one. The layer's default of 3
+drawables means up to two frames of extra delay between the game's swap and the frame reaching the screen.
+The presenter sets `maximumDrawableCount = 2` (`metal_presenter.mm`, `PresentDrawableCount()`), so at most one
+older frame is ahead. `FABLE2_PRESENT_DRAWABLES` (read once): unset or `2` = 2 drawables (default);
+`3` (or `0`, what the launcher passes when the toggle is off) = 3, the old behaviour. Launcher: Settings >
+Dev Options > Fixes > Display > "Lower display latency". It applies with tearing allowed too. Code that sets
+its own `maximumDrawableCount` (for example frame-interpolation work that presents extra frames) overrides
+this and must be measured on its own.
+
+The presenter logs `drawable_wait` rows (time blocked in `nextDrawable`, microseconds) in the frame CSV and the
+flight recorder. With display sync, painting runs on the UI thread and waits there for a free drawable about one
+refresh per paint with either count (p50 16.6 ms, p99 17 ms in both arms), so 2 drawables add no UI-thread
+stall.
+
+Measured 2026-10-22 (M5 Max, 60 Hz display, `--mode library` sessions, camera turn30 +
+headings8, 1-3 runs per arm; guest `swap` to Metal `presentedTime`, median per run):
+
+| Config | 2 drawables | 3 drawables |
+|---|---|---|
+| 1× 60 FPS | 34, 64, 62 ms | 81, 65, 62 ms |
+| 1× 30 FPS | 49, 60, 61 ms | 54, 81, 78 ms |
+| 1× uncapped | 34 ms | 67 ms |
+| 3× 60 FPS | 33, 47, 45 ms | 61, 64, 65 ms |
+| 2× uncapped | 36 ms | 52 ms |
+
+The queue part alone (CPU submit to `presentedTime`) is 32 or 49 ms with 2 drawables and 49 or 65 ms with 3:
+one refresh less on average (about -16 ms over all runs), quantized per launch. Unique presents/s and frame
+gaps did not change with the count. The input-lag study that found this (stick inject to photon) measured
+-14 to -17 ms median and about -30 ms p90.
+
+Separate, pre-existing pacing issue seen in both arms: per launch, the guest swap lands at a random but stable
+phase against display vsync. When it falls just after a vsync (14.5-16.6 ms before the next one), swap jitter
+flips frames between two refreshes: at 60 FPS 10-23% of guest frames are never shown (46-55 unique FPS), at
+30 FPS a 1/2/3-refresh judder. It hit 4 of 11 runs with 2 drawables and 5 of 11 with 3. The frame CSV shows
+it as `swap->first present_submit` near 0 or near 16 ms per frame.
+
 ## Stable 30 FPS and app-owned testing
 
 Metal now defaults to `metal_allow_tearing=false`: CAMetalLayer display

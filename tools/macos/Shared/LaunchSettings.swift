@@ -567,6 +567,7 @@ struct LaunchSettings: Equatable {
   var ssmMerge = false
   var ssmStencilFold = true
   var ringReinitFix = true
+  var presentDrawables2 = true  // docs/macos-metal.md "Present queue"
   var turboFineDelay = true  // docs/turbo.md "Precise sleeps"
   var fixLodSizeCache = false
   var fastPacing = false  // docs/load-fixes-20261016.md section F (pacing change, opt-in; replaces "Shorter load fades")
@@ -790,6 +791,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "ringReinitFix", path: \.ringReinitFix, cli: "ring-reinit-fix", tab: .fixes, section: "Boot",
          title: "Ring re-init fix",
          detail: "Boot-hang workaround; the SDK's own ring sync also fixes it, so off alone changes nothing."),
+    Flag(key: "presentDrawables2", path: \.presentDrawables2, cli: "present-drawables-2", tab: .fixes,
+         section: "Display", title: "Lower display latency",
+         detail: "Queues at most 2 frames for the display instead of 3: about 15 ms less input lag, same smoothness."),
     Flag(key: "turboFineDelay", path: \.turboFineDelay, cli: "turbo-fine-delay", tab: .fixes, section: "Turbo",
          title: "Turbo: precise sleeps",
          detail: "Short sleeps keep their length under turbo. Off: they spin and use several CPU cores."),
@@ -842,6 +846,7 @@ struct LaunchSettings: Equatable {
     (\.dhrStorageFormat, "FABLE2_DHR_STORAGE_FORMAT"),  // docs/hle-census-20261013.md section 11
     (\.tileEdram, "FABLE2_TILE_EDRAM"), (\.ringReinitFix, "FABLE2_RING_REINIT_FIX"),
     (\.turboFineDelay, "FABLE2_TURBO_FINE_DELAY"),  // docs/turbo.md "Precise sleeps"
+    (\.presentDrawables2, "FABLE2_PRESENT_DRAWABLES"),  // docs/macos-metal.md "Present queue" (=0: 3 drawables)
     (\.hitchTrace, "FABLE2_HITCH_TRACE"), (\.nativeXlate, "FABLE2_NATIVE_XLATE"),
     (\.nativeXlateVS, "FABLE2_NATIVE_XLATE_VS"), (\.nativeTess, "FABLE2_NATIVE_TESS"),
     (\.nativeRects, "FABLE2_NATIVE_RECTS"), (\.nativeTessBlended, "FABLE2_NATIVE_TESS_BLENDED"), (\.nativePoints, "FABLE2_NATIVE_POINTS"),

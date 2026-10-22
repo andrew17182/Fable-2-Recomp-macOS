@@ -51,6 +51,8 @@ CASES = [
       '--bind', 'bind_settings=F4', '--bind', 'bind_console=None', '--view-button-to-game']),
     # Fixes > Turbo: precise sleeps (default on, passed only when off).
     ({'turboFineDelay': False}, ['--no-turbo-fine-delay']),
+    # Fixes > Display > Lower display latency (FABLE2_PRESENT_DRAWABLES, default on, passed only when off).
+    ({'presentDrawables2': False}, ['--no-present-drawables-2']),
     # Controls > Game controllers > Works in background (default on).
     ({'padBackground': False}, ['--no-pad-background']),
     # Diagnostics > Record input (src/diagnostics/fable2_session_journal.h).
