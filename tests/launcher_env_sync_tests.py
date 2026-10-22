@@ -60,8 +60,9 @@ CASES = [
     ({'padTurbo': 'none', 'padScreenshot': 'none'}, ['--pad-turbo', 'none', '--pad-screenshot', 'none']),
     ({'padSlow': 'ls'}, ['--pad-slow', 'ls']),
     # Stick deadzones (FABLE2_STICK_*, src/input/stick_deadzone.h).
-    ({'stickDeadzoneLeft': 5, 'stickDeadzoneRight': 0, 'stickAntiDeadzone': False},
-     ['--stick-deadzone-left', '5', '--stick-deadzone-right', '0', '--no-stick-anti-deadzone']),
+    ({'stickDeadzoneLeft': 5, 'stickDeadzoneRight': 0}, ['--stick-deadzone-left', '5', '--stick-deadzone-right', '0']),
+    # A stored value of the old "Skip game deadzone" toggle (until 2026-10-22) is ignored by both apps.
+    ({'stickDeadzoneLeft': 5, 'stickAntiDeadzone': False}, ['--stick-deadzone-left', '5']),
 ]
 # Set only by the player: Play's own marker for FableIILauncher. Skip intro is explicit (1 or 0) in both.
 PLAYER_ONLY = {'FABLE2_PLAYER_LAUNCH': '1'}

@@ -180,6 +180,11 @@ var stickReset = stickLoaded
 stickReset.stickDeadzoneRight = nil
 stickReset.save(to: stickStore, old: stickLoaded)
 out["stickReset"] = ControlSettings.load(from: stickStore).stickDeadzoneRight.map(String.init) ?? "game"
+// The old "Skip game deadzone" toggle (until 2026-10-22): a stored choice is dropped and never sent.
+stickStore.set(false, forKey: "stickAntiDeadzone")
+let stickStale = ControlSettings.load(from: stickStore)
+out["stickStaleKey"] = stickStore.object(forKey: "stickAntiDeadzone") == nil ? "removed" : "kept"
+out["stickStaleEnv"] = stickStale.environment.filter { $0.hasPrefix("FABLE2_STICK_ANTI") }
 var pads = ControlSettings()
 out["padDefault"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
 pads.setPad(.ls, for: .turbo)
@@ -287,11 +292,15 @@ class ControlsHarnessTests(unittest.TestCase):
             'FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=view'])
 
     def test_stick_deadzones(self):
-        self.assertEqual(self.out['stickCLI'], ['ok1', 'error', 'error', 'ok1', 'ok0'])
-        self.assertEqual(self.out['stickEnv'], ['FABLE2_STICK_DEADZONE_LEFT=5', 'FABLE2_STICK_DEADZONE_RIGHT=0',
-                                                'FABLE2_STICK_ANTI_DEADZONE=0'])
+        # --no-stick-anti-deadzone is gone (2026-10-22): the game's deadzone is always skipped with a value set.
+        self.assertEqual(self.out['stickCLI'], ['ok1', 'error', 'error', 'ok1', 'notMine'])
+        self.assertEqual(self.out['stickEnv'], ['FABLE2_STICK_DEADZONE_LEFT=5', 'FABLE2_STICK_DEADZONE_RIGHT=0'])
         self.assertEqual(self.out['stickDefaultEnv'], [])  # game default: nothing passed
-        self.assertEqual(self.out['stickGameEnv'], ['FABLE2_STICK_DEADZONE_RIGHT=0', 'FABLE2_STICK_ANTI_DEADZONE=0'])
+        self.assertEqual(self.out['stickGameEnv'], ['FABLE2_STICK_DEADZONE_RIGHT=0'])
+        self.assertEqual(self.out['stickStaleKey'], 'removed')
+        self.assertEqual(self.out['stickStaleEnv'], [])
+        swift = (ROOT / 'tools/macos/Shared/ControlsView.swift').read_text()
+        self.assertNotIn('Skip game deadzone', swift)
         self.assertEqual(self.out['stickPersist'], ['game', '12'])
         self.assertEqual(self.out['stickReset'], 'game')
         header = (ROOT / 'src/input/stick_deadzone.h').read_text()

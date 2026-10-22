@@ -175,17 +175,17 @@ environment route (below).
   (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
   click; see "Controller hotkeys" below) and
   **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`), **Left/Right stick deadzone**
-  (Game, 0–50%) and **Skip game deadzone** (see "Stick deadzones" below).
+  (Game, 0–50%; see "Stick deadzones" below).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
 settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
 `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
-(+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight` (no entry = Game), `stickAntiDeadzone`
+(+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight` (no entry = Game; a stored `stickAntiDeadzone` from the old toggle is removed on load)
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
 `--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`,
-`--stick-deadzone-left|--stick-deadzone-right game|0..50`, `--stick-anti-deadzone` / `--no-stick-anti-deadzone`.
+`--stick-deadzone-left|--stick-deadzone-right game|0..50`.
 
 ### Mouse look (right stick)
 
@@ -287,12 +287,12 @@ Settings > Controls > Game controllers:
 |---|---|---|
 | Left stick deadzone | `FABLE2_STICK_DEADZONE_LEFT` = `game` or 0–50 (%) | game (unchanged) |
 | Right stick deadzone | `FABLE2_STICK_DEADZONE_RIGHT` = `game` or 0–50 (%) | game (unchanged) |
-| Skip game deadzone | `FABLE2_STICK_ANTI_DEADZONE=0` when off | on (acts only with a deadzone set) |
 
 With a deadzone N set, a stick is zero inside N% (radial; drift suppression) and past it the range N–100% is
 rescaled onto 30–100% before the game sees it, so the game's own ramp gives a near-linear 0–1 from N% to the
-edge. Full deflection is passed unchanged. With Skip game deadzone off, only our N% applies and the game's
-30% still sits on top (useful only for N above 30). Code: `src/input/stick_deadzone.h`, applied in
+edge. Full deflection is passed unchanged. This skip of the game's deadzone is always on with a value set
+(the launcher toggle "Skip game deadzone" was removed 2026-10-22). Dev escape hatch, env only:
+`FABLE2_STICK_ANTI_DEADZONE=0` applies only our N% and leaves the game's 30% on top (default 1). Code: `src/input/stick_deadzone.h`, applied in
 `BackFilterDriver` (`src/input/controller_hotkeys.h`) to SDL controllers only (not the keyboard pad or mouse
 look). `FABLE2_PAD_DEBUG=1` logs each stick change as raw -> remapped. Test pad:
 `fable2_test_control.py stick <session> lx|ly|rx|ry <value>` holds a virtual-pad axis (SDL units; ly/ry positive

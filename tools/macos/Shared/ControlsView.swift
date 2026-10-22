@@ -16,8 +16,9 @@
 //   (turbo, slow, quick save, screenshot on View/Share/stick clicks): FABLE2_PAD_TURBO, FABLE2_PAD_SLOW, FABLE2_PAD_QUICKSAVE,
 //   FABLE2_PAD_SCREENSHOT; View-button switch: FABLE2_VIEW_BUTTON_TO_GAME (src/input/controller_hotkeys.h);
 //   "Works in background": FABLE2_PAD_BACKGROUND=0 when off (default on, src/input/test_background.h).
-//   Stick deadzones: FABLE2_STICK_DEADZONE_LEFT / _RIGHT (percent; unset = the game's own) and
-//   FABLE2_STICK_ANTI_DEADZONE=0 when "Skip game deadzone" is off (src/input/stick_deadzone.h).
+//   Stick deadzones: FABLE2_STICK_DEADZONE_LEFT / _RIGHT (percent; unset = the game's own). With a value set the
+//   game's own deadzone is always skipped (the game's FABLE2_STICK_ANTI_DEADZONE, default 1, has no launcher
+//   control; src/input/stick_deadzone.h).
 import AppKit
 import GameController
 import SwiftUI
@@ -351,12 +352,10 @@ struct ControlSettings: Equatable {
   /// Stick deadzones in percent (0...50); nil = the game's own (unchanged input).
   var stickDeadzoneLeft: Int? = nil
   var stickDeadzoneRight: Int? = nil
-  /// Past our deadzone, small moves skip the game's large deadzone (FABLE2_STICK_ANTI_DEADZONE, default on).
-  var stickAntiDeadzone = true
 
   static let scaleRange = 1...4096
   static let deadzoneRange = 0...50
-  var sticksDefault: Bool { stickDeadzoneLeft == nil && stickDeadzoneRight == nil && stickAntiDeadzone }
+  var sticksDefault: Bool { stickDeadzoneLeft == nil && stickDeadzoneRight == nil }
 
   func padButton(_ action: PadAction) -> PadButton { pad[action] ?? action.defaultButton }
 
@@ -388,7 +387,8 @@ struct ControlSettings: Equatable {
     if let on = store.object(forKey: "padBackground") as? Bool { c.padBackground = on }
     c.stickDeadzoneLeft = (store.object(forKey: "stickDeadzoneLeft") as? Int).map(clampDeadzone)
     c.stickDeadzoneRight = (store.object(forKey: "stickDeadzoneRight") as? Int).map(clampDeadzone)
-    if let on = store.object(forKey: "stickAntiDeadzone") as? Bool { c.stickAntiDeadzone = on }
+    // The game-deadzone skip had a toggle until 2026-10-22; it is always on now, so drop a stored choice.
+    if store.object(forKey: "stickAntiDeadzone") != nil { store.set(nil, forKey: "stickAntiDeadzone") }
     var stored: [PadAction: PadButton] = [:]
     for action in PadAction.allCases {
       if let raw = store.string(forKey: action.storeKey), let button = PadButton(rawValue: raw) { stored[action] = button }
@@ -420,7 +420,6 @@ struct ControlSettings: Equatable {
     if padBackground != old.padBackground { store.set(padBackground, forKey: "padBackground") }
     if stickDeadzoneLeft != old.stickDeadzoneLeft { store.set(stickDeadzoneLeft, forKey: "stickDeadzoneLeft") }
     if stickDeadzoneRight != old.stickDeadzoneRight { store.set(stickDeadzoneRight, forKey: "stickDeadzoneRight") }
-    if stickAntiDeadzone != old.stickAntiDeadzone { store.set(stickAntiDeadzone, forKey: "stickAntiDeadzone") }
     for action in PadAction.allCases where padButton(action) != old.padButton(action) {
       // A default is stored as no entry, so a later change of defaults reaches it.
       store.set(pad[action].map(\.rawValue), forKey: action.storeKey)
@@ -445,7 +444,6 @@ struct ControlSettings: Equatable {
     // Stick deadzones: unset = the game's own.
     if let v = stickDeadzoneLeft { env.append("FABLE2_STICK_DEADZONE_LEFT=\(Self.clampDeadzone(v))") }
     if let v = stickDeadzoneRight { env.append("FABLE2_STICK_DEADZONE_RIGHT=\(Self.clampDeadzone(v))") }
-    if !stickAntiDeadzone { env.append("FABLE2_STICK_ANTI_DEADZONE=0") }  // default on in the game
     // Controller hotkeys: all four once any differs, so the game never mixes them with its defaults.
     if PadAction.allCases.contains(where: { padButton($0) != $0.defaultButton }) {
       for action in PadAction.allCases { env.append("\(action.envName)=\(padButton(action).rawValue)") }
@@ -468,7 +466,7 @@ struct ControlSettings: Equatable {
   /// Dev Launcher --launch options: --keyboard-map MAP, --mouse-look / --no-mouse-look, --mouse-look-scale N,
   /// --bind CVAR=KEY (bind_console, bind_settings, bind_debug_overlay, bind_achievements),
   /// --view-button-to-game / --no-view-button-to-game, --pad-background / --no-pad-background, --pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs,
-  /// --stick-deadzone-left|--stick-deadzone-right game|0...50, --stick-anti-deadzone / --no-stick-anti-deadzone.
+  /// --stick-deadzone-left|--stick-deadzone-right game|0...50.
   mutating func applyCLI(_ arg: String, _ value: String?) -> CLIResult {
     switch arg {
     case "--keyboard-map":
@@ -498,8 +496,6 @@ struct ControlSettings: Equatable {
       guard let v = Self.parseDeadzone(value) else { return .error("\(arg) expects game or 0 to 50") }
       if arg == "--stick-deadzone-left" { stickDeadzoneLeft = v } else { stickDeadzoneRight = v }
       return .ok(consumed: 1)
-    case "--stick-anti-deadzone": stickAntiDeadzone = true; return .ok(consumed: 0)
-    case "--no-stick-anti-deadzone": stickAntiDeadzone = false; return .ok(consumed: 0)
     default:
       guard let action = PadAction.allCases.first(where: { $0.cliFlag == arg }) else { return .notMine }
       guard let button = value.flatMap(PadButton.init(rawValue:)) else {
@@ -1003,15 +999,6 @@ struct ControlsTabContent: View {
                   env: "FABLE2_STICK_DEADZONE_LEFT")
       deadzoneRow("Right stick deadzone", value: $model.settings.controls.stickDeadzoneRight,
                   env: "FABLE2_STICK_DEADZONE_RIGHT")
-      Toggle(isOn: $model.settings.controls.stickAntiDeadzone) {
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Skip game deadzone")
-          Text("With a deadzone set, small stick moves still move you.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      .disabled(controls.stickDeadzoneLeft == nil && controls.stickDeadzoneRight == nil)
-      .help(variant == .dev ? "FABLE2_STICK_ANTI_DEADZONE=0 when off (src/input/stick_deadzone.h)." : "")
     } header: {
       Text("Game controllers")
     } footer: {
@@ -1023,7 +1010,6 @@ struct ControlsTabContent: View {
           model.settings.controls.pad = [:]
           model.settings.controls.stickDeadzoneLeft = nil
           model.settings.controls.stickDeadzoneRight = nil
-          model.settings.controls.stickAntiDeadzone = true
         }
         .disabled(model.settings.controls.pad.isEmpty && model.settings.controls.sticksDefault)
       }
