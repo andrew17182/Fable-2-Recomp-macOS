@@ -236,6 +236,7 @@ class MetalPresenter : public Presenter {
   std::array<id, kGuestOutputMailboxSize> guest_output_textures_;
   std::atomic<uint32_t> last_guest_output_mailbox_index_{UINT32_MAX};
   std::array<uint64_t, kGuestOutputMailboxSize> guest_output_submissions_{};
+  uint64_t VsyncLockFrameId(uint32_t mailbox_index) const;
   std::array<uint64_t, kGuestOutputMailboxSize> guest_output_frame_ids_{};
   std::array<int64_t, kGuestOutputMailboxSize> guest_output_submitted_us_{};
   uint64_t guest_output_waited_submission_ = 0;

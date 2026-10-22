@@ -25,11 +25,23 @@
 #include "rex/ui/metal/metal_startup_wait.h"
 #include "rex/ui/windowed_app_context.h"
 #include "rex/graphics/flags.h"
+#include "rex/graphics/metal/metal_vsync_lock.h"
+#include <rex/chrono/clock.h>
+#include <rex/cvar.h>
+#include <rex/kernel/xboxkrnl/video.h>
+#include <rex/system/kernel_state.h>
+#include <rex/system/xthread.h>
+#include <rex/thread.h>
+#include <mach/mach_time.h>
+#include <mach/mach.h>
+#include <mach/thread_policy.h>
+#include <cmath>
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -56,6 +68,98 @@ std::string MetalGraphicsSystem::name() const { return "Metal"; }
 
 void MetalGraphicsSystem::CreateProvider(bool with_presentation) {
   provider_ = rex::ui::metal::MetalProvider::Create();
+}
+
+X_STATUS MetalGraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
+                                            system::KernelState* kernel_state) {
+  const X_STATUS status = GraphicsSystem::SetupGuestGpu(function_dispatcher, kernel_state);
+  if (status == X_STATUS_SUCCESS && vsync_lock::Enabled()) {
+    StartPhaseLockedVblankWorker();
+  }
+  return status;
+}
+
+// FABLE2_VSYNC_PHASE_LOCK (metal_vsync_lock.h). Same guest-tick schedule as the SDK worker (graphics_system.cpp:
+// one vblank per 1/refresh guest seconds, 1 kHz with vsync off), with two differences: the schedule takes the
+// phase corrections of the lock (fractions of a millisecond per frame, or one refresh to drain a queued frame),
+// and with vsync on it sleeps to the vblank deadline (mach_wait_until) instead of polling every millisecond.
+void MetalGraphicsSystem::StartPhaseLockedVblankWorker() {
+  if (vsync_worker_thread_) {
+    vsync_worker_running_ = false;
+    vsync_worker_thread_->Wait(0, 0, 0, nullptr);
+    vsync_worker_thread_.reset();
+  }
+  vsync_worker_running_ = true;
+  vsync_worker_thread_ = system::object_ref<system::XHostThread>(
+      new system::XHostThread(kernel_state_, 128 * 1024, 0, [this]() {
+        system::X_VIDEO_MODE video_mode;
+        kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
+        const double refresh_rate_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
+        const uint64_t guest_tick_frequency = chrono::Clock::guest_tick_frequency();
+        const int64_t vsync_interval_ticks =
+            std::max(int64_t(1), int64_t(double(guest_tick_frequency) / refresh_rate_hz));
+        const int64_t no_vsync_interval_ticks = std::max(int64_t(1), int64_t(guest_tick_frequency / 1000));
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        // Precise wakes: a guest-mapped thread priority lets the kernel coalesce timers (vblanks 13-21 ms apart
+        // measured with mach_wait_until). Time-constraint policy, like an audio thread: ~1 ms of work per
+        // vblank period, wakes within its constraint.
+        {
+          const double ns_to_abs = double(tb.denom) / double(tb.numer);
+          thread_time_constraint_policy_data_t policy;
+          policy.period = uint32_t(1e9 / refresh_rate_hz * ns_to_abs);
+          policy.computation = uint32_t(500e3 * ns_to_abs);
+          policy.constraint = uint32_t(2e6 * ns_to_abs);
+          policy.preemptible = 1;
+          const kern_return_t kr =
+              thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY,
+                                reinterpret_cast<thread_policy_t>(&policy), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+          if (kr != KERN_SUCCESS) REXLOG_WARN("[vsync-lock] time-constraint policy failed ({})", int(kr));
+        }
+        REXLOG_INFO("[vsync-lock] vblank worker: guest {:.2f} Hz, {} ticks per vblank", refresh_rate_hz,
+                    vsync_interval_ticks);
+        int64_t last_frame_time = int64_t(chrono::Clock::QueryGuestTickCount());
+        const char* trace_env = std::getenv("FABLE2_VSYNC_LOCK_TRACE");  // getenv-ok: once per worker
+        const bool trace = trace_env && *trace_env && std::strcmp(trace_env, "0") != 0;
+        while (vsync_worker_running_) {
+          const bool vsync = REXCVAR_GET(vsync);
+          const double scalar = chrono::Clock::guest_time_scalar();
+          const bool scaled = std::fabs(scalar - 1.0) > 1e-6;
+          vsync_lock::SetSuspended(scaled || !vsync);
+          const double ticks_per_second = double(guest_tick_frequency) * scalar;
+          const int64_t correction_ns = vsync_lock::TakeCorrectionNs();
+          if (correction_ns && vsync && !scaled) {
+            last_frame_time += int64_t(std::llround(double(correction_ns) * 1e-9 * ticks_per_second));
+          }
+          const int64_t interval_ticks = vsync ? vsync_interval_ticks : no_vsync_interval_ticks;
+          int64_t current_time = int64_t(chrono::Clock::QueryGuestTickCount());
+          while (current_time - last_frame_time >= interval_ticks) {
+            const double before = vsync_lock::NowSeconds();
+            MarkVblank();
+            const double after = vsync_lock::NowSeconds();
+            vsync_lock::NoteVblank(before);
+            if (trace) {
+              frame_log::RecordUptime("vlock_tick", uint64_t(current_time - last_frame_time),
+                                      before, uint64_t((after - before) * 1e6));
+            }
+            last_frame_time += interval_ticks;
+          }
+          if (!vsync) {
+            rex::thread::Sleep(std::chrono::milliseconds(1));
+            continue;
+          }
+          current_time = int64_t(chrono::Clock::QueryGuestTickCount());
+          double wait_s = double(last_frame_time + interval_ticks - current_time) / ticks_per_second;
+          wait_s = std::clamp(wait_s, 0.0, 0.020);  // re-check the cvar / scalar at least every 20 ms
+          if (wait_s > 0) {
+            const uint64_t wait_mach = uint64_t(wait_s * 1e9 * double(tb.denom) / double(tb.numer));
+            mach_wait_until(mach_absolute_time() + wait_mach);
+          }
+        }
+        return 0;
+      }));
+  vsync_worker_thread_->set_name("GPU VSync (phase lock)");
+  vsync_worker_thread_->Create();
 }
 
 void MetalGraphicsSystem::InitializeShaderStorage(

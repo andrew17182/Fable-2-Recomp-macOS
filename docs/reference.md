@@ -344,6 +344,9 @@ Use `tools/fable2_dev_session.py launch --mode library --save hero1-dog-live --t
 Display latency: the Metal presenter queues at most 2 frames for the display (`FABLE2_PRESENT_DRAWABLES`, default
 `2`; `3` or `0` = the old 3-drawable queue, about one refresh more delay). Launcher: Fixes > Display > "Lower
 display latency". Details and measurements: `docs/macos-metal.md` "Present queue".
+`FABLE2_VSYNC_PHASE_LOCK=1` (Fixes > Display > "Sync frames to the display", default off) locks the guest vblank
+phase to the display so each finished frame is painted ~3 ms later instead of 0-16 ms, and removes the per-launch
+judder/dropped-frame phase: `docs/macos-metal.md` "Vsync phase lock".
 
 Front-end audio preloading uses a 10 ms yield between banks instead of the original 400 ms throttle. It retains every bank load and completion check, shortening the forest painting pause when booting into a save. Set `FABLE2_AUDIO_PRELOAD_DELAY_MS=400` to compare original pacing; accepted overrides are 1–400 ms.
 

@@ -33,6 +33,10 @@ class MetalGraphicsSystem : public GraphicsSystem {
   void InitializeShaderStorage(const std::filesystem::path& cache_root,
                                uint32_t title_id, bool blocking) override;
 
+  // FABLE2_VSYNC_PHASE_LOCK (metal_vsync_lock.h): replaces the SDK's guest vblank worker with a phase-locked one.
+  X_STATUS SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
+                         system::KernelState* kernel_state) override;
+
  protected:
   std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
 
@@ -40,6 +44,7 @@ class MetalGraphicsSystem : public GraphicsSystem {
   // [shader-prep] FABLE2_SHADER_PREP: headless shader preparation, then exit.
   static bool ShaderPrepRequested();
   [[noreturn]] void RunShaderPrep();
+  void StartPhaseLockedVblankWorker();
 };
 
 }  // namespace metal

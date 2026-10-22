@@ -606,6 +606,7 @@ struct LaunchSettings: Equatable {
   var ssmStencilFold = true
   var ringReinitFix = true
   var presentDrawables2 = true  // docs/macos-metal.md "Present queue"
+  var vsyncPhaseLock = false  // docs/macos-metal.md "Vsync phase lock"
   var turboFineDelay = true  // docs/turbo.md "Precise sleeps"
   var fixLodSizeCache = false
   var fastPacing = false  // docs/load-fixes-20261016.md section F (pacing change, opt-in; replaces "Shorter load fades")
@@ -834,6 +835,9 @@ struct LaunchSettings: Equatable {
     Flag(key: "presentDrawables2", path: \.presentDrawables2, cli: "present-drawables-2", tab: .fixes,
          section: "Display", title: "Lower display latency",
          detail: "Queues at most 2 frames for the display instead of 3: about 15 ms less input lag, same smoothness."),
+    Flag(key: "vsyncPhaseLock", path: \.vsyncPhaseLock, cli: "vsync-phase-lock", tab: .fixes, section: "Display",
+         title: "Sync frames to the display",
+         detail: "Times each frame to the display refresh: steady pacing every launch and less input lag."),
     Flag(key: "turboFineDelay", path: \.turboFineDelay, cli: "turbo-fine-delay", tab: .fixes, section: "Turbo",
          title: "Turbo: precise sleeps",
          detail: "Short sleeps keep their length under turbo. Off: they spin and use several CPU cores."),
@@ -887,6 +891,7 @@ struct LaunchSettings: Equatable {
     (\.tileEdram, "FABLE2_TILE_EDRAM"), (\.ringReinitFix, "FABLE2_RING_REINIT_FIX"),
     (\.turboFineDelay, "FABLE2_TURBO_FINE_DELAY"),  // docs/turbo.md "Precise sleeps"
     (\.presentDrawables2, "FABLE2_PRESENT_DRAWABLES"),  // docs/macos-metal.md "Present queue" (=0: 3 drawables)
+    (\.vsyncPhaseLock, "FABLE2_VSYNC_PHASE_LOCK"),  // docs/macos-metal.md "Vsync phase lock"
     (\.hitchTrace, "FABLE2_HITCH_TRACE"), (\.nativeXlate, "FABLE2_NATIVE_XLATE"),
     (\.nativeXlateVS, "FABLE2_NATIVE_XLATE_VS"), (\.nativeTess, "FABLE2_NATIVE_TESS"),
     (\.nativeRects, "FABLE2_NATIVE_RECTS"), (\.nativeTessBlended, "FABLE2_NATIVE_TESS_BLENDED"), (\.nativePoints, "FABLE2_NATIVE_POINTS"),

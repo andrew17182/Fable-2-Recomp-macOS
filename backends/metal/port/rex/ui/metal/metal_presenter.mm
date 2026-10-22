@@ -1,6 +1,7 @@
 #include <algorithm>
 #include "rex/graphics/metal/metal_frame_log.h"
 #include "rex/graphics/metal/metal_trace.h"
+#include "rex/graphics/metal/metal_vsync_lock.h"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -590,6 +591,13 @@ NSUInteger PresentDrawableCount() {
 }
 }  // namespace
 
+// Vsync phase lock frame id of a guest output: the frame recorder's id, or without the recorder the guest output
+// submission number (distinct per refreshed output).
+uint64_t MetalPresenter::VsyncLockFrameId(uint32_t mailbox_index) const {
+  const uint64_t id = guest_output_frame_ids_[mailbox_index];
+  return id ? id : (guest_output_submissions_[mailbox_index] | (uint64_t(1) << 63));
+}
+
 Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawers) {
   if (!metal_layer_) {
     REXLOG_WARN("Metal PaintAndPresentImpl called without connected surface");
@@ -635,12 +643,17 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     metal_layer_.framebufferOnly = YES;
     screen_capture_restore_fbo_ = false;
   }
+  // Vsync phase lock (metal_vsync_lock.h): drawable acquisition time and the nextDrawable wait of each paint.
+  const bool vsync_lock_on = graphics::metal::vsync_lock::Enabled();
+  const double vsync_lock_paint_start = vsync_lock_on ? graphics::metal::vsync_lock::NowSeconds() : 0.0;
   // nextDrawable blocks while every drawable is queued for the display; the wait is logged as drawable_wait
   // (frame CSV + recorder) so the UI-thread cost of the smaller queue is visible.
   const bool log_drawable_wait = graphics::metal::frame_log::Enabled();
   const auto drawable_wait_t0 =
       log_drawable_wait ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   id<CAMetalDrawable> drawable = [metal_layer_ nextDrawable];
+  const double vsync_lock_drawable_wait =
+      vsync_lock_on ? graphics::metal::vsync_lock::NowSeconds() - vsync_lock_paint_start : 0.0;
   if (log_drawable_wait) {
     graphics::metal::frame_log::Record(
         "drawable_wait", graphics::metal::frame_log::CurrentFrame(),
@@ -1004,6 +1017,29 @@ Presenter::PaintResult MetalPresenter::PaintAndPresentImpl(bool execute_ui_drawe
     }
   }
 
+  if (vsync_lock_on) {
+    // Frame ids as in RefreshGuestOutputImpl (VsyncLockFrameId). A repaint of the same output (UI) is not a new
+    // frame, but its drawable wait still tells the lock where the UI paint loop wakes.
+    static std::atomic<uint64_t> vsync_lock_last_frame{0};
+    const bool has_frame = draw_guest_output && guest_output_mailbox_index != UINT32_MAX;
+    const uint64_t frame = has_frame ? VsyncLockFrameId(guest_output_mailbox_index) : 0;
+    const bool new_frame = frame && frame != vsync_lock_last_frame.exchange(frame, std::memory_order_relaxed);
+    graphics::metal::vsync_lock::OnPaint(frame, new_frame, vsync_lock_paint_start + vsync_lock_drawable_wait,
+                                         vsync_lock_drawable_wait);
+    if (new_frame) {
+      [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
+        graphics::metal::vsync_lock::OnPresented(frame, shown.presentedTime);
+      }];
+      if (graphics::metal::vsync_lock::TraceEnabled()) {
+        [command_buffer addCompletedHandler:^(id<MTLCommandBuffer> done) {
+          const double start = done.GPUStartTime, end = done.GPUEndTime;
+          if (end > 0 && end >= start) {
+            graphics::metal::frame_log::RecordUptime("vlock_gpu_end", frame, end, uint64_t((end - start) * 1e6));
+          }
+        }];
+      }
+    }
+  }
   if (draw_guest_output && measured_frame_id && graphics::metal::frame_log::Enabled()) {
     const uint64_t frame_id = measured_frame_id;
     graphics::metal::frame_log::Record("present_submit", frame_id);
@@ -1100,6 +1136,28 @@ MetalPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(Surface& new_sur
     NSWindow* ns_window = [delegate isKindOfClass:[NSView class]] ? [(NSView*)delegate window] : nil;
     if (ns_window) {
       backing_scale = ns_window.backingScaleFactor;
+      if (graphics::metal::vsync_lock::Enabled()) {
+        // Display refresh for the vsync phase lock: now, and whenever the window changes screen or the screen
+        // configuration changes (refresh rate). Observers are added once; the game has one window.
+        auto update_refresh = [ns_window] {
+          NSScreen* screen = ns_window.screen ? ns_window.screen : [NSScreen mainScreen];
+          graphics::metal::vsync_lock::SetDisplayRefreshHz(screen ? double(screen.maximumFramesPerSecond) : 60.0);
+        };
+        update_refresh();
+        static bool vsync_lock_observing = false;
+        if (!vsync_lock_observing) {
+          vsync_lock_observing = true;
+          NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+          [center addObserverForName:NSWindowDidChangeScreenNotification
+                              object:ns_window
+                               queue:[NSOperationQueue mainQueue]
+                          usingBlock:^(NSNotification*) { update_refresh(); }];
+          [center addObserverForName:NSApplicationDidChangeScreenParametersNotification
+                              object:nil
+                               queue:[NSOperationQueue mainQueue]
+                          usingBlock:^(NSNotification*) { update_refresh(); }];
+        }
+      }
     } else if (metal_layer.bounds.size.width > 0.0) {
       backing_scale = CGFloat(new_surface_width) / metal_layer.bounds.size.width;
     }
@@ -1205,6 +1263,26 @@ bool MetalPresenter::RefreshGuestOutputImpl(
   clock_gettime(CLOCK_MONOTONIC, &submitted);
   guest_output_submitted_us_[mailbox_index] = int64_t(submitted.tv_sec) * 1000000 + submitted.tv_nsec / 1000;
   graphics::metal::frame_log::Record("guest_ready", guest_output_frame_ids_[mailbox_index]);
+  if (graphics::metal::vsync_lock::Enabled()) {
+    const uint64_t frame = VsyncLockFrameId(mailbox_index);
+    graphics::metal::vsync_lock::OnGuestReady(frame, graphics::metal::vsync_lock::NowSeconds(),
+                                              graphics::metal::vsync_lock::LastVblank());
+    // The guest GPU work of this output finishes well after its CPU submission (about 10 ms measured): the lock
+    // times that completion, so the presenter's pass never waits on it.
+    const uint64_t submission = guest_output_submissions_[mailbox_index];
+    if (shared_event_ && submission) {
+      static MTLSharedEventListener* listener = [] {
+        dispatch_queue_t queue = dispatch_queue_create("fable2.vsync-lock", DISPATCH_QUEUE_SERIAL);
+        return [[MTLSharedEventListener alloc] initWithDispatchQueue:queue];
+      }();
+      [(id<MTLSharedEvent>)shared_event_ notifyListener:listener
+                                                atValue:submission
+                                                  block:^(id<MTLSharedEvent>, uint64_t) {
+                                                    graphics::metal::vsync_lock::OnGuestDone(
+                                                        frame, graphics::metal::vsync_lock::NowSeconds());
+                                                  }];
+    }
+  }
   last_refreshed_frame_.store(guest_output_frame_ids_[mailbox_index], std::memory_order_release);
   if (frame_capture_pending_.load(std::memory_order_acquire)) {
     MaybeReadBackGuestOutputForFrameCapture(mailbox_index);
@@ -1745,7 +1823,6 @@ bool MetalPresenter::CopyTextureToGuestOutput(MTL::Texture* source_texture, id d
   if (REXCVAR_GET(metal_presenter_debug_markers)) {
     copy_command_buffer.label = @"XeniaGuestOutputCopy";
   }
-
   auto commit_copy_command_buffer = [&]() {
     uint64_t submission_id =
         guest_output_submission_counter_.fetch_add(1,

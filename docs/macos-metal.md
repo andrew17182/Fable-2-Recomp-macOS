@@ -237,7 +237,78 @@ Separate, pre-existing pacing issue seen in both arms: per launch, the guest swa
 phase against display vsync. When it falls just after a vsync (14.5-16.6 ms before the next one), swap jitter
 flips frames between two refreshes: at 60 FPS 10-23% of guest frames are never shown (46-55 unique FPS), at
 30 FPS a 1/2/3-refresh judder. It hit 4 of 11 runs with 2 drawables and 5 of 11 with 3. The frame CSV shows
-it as `swap->first present_submit` near 0 or near 16 ms per frame.
+it as `swap->first present_submit` near 0 or near 16 ms per frame. The vsync phase lock (next section) removes it.
+
+## Vsync phase lock
+
+`FABLE2_VSYNC_PHASE_LOCK=1` (launcher: Fixes > Display > "Sync frames to the display"; default off while
+measured) fixes the per-launch phase problem above and removes the random wait between a finished guest frame
+and the paint that samples it. Code: `backends/metal/port/rex/graphics/metal/metal_vsync_lock.{h,cc}` (controller),
+`MetalGraphicsSystem::StartPhaseLockedVblankWorker` (vblank thread), hooks in `metal_presenter.mm`.
+
+How frames reach the screen with display sync: a UI drawer keeps the UI thread painting once per refresh. Each
+paint blocks in `nextDrawable` until the display frees a drawable (about 1.1 ms after a vsync), then takes the
+newest guest output, and that drawable reaches the screen a fixed 2 refreshes later (`present_submit` to
+`presentedTime` 31.5-32 ms at 60 Hz). The guest output becomes ready at a phase set by the guest vblank timer,
+which runs free of the display: anywhere from just before a paint (best) to just after one (a whole refresh of
+waiting), and near that edge swap jitter flips frames between two paints (dropped frames at 60, judder at 30).
+
+With the lock on, the guest vblank worker is replaced:
+
+- Same guest-tick schedule as the SDK worker (one vblank per 1/60 guest second, 1 kHz with `vsync` off), so the
+  game sees the same vblanks at the same average rate. The schedule's phase moves by at most 1 ms per frame
+  (0.5 ms once near the target), the drift between the 60 Hz timer and the display included (tens of
+  microseconds per frame).
+- It sleeps to each vblank deadline with `mach_wait_until` under a time-constraint (real-time) thread policy. The
+  SDK worker polls with 1 ms sleeps at a guest-mapped priority; with a precise sleep but that priority its
+  vblanks were 13-21 ms apart (timer coalescing); with the policy 16.651-16.677 ms (p1-p99).
+- Feedback per new guest frame: the vblank before it, the time its guest GPU work completed (shared-event
+  listener on the output's submission), the paint loop's wake phase (drawable acquisition after a blocked
+  `nextDrawable`, relative to the display grid from `presentedTime`), and `presentedTime`.
+- Target: guest GPU completion lands `margin` (1.5 ms) before a paint wake, using the 95th percentile of
+  vblank-to-completion over the last 240 frames (a maximum would let a few loading frames move typical frames onto
+  the edge). When the GPU runs a frame behind, the lead grows by that much so the paint never samples a frame
+  whose GPU work is still running.
+- Without a UI paint loop (frames painted on arrival), the target is a learned latch time before the vsync, and
+  a run of frames shown a refresh later than targeted (an extra queued frame, which rate-locked production never
+  drains) delays one vblank by a refresh.
+- Inactive, with the plain timer at its last phase: no `presentedTime` feedback (occluded window, no window),
+  guest clock scaled (turbo, slow mode: their pacing is unchanged), `vsync` off (uncapped), or a frame interval
+  that is not a whole number of refreshes. Display refresh comes from `NSScreen.maximumFramesPerSecond` of the
+  window's screen, updated when the window changes screen or the screen configuration changes (120 Hz works the
+  same way, phase taken modulo the refresh).
+- Log: a `[vsync-lock]` line every 5 s (state, mode, frames, misses, lead, phase error, shift).
+  `FABLE2_VSYNC_LOCK_TRACE=1` adds per-frame `vlock_*` rows to the frame CSV (vblank ticks, paints, GPU done,
+  phase error). Tuning (experiments only): `FABLE2_VSYNC_LOCK_MARGIN_MS`, `FABLE2_VSYNC_LOCK_GAIN`,
+  `FABLE2_VSYNC_LOCK_OFFSET_MS`, `FABLE2_VSYNC_LOCK_LATCH_MS`.
+- Other presenters (for example a frame-interpolation present thread) can schedule from the same timeline:
+  `vsync_lock::DisplayGrid()` (latest `presentedTime` and refresh period), `NextVsyncAfter(t)` and `Lead()`.
+
+Measured 2026-10-22 (M5 Max, 60 Hz external display, `--mode library` background sessions, 2 drawables, 30 s
+after gameplay readiness, steady = last 15 s; `out/validation/vsync-lock-20261022/`):
+
+| 5 launches each | unique FPS (steady) | intervals off cadence | guest done/ready -> paint |
+|---|---|---|---|
+| 60 FPS, lock off | 60.0, 60.0, 43.8, 57.9, 47.1 | 0, 0, 37, 3.7, 27 % | 0.6-15.8 ms (random per launch) |
+| 60 FPS, lock on | 60.0, 59.3, 60.0, 60.0, 60.0 | 0-0.2 % | 2.9-3.2 ms |
+| 30 FPS, lock off | 30.0 each | 0, 0, 44, 12, 39 % | 0.8-13.0 ms |
+| 30 FPS, lock on | 30.0 each | 0 % | 3.4-3.5 ms |
+
+An earlier 5+5 round on the previous build gave the same split (lock 10/10 clean; off: bad phase in 2/5 at 60 and
+3/5 at 30). Latency (latrun inject -> photon, 2 sessions per arm, n = 15 stick trials each, all frames):
+swap -> `present_submit` p50 12.3/13.3 ms off vs 3.3/3.3 ms locked at 60, 12.6/13.4 vs 3.7/3.7 ms at 30, i.e.
+about -9 ms on the queueing part this lock controls. The stick inject -> photon medians (182/182 off,
+165/182 locked at 60; 215/215 off, 198/232 locked at 30) are dominated by the game's 30 Hz input poll and 15 Hz
+tick and need more trials to resolve 9 ms. Other arms: turbo 2x (lock inactive, 30.0 FPS, max interval 33.3
+ms), slow 0.5x (inactive, 60.0 FPS, no gaps), uncapped (inactive, 109 swaps/s), 3x resolution at 60 (off: bad
+phase, 48.7 unique FPS; locked: 59.8, 0.3 % off cadence). With the window not shown (all `presentedTime` 0) the
+lock stays on the timer: 60.07 / 30.0 swaps/s, no stall.
+
+Not covered by the lock, seen in both arms: `present_submit` -> `presentedTime` switches between 32 and 48.5 ms
+(2 or 3 refreshes) mid-session, typically once 8-16 s after load, sometimes back and forth; one 16-run batch
+had none. Presenter GPU work ends 0.2-6.5 ms after submit either way (a separate paint queue that made it 0.2 ms
+did not change it), so it looks like a WindowServer state. Not tested yet: 120 Hz / ProMotion and VRR
+displays, moving the window between displays, a minimized window, and a visible, focused game window (these runs are background test windows).
 
 ## Stable 30 FPS and app-owned testing
 
