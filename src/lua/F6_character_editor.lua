@@ -7,7 +7,7 @@
 rawset(_G, "__recomp_character_editor", true)
 local chunk, err = loadfile("scripts/recomp/F6.lua")
 if type(chunk) ~= "function" then
-  pcall(GUI.DisplayMessageBox, "F6: could not load scripts/recomp/F6.lua\n" .. tostring(err))
+  pcall(GUI.DisplayMessageBox, "Script menu: could not load scripts/recomp/F6.lua\n" .. tostring(err))
   return
 end
 chunk()

@@ -336,7 +336,7 @@ class Fable2App : public rex::ReXApp {
                     "full (python3 tools/fable2_skip_intro.py ensure)", present, game_data_root().string());
     }
 #ifdef __APPLE__
-    // FPS counter (src/core/fable2_fps_counter.h): F9 toggles; start state from
+    // FPS counter (src/core/fable2_fps_counter.h): 9/F10 toggles; start state from
     // [graphics] fps_counter / FABLE2_FPS_COUNTER.
     fable2::hotkey_hooks::g_toggle_fps = &fable2::fps_counter::Toggle;
     if (fable2::fps_counter::ConfiguredOn(fable2::config::Get()) && window()) {

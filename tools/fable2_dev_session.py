@@ -27,7 +27,7 @@ so `fable2_test_control.py capture|press|close <session>` work on a session laun
 with --test-control.
 
 Write-back: a detached host-side watcher polls the session's hero save files. When the
-game writes a save (in-game Save, F5 quick save or an autosave) and the files have been
+game writes a save (in-game Save, quick save or an autosave) and the files have been
 unchanged for STABLE_SECONDS and none is still open by the game (lsof), it
   1. copies the save into the library as <base>_<YYYY-MM-DD_HH-MM-SS>, and
   2. if the session has a target slot, backs up that live slot to out/save-backups/ and

@@ -133,12 +133,16 @@ input. Closing the window releases mouse capture.
 | Escape / M | Start / Back |
 | Arrow keys | Camera (right stick; adds to mouse-look) |
 | I / J / K / L | D-pad up / left / down / right |
-| 3 | Debug overlay |
-| 7 | Achievements |
-| 4 | Settings / release mouse capture; excluded from gamepad input |
-| 5 | Queue the existing external Lua runner on the guest thread |
+| ` / 1 / 2 / 3 / 4 | Slow / normal / 2× / 3× / 4× speed |
+| 5 | Quick save |
+| 6 | Script menu (Lua) |
+| 7 | Turbo on/off |
+| 8 | Achievements |
+| 9 / 0 | FPS counter / frame generation |
 
-Backtick opens the console. Shortcuts use the number row, not the numeric keypad. Mouse buttons can be
+F1–F11 mirror the number row one to the right (` = F1 … 0 = F11). The console, settings and debug overlays
+have no key by default (bind them in Settings > Controls); with mouse look on, ⌘Tab frees the mouse.
+Shortcuts use the number row, not the numeric keypad. Mouse buttons can be
 mapped but have no default gamepad binding.
 
 Edit `[input]` in `fable2_config.toml` beside the executable for

@@ -124,27 +124,11 @@ class WindowKeyboardMouse final
     const auto key = uint16_t(event.virtual_key());
     const bool edge = SetKey(key, true) && !event.prev_state();
     if (!edge) return;
-    // Number row first (MacBook F keys need fn); the F keys mirror it. A number typed into a menu or console
-    // must not trigger anything: 5 = quick save, 6 = custom Lua (fable2_f5_lua.h), 7 = turbo, 8 = slow motion,
-    // 9 = FPS counter, 0 = frame generation.
-    using K = rex::ui::VirtualKey;
-    if (!options_().overlay_captures_input) {
-      if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) request_lua_(5);
-      if (key == uint16_t(K::k6)) request_lua_(6);
-      if (key == uint16_t(K::k7)) request_lua_(7);
-      if (key == uint16_t(K::k8)) request_lua_(8);
-      if (key == uint16_t(K::k9)) request_lua_(9);
-      if (key == uint16_t(K::k0)) request_lua_(10);
-    }
-    // F6 opens and closes the F6 menu even while an overlay has keyboard focus (a function key, never typed text).
-    if (key == uint16_t(K::kF6)) request_lua_(6);
-    // F7 = turbo toggle, F8 = slow-mode toggle (src/core/fable2_turbo.h), F9 = FPS counter
-    // (src/core/fable2_fps_counter.h), F10 = frame generation (src/core/fable2_frame_gen.h); function keys,
-    // never typed text.
-    if (key == uint16_t(K::kF7)) request_lua_(7);
-    if (key == uint16_t(K::kF8)) request_lua_(8);
-    if (key == uint16_t(K::kF9)) request_lua_(9);
-    if (key == uint16_t(K::kF10)) request_lua_(10);
+    // Number keys only while no overlay has the keyboard (a digit typed into a menu or console must not
+    // trigger anything); F keys always (never typed text).
+    int action = options_().overlay_captures_input ? 0 : NumberRowAction(key);
+    if (!action) action = FKeyAction(key);
+    if (action) request_lua_(action);
     if (key && key == options_().unlock_key) {
       manual_release_ = !manual_release_;
       Refresh();
@@ -198,21 +182,49 @@ class WindowKeyboardMouse final
       self->test_keys_[key] = down;
     }
     if (!edge) return true;
-    using K = rex::ui::VirtualKey;
-    if (!self->options_().overlay_captures_input) {
-      if (key == uint16_t(K::k5) || key == uint16_t(K::kF5)) self->request_lua_(5);
-      if (key == uint16_t(K::k6)) self->request_lua_(6);
-      if (key == uint16_t(K::k7)) self->request_lua_(7);
-      if (key == uint16_t(K::k8)) self->request_lua_(8);
-      if (key == uint16_t(K::k9)) self->request_lua_(9);
-      if (key == uint16_t(K::k0)) self->request_lua_(10);
-    }
-    if (key == uint16_t(K::kF6)) self->request_lua_(6);
-    if (key == uint16_t(K::kF7)) self->request_lua_(7);
-    if (key == uint16_t(K::kF8)) self->request_lua_(8);
-    if (key == uint16_t(K::kF9)) self->request_lua_(9);
-    if (key == uint16_t(K::kF10)) self->request_lua_(10);
+    int action = self->options_().overlay_captures_input ? 0 : NumberRowAction(key);
+    if (!action) action = FKeyAction(key);
+    if (action) self->request_lua_(action);
     return true;
+  }
+
+  // Hotkeys (request_lua_ codes, dispatched in keyboard_gamepad.h). Number row first (MacBook F keys need
+  // fn); the F keys mirror it one to the right, starting with slow on F1:
+  //   ` F1 slow (20), 1 F2 normal (21), 2 F3 2x (22), 3 F4 3x (23), 4 F5 4x (24), 5 F6 quick save (5),
+  //   6 F7 script menu (6), 7 F8 turbo (7), 8 F9 achievements (8: 8 itself is the SDK bind_achievements),
+  //   9 F10 FPS counter (9), 0 F11 frame generation (10).
+  static int NumberRowAction(uint16_t key) {
+    using K = rex::ui::VirtualKey;
+    switch (K(key)) {
+      case K::kOem3: return 20;
+      case K::k1: return 21;
+      case K::k2: return 22;
+      case K::k3: return 23;
+      case K::k4: return 24;
+      case K::k5: return 5;
+      case K::k6: return 6;
+      case K::k7: return 7;
+      case K::k9: return 9;
+      case K::k0: return 10;
+      default: return 0;
+    }
+  }
+  static int FKeyAction(uint16_t key) {
+    using K = rex::ui::VirtualKey;
+    switch (K(key)) {
+      case K::kF1: return 20;
+      case K::kF2: return 21;
+      case K::kF3: return 22;
+      case K::kF4: return 23;
+      case K::kF5: return 24;
+      case K::kF6: return 5;
+      case K::kF7: return 6;
+      case K::kF8: return 7;
+      case K::kF9: return 8;
+      case K::kF10: return 9;
+      case K::kF11: return 10;
+      default: return 0;
+    }
   }
 
   static uint16_t MouseKey(rex::ui::MouseEvent::Button button) {

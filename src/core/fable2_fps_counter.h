@@ -1,4 +1,4 @@
-// On-screen FPS counter (bottom-left corner), toggled with F9.
+// On-screen FPS counter (bottom-left corner), toggled with 9 / F10.
 //
 // Headline: the game's own frame rate and average frame time over the last
 // ~0.5 s, e.g. "52 FPS · 19.2 ms". Guest frames come from the flight recorder's
@@ -7,7 +7,7 @@
 // this one included, is shown, so it tends toward the display refresh) is always
 // shown. Digits are tabular, so the width changes only with the digit count.
 // Extra fields: "2× res" for a higher internal resolution, "turbo 2.5x" while turbo is on ("slow 0.5x" in slow
-// mode), "framegen" while frame generation is on (0/F10; "framegen paused" while turbo pauses it), the upscaling
+// mode), "framegen" while frame generation is on (0/F11; "framegen paused" while turbo pauses it), the upscaling
 // filter in use for presenting ("Bilinear" or "MetalFX"; from the Metal presenter's fable2_present_filter export,
 // MetalFX only when it is actually applied), the left stick's raw deflection before our deadzone remap ("L 42%",
 // "L --" without a controller; while an input replay drives the pad, the replayed stick;
@@ -20,7 +20,7 @@
 //
 // Off by default. Start state: [graphics] fps_counter in fable2_config.toml,
 // overridden by FABLE2_FPS_COUNTER=1|0 (Dev Launcher "Show FPS counter").
-// F9 toggles it live (real key, or the background test channel). The dialog
+// 9 / F10 toggles it live (real key, or the background test channel). The dialog
 // exists only while the counter is shown. Cost while shown: a few ImGui quads
 // per frame; the text is formatted into a fixed buffer twice a second.
 #pragma once
@@ -111,7 +111,7 @@ class CounterDialog final : public rex::ui::ImGuiDialog {
     // Presented rate always shown, so the overlay keeps its layout.
     append("%sdisplay %.0f", sep, display_fps);
     if (res_scale_ > 1) append("%s%d%s res", sep, res_scale_, times_);
-    if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::ConfiguredScale());
+    if (fable2::turbo::Active()) append("%sturbo %gx", sep, fable2::turbo::TurboSpeed());
     if (fable2::turbo::SlowActive()) append("%sslow %gx", sep, fable2::turbo::SlowScale());
     if (fable2::frame_gen::Active()) append(fable2::frame_gen::Paused() ? "%sframegen paused" : "%sframegen", sep);
     switch (PresentFilter()) {
@@ -275,7 +275,7 @@ inline void SetVisible(bool on) {
 inline void Toggle() {
   const bool on = !g_enabled.load(std::memory_order_relaxed);
   SetVisible(on);
-  REXSYS_INFO("[fps-counter] {} (F9)", on ? "shown" : "hidden");
+  REXSYS_INFO("[fps-counter] {} (9/F10)", on ? "shown" : "hidden");
 }
 
 // Start state from the config and FABLE2_FPS_COUNTER; logs it once.
@@ -290,7 +290,7 @@ inline bool ConfiguredOn(const fable2::config::Values& cfg) {
       REXSYS_WARN("[fps-counter] ignoring FABLE2_FPS_COUNTER='{}' (expected 1 or 0)", env);
     }
   }
-  REXSYS_INFO("[fps-counter] {} at start (source: {}); F9 toggles", on ? "shown" : "hidden", source);
+  REXSYS_INFO("[fps-counter] {} at start (source: {}); 9/F10 toggles", on ? "shown" : "hidden", source);
   return on;
 }
 

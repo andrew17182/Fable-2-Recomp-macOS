@@ -5,43 +5,71 @@ cutscenes) runs faster while the screen stays at ~30 FPS.
 
 ## Use
 
-- Number-row **7** or **F7** toggles turbo on/off during play (keyboard; F7 works in
-  menus and gameplay, 7 is ignored while an overlay captures typing). The SDK
-  achievements overlay is on 1 (it was on 7, then 8). On MacBooks the F keys need fn (or the macOS setting "Use
-  F1, F2, etc. keys as standard function keys"), so the number row is the main set. Turbo is **off** at every start. A toggle shows "Turbo 2x on" /
-  "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line (style: see "On-screen notice").
-- **8** or **F8** toggles slow motion (below 1x; see "Slow mode").
+- Number-row **7** or **F8** toggles turbo on/off at the **Turbo speed** (keyboard; F8 works in menus and
+  gameplay, 7 is ignored while an overlay captures typing). It turns off from any speed (so 7 after 2 returns to
+  1x). On MacBooks the F keys need fn (or the macOS setting "Use F1, F2, etc. keys as standard function keys"), so
+  the number row is the main set; the F keys mirror it one to the right (` = F1 … 0 = F11). Turbo is **off** at
+  every start. A toggle shows "Turbo 2x on" / "Turbo 2x off" at the top right for ~2 s and logs a `[turbo]` line
+  (style: see "On-screen notice").
+- Speed keys (see "Speed keys"): **`** slow, **1** normal, **2** / **3** / **4** for 2x / 3x / 4x.
 - Controller: Settings > Controls > Game controllers > **Turbo** puts the same toggle on View, Share or a
   stick click (`FABLE2_PAD_TURBO=none|view|share|ls|rs`, default view: the View button; docs/reference.md "Controller hotkeys").
 - Speed: launcher front page → **Turbo speed** (slider and stepper, Off or 1.1× to 4.0×
-  in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Off (1.0) is the Original preset: F7, 7 and the
-  controller button do nothing; **Slow speed** Off (`FABLE2_SLOW_SPEED=1.00`) does the same for F8
+  in 0.1 steps, default 2.0×), passed as `FABLE2_TURBO_SPEED=<x>`. Off (1.0) is the Original preset: 7/F8, the
+  speed keys 2-4 and the controller button do nothing (2-4 show "Turbo is off in settings"); **Slow speed** Off
+  (`FABLE2_SLOW_SPEED=1.00`) does the same for ` and the slow button ("Slow is off in settings")
   (docs/reference.md "Presets"). Without a launcher:
   `[patches] turbo_scale` in `fable2_config.toml` (state directory,
   `~/Library/Application Support/Fable II Recomp/` for the app). Default 2.0;
   1.1 to 4.0 in 0.1 steps (the SDK quantizes the clock scalar to tenths);
-  1.0 disables F7. `FABLE2_TURBO_SPEED` overrides the TOML and does not start turbo on.
+  1.0 disables turbo. `FABLE2_TURBO_SPEED` overrides the TOML and does not start turbo on.
 - Audio: launcher front page → **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`):
   "Sped up, natural pitch" (`natural`, default), "Sped up, high pitch" (`high-pitch`) or
   "Normal speed" (`normal`, the old behaviour). See "Turbo audio" below.
 - Tests: `FABLE2_TURBO_SCALE=<x>` overrides the speed **and starts turbo on**.
-  The background test channel accepts key `f7`
-  (`python3 tools/fable2_test_control.py press <session> f7`).
+  The background test channel accepts the keys (`7`, `f8`, `grave`, `1`-`4`, `f1`-`f5`;
+  `python3 tools/fable2_test_control.py press <session> 7`).
 - `FABLE2_CLOCK_REPORT=<seconds>` logs `[clock-report] guest/real ...` lines
   (guest clock rate against real time) for validation.
 
 Turbo overrides `fps_60`.
 
+## Speed keys (2026-10-22)
+
+Keys that set a speed instead of toggling one (`fable2::turbo::SetSpeed`, src/core/fable2_turbo.h):
+
+| Key | F key | Speed |
+|---|---|---|
+| ` | F1 | slow, at the **Slow speed** (default 0.5x) |
+| 1 | F2 | normal (1x): turbo and slow off |
+| 2 | F3 | 2x |
+| 3 | F4 | 3x |
+| 4 | F5 | 4x |
+
+- 2, 3 and 4 ignore the Turbo speed slider (fixed 2.0, 3.0, 4.0). A speed already in effect does nothing (2 at
+  2x, 1 at 1x).
+- State model: one mode (off, turbo, slow) plus the turbo speed, which is the slider's unless a speed key chose
+  2/3/4. 7/F8 toggles: on = turbo at the slider speed, off from any turbo speed. Turbo audio, frame pacing
+  (`FrameInterval`: 2 x speed vblanks), the frame-generation pause and the FPS counter ("turbo 3x") follow the
+  speed in use.
+- Notices: "Speed 2x", "Normal speed", "Slow 0.5x". With turbo or slow disabled in settings (speed 1.0, the
+  Original preset) the keys for it only show "Turbo is off in settings" / "Slow is off in settings".
+- Number keys are ignored while an overlay captures typing; the F keys always work.
+- Checked 2026-10-22 (test channel, `FABLE2_CLOCK_REPORT=1`): ` 1 2 2 3 4 7 7 2 7 then F1-F5, F8, F2 gave
+  `[clock-report]` guest/real 0.5000, 1.0000, 2.0000, (2 again: no change), 3.0000, 4.0000, 1.0000 (7 off),
+  2.0000 (7 on), 2.0000 (2: no change), 1.0000, and the same through the F keys.
+
 ## Slow mode (2026-10-21)
 
 Turbo below 1x: the whole game runs slower while the screen keeps its frame rate.
 
-- **8** or **F8** toggles it (8 is ignored while an overlay captures typing). Off at every start. Notice "Slow 0.5x on/off",
-  F9 counter field `slow 0.5x`. Controller: Settings > Controls > Game controllers > **Slow motion**
-  (`FABLE2_PAD_SLOW=view|share|ls|rs`, default none). Test channel keys `8`, `f8`.
+- **`** or **F1** sets it (` is ignored while an overlay captures typing; **1** / **F2** returns to 1x). Off at every
+  start. Notice "Slow 0.5x", FPS counter field `slow 0.5x`. Controller: Settings > Controls > Game controllers >
+  **Slow motion** toggles it (`FABLE2_PAD_SLOW=view|share|ls|rs`, default none; notice "Slow 0.5x on/off"). Test
+  channel keys `grave`, `f1`. (Until 2026-10-22, 8/F8 toggled slow mode; 8 is achievements now.)
 - Speed: launcher front page **Slow speed** (0.25× to 0.9× in 0.05 steps, default 0.5×; `FABLE2_SLOW_SPEED`), or
-  `[patches] slow_scale` (same range; 1.0 disables F8). `FABLE2_SLOW_SCALE=<x>` also starts it on (tests).
-- Turbo and slow mode are one speed setting (`fable2::turbo::SetMode`): turning one on turns the other off; F7 in
+  `[patches] slow_scale` (same range; 1.0 disables slow mode). `FABLE2_SLOW_SCALE=<x>` also starts it on (tests).
+- Turbo and slow mode are one speed setting (`fable2::turbo::SetMode`): turning one on turns the other off; 7/F8 in
   slow mode goes straight to turbo.
 - Clock: the same `set_guest_time_scalar`, below 1. The SDK kept the scalar as tenths above 1 and as
   `10 / trunc(10 / s)` below 1, so 0.75 ran at 0.769 and 0.9 at 0.909;

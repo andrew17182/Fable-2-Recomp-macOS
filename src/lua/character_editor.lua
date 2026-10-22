@@ -244,7 +244,7 @@ end
 
 local function run()
   if not (st and st.box) then
-    message("Character Editor: open it from the F6 menu.")
+    message("Character Editor: open it from the script menu (6).")
     return
   end
   if not hero() then

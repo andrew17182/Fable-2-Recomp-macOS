@@ -1,6 +1,6 @@
-// fable2_quick_save.h - F5 / number-row 5 quick save (native).
+// fable2_quick_save.h - number-row 5 / F6 quick save (native).
 //
-// Pressing F5 saves the current game exactly like the pause menu's
+// Pressing 5 (or F6) saves the current game exactly like the pause menu's
 // "Save > Save and Continue" item, without opening the menu.
 //
 // How the game saves (traced 2026-10-03 with FABLE2_SKIP_INTRO_TRACE=1 file-open stacks):
@@ -49,14 +49,14 @@ inline void poll(PPCContext& ctx, uint8_t* base) {
   static double last = -100.0;
   const double t = now_s();
   if (t - last < 3.0) {
-    REXSYS_INFO("[quick-save] F5 ignored: previous quick save {:.1f} s ago", t - last);
+    REXSYS_INFO("[quick-save] 5/F6 ignored: previous quick save {:.1f} s ago", t - last);
     return;
   }
   const uint32_t g = REX_LOAD_U32(kGameGlobals);
   const uint32_t g12 = ok_addr(g) ? REX_LOAD_U32(g + 12) : 0;
   const uint32_t mgr = ok_addr(g12) ? REX_LOAD_U32(g12 + 148) : 0;
   if (!ok_addr(mgr)) {
-    REXSYS_INFO("[quick-save] F5 ignored: no save manager (g={:08X} g12={:08X})", g, g12);
+    REXSYS_INFO("[quick-save] 5/F6 ignored: no save manager (g={:08X} g12={:08X})", g, g12);
     return;
   }
   last = t;

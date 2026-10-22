@@ -55,7 +55,7 @@ end
 local function apply_amount(amount)
   local ok, hero = pcall(get_hero)
   if not ok or not hero then
-    st.message("F6: could not get the hero")
+    st.message("Script menu: could not get the hero")
     return
   end
   pcall(Money.Modify, hero, amount)
@@ -63,7 +63,7 @@ end
 
 local function run()
   if not (st and st.box) then
-    pcall(GUI.DisplayMessageBox, "Modify Money: open it from the F6 menu.")
+    pcall(GUI.DisplayMessageBox, "Modify Money: open it from the script menu (6).")
     return
   end
   local page_number = 0

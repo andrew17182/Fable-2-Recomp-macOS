@@ -92,17 +92,17 @@ REXCVAR_DEFINE_INT32(mouse_look_scale, 256, "Input",
                      "from fable2_config.toml [input] mouse_look_scale.")
     .range(1, 4096);
 
-// Key that toggles the settings menu (4). While the menu is open the mouse lock
-// is released (free cursor); closing it re-locks. This key is excluded from
-// the gamepad map so it doesn't double as a button. Set empty to always lock
-// while focused (no menu-based unlock).
+// Key that toggles the settings menu (bind_settings; no key by default). While the menu is open the mouse
+// lock is released (free cursor); closing it re-locks. This key is excluded from the gamepad map so it
+// doesn't double as a button. Empty = no key: focus loss (switching apps) or any open overlay (console,
+// F6 menu) still frees the mouse. Untouched, it follows bind_settings (src/input/recomp_hotkeys.h).
 REXCVAR_DEFINE_STRING(
     mouse_unlock_key,
-    "4",
+    "",
     "Input",
-    "Key that toggles the debug menu; while the menu is open the mouse lock is "
-    "released (free cursor) and re-engaged when it closes. Empty = always lock "
-    "while focused. This key is excluded from the gamepad map.");
+    "Key that toggles the settings menu; while the menu is open the mouse lock is "
+    "released (free cursor) and re-engaged when it closes. Empty = no key (switching "
+    "apps or opening an overlay still frees the mouse). Excluded from the gamepad map.");
 
 // Controller screenshot hotkey (src/input/controller_hotkeys.h). Empty =
 // <game_data_root>/Screenshots; FABLE2_SCREENSHOT_DIR overrides both.

@@ -9,4 +9,4 @@
 -- script: tested 2026-10-03, it crashed the game once and hung it on a loading
 -- screen with a half-written mainsave.bin the other time.
 pcall(GUI.DisplayMessageBox,
-      "F5 is now a quick save. The script menu moved to F6.")
+      "Quick save is on 5 (or F6). The script menu is on 6 (or F7).")

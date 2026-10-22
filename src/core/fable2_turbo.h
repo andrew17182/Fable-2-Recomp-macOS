@@ -13,8 +13,8 @@
 // (fable2_hook_fps_60 at 0x82B9C8E8) waits 2 x scale vblanks per frame while
 // turbo is active, keeping ~30 real frames per second. Turbo overrides fps_60.
 //
-// UX: off at startup; F7 or number-row 7 toggles it live (src/input/window_keyboard_mouse.h,
-// also via the background test channel key "f7"). [patches] turbo_scale is the
+// UX: off at startup; number-row 7 or F8 toggles it live (src/input/window_keyboard_mouse.h,
+// also via the background test channel key "7"). [patches] turbo_scale is the
 // speed used while on (default 2.0; 1.1..4.0 in 0.1 steps - the SDK clock ratio
 // is quantized to tenths; 1.0 disables the hotkey). FABLE2_TURBO_SPEED=<x>
 // (Dev Launcher / Player "Turbo speed") overrides the scale; FABLE2_TURBO_SCALE=<x>
@@ -23,15 +23,22 @@
 // A toggle only changes the guest/host tick ratio; the accumulated guest tick
 // count is kept, so the guest clock does not jump (src/core/fable2_guest_clock.h).
 //
-// Slow mode (docs/turbo.md "Slow mode"): the same clock scalar below 1. F8 toggles it
-// (keyboard_gamepad.h; test channel key "f8"; controller FABLE2_PAD_SLOW). [patches]
+// Slow mode (docs/turbo.md "Slow mode"): the same clock scalar below 1. The controller action
+// FABLE2_PAD_SLOW toggles it; the ` key sets it (speed keys below). [patches]
 // slow_scale is the speed while on (default 0.5; 0.25..0.9 in 0.05 steps, exact since
-// patches/sdk/clock-scalar-precision.patch; 1.0 disables F8). FABLE2_SLOW_SPEED=<x>
+// patches/sdk/clock-scalar-precision.patch; 1.0 disables slow mode). FABLE2_SLOW_SPEED=<x>
 // (launcher "Slow speed") overrides it, FABLE2_SLOW_SCALE=<x> overrides it AND starts slow
 // mode on (tests). Turbo and slow mode are one speed setting: turning one on turns the
 // other off. Audio uses the turbo audio stage at the slow rate. Frames: vblanks arrive
 // slower, so at the 60 or 30 cap the frame-dispatch hook presents immediately and paces
 // frames by real time (SlowPaceFrame) instead; uncapped runs as it does at 1x.
+//
+// Speed keys (docs/turbo.md "Speed keys"; window_keyboard_mouse.h): `/F1 = slow (slow_scale), 1/F2 = normal,
+// 2/F3, 3/F4, 4/F5 = turbo at exactly 2x, 3x, 4x (the Turbo speed slider is ignored). They set a speed
+// rather than toggle: one already in effect does nothing. State model: one mode (off, turbo, slow) plus
+// the turbo speed, which is the slider's (turbo_scale) unless a speed key chose 2/3/4. 7/F8 still toggles:
+// on = turbo at the slider speed, off from any turbo speed (so 7 after 2 returns to 1x). With turbo or slow
+// disabled in settings (speed 1.0, the Original preset) the keys for it only show a notice.
 #pragma once
 #include <algorithm>
 #include <atomic>
@@ -174,9 +181,22 @@ inline bool Active() { return CurrentMode() == Mode::kTurbo; }
 // Slow mode on.
 inline bool SlowActive() { return CurrentMode() == Mode::kSlow; }
 
+// Turbo speed chosen by a speed key (2.0, 3.0, 4.0); 0 = the slider's ConfiguredScale(). Written under
+// ToggleMutex() by SetMode.
+inline std::atomic<double>& DirectTurboSpeed() {
+  static std::atomic<double> speed{0.0};
+  return speed;
+}
+
+// Speed while turbo is on.
+inline double TurboSpeed() {
+  const double direct = DirectTurboSpeed().load(std::memory_order_relaxed);
+  return direct > 1.0 ? direct : ConfiguredScale();
+}
+
 // Vblanks to wait per frame while turbo is active (original pacing is 2).
 inline uint64_t FrameInterval() {
-  return uint64_t(std::max(1L, std::lround(2.0 * ConfiguredScale())));
+  return uint64_t(std::max(1L, std::lround(2.0 * TurboSpeed())));
 }
 
 // Slow mode at a frame cap: real-time frame pacing in the frame-dispatch hook (fable2_hook_fps_60),
@@ -272,7 +292,7 @@ inline std::mutex& ToggleMutex() {
 }
 
 inline double ModeSpeed(Mode mode) {
-  return mode == Mode::kTurbo ? ConfiguredScale() : mode == Mode::kSlow ? SlowScale() : 1.0;
+  return mode == Mode::kTurbo ? TurboSpeed() : mode == Mode::kSlow ? SlowScale() : 1.0;
 }
 
 inline const char* ModeName(Mode mode) {
@@ -281,10 +301,15 @@ inline const char* ModeName(Mode mode) {
 
 // Switches the guest speed mode (turbo, slow or off). Turning turbo on turns slow mode off and
 // the other way round. A mode whose speed is 1.0 (disabled) is refused and the current mode kept.
-inline void SetMode(Mode want) {
+// direct_turbo: turbo speed from a speed key (0 = the slider's); speed_key: speed-key notice wording.
+inline void SetMode(Mode want, double direct_turbo = 0.0, bool speed_key = false) {
   std::lock_guard lock(ToggleMutex());
   const Mode was = CurrentMode();
+  const double was_direct = DirectTurboSpeed().load(std::memory_order_relaxed);
+  const double was_speed = ModeSpeed(was);
+  if (want == Mode::kTurbo) DirectTurboSpeed().store(direct_turbo, std::memory_order_relaxed);
   if (want != Mode::kOff && ModeSpeed(want) == 1.0) {
+    DirectTurboSpeed().store(was_direct, std::memory_order_relaxed);
     if (want == Mode::kTurbo)
       REXSYS_INFO("[turbo] turbo_scale is 1.0; turbo disabled (set [patches] turbo_scale)");
     else
@@ -294,6 +319,7 @@ inline void SetMode(Mode want) {
   if (rex::cvar::GetFlagSource("clock_no_scaling") == rex::cvar::Source::kCommandLine &&
       REXCVAR_GET(clock_no_scaling) && want != Mode::kOff) {
     REXSYS_WARN("[turbo] --clock_no_scaling=true blocks turbo and slow mode");
+    DirectTurboSpeed().store(was_direct, std::memory_order_relaxed);
     return;
   }
   const double speed = ModeSpeed(want);
@@ -325,12 +351,19 @@ inline void SetMode(Mode want) {
                            : std::string("2 vblanks"),
       AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)", before, after);
   if (!g_notice) return;
+  if (speed_key) {  // the speed now: "Speed 2x", "Slow 0.5x", "Normal speed"
+    char text[48];
+    if (now == Mode::kOff) std::snprintf(text, sizeof(text), "Normal speed");
+    else std::snprintf(text, sizeof(text), "%s %gx", now == Mode::kTurbo ? "Speed" : "Slow", speed);
+    g_notice(text);
+    return;
+  }
   // One notice per change: what is on now, else what went off.
   const Mode shown = now != Mode::kOff ? now : was;
   if (shown == Mode::kOff) return;
   char text[48];
   std::snprintf(text, sizeof(text), "%s %gx %s", shown == Mode::kTurbo ? "Turbo" : "Slow",
-                ModeSpeed(shown), now == shown ? "on" : "off");
+                now == shown ? speed : was_speed, now == shown ? "on" : "off");
   g_notice(text);
 }
 
@@ -348,6 +381,24 @@ inline void SetSlow(bool on) {
 inline void ToggleSlow() { SetSlow(!SlowActive()); }
 
 inline void Toggle() { SetActive(!Active()); }
+
+// Speed keys: set the guest speed directly (see the header comment). speed 1.0 = normal; above 1 = turbo
+// at exactly that speed; below 1 = slow mode at slow_scale. A speed already in effect does nothing.
+inline void SetSpeed(double speed) {
+  if (speed == 1.0) {
+    if (CurrentMode() != Mode::kOff) SetMode(Mode::kOff, 0.0, true);
+    return;
+  }
+  const bool turbo = speed > 1.0;
+  if ((turbo ? ConfiguredScale() : SlowScale()) == 1.0) {  // disabled in settings (Original preset)
+    REXSYS_INFO("[turbo] speed key {} ignored: {} is off in settings", turbo ? std::to_string(int(speed)) + "x" : "slow",
+                turbo ? "turbo" : "slow mode");
+    if (g_notice) g_notice(turbo ? "Turbo is off in settings" : "Slow is off in settings");
+    return;
+  }
+  if (turbo ? Active() && TurboSpeed() == speed : SlowActive()) return;
+  SetMode(turbo ? Mode::kTurbo : Mode::kSlow, turbo ? speed : 0.0, true);
+}
 
 // FABLE2_CLOCK_REPORT=<seconds>: log the guest-clock rate against real time
 // (validation of the clock fix and turbo ratios).
@@ -380,14 +431,14 @@ inline void StartClockReport() {
 }
 
 // Called once after runtime setup. Turbo and slow mode start off unless FABLE2_TURBO_SCALE /
-// FABLE2_SLOW_SCALE is set (tests; turbo wins if both are); F7/7 and F8 toggle them.
+// FABLE2_SLOW_SCALE is set (tests; turbo wins if both are); 7/F8 toggles turbo, the speed keys set a speed.
 inline void Init() {
   const double scale = ConfiguredScale();
   const double slow = SlowScale();
   const char* speed_env = std::getenv("FABLE2_TURBO_SPEED");
   const char* slow_env = std::getenv("FABLE2_SLOW_SPEED");
-  REXSYS_INFO("[turbo] ready: F7/7 toggles {:.1f}x (turbo_scale{}), F8 toggles slow {:.2f}x (slow_scale{}), "
-              "audio {}",
+  REXSYS_INFO("[turbo] ready: 7/F8 toggles {:.1f}x (turbo_scale{}), `/F1 sets slow {:.2f}x (slow_scale{}), "
+              "1-4/F2-F5 set 1x-4x, audio {}",
               scale, EnvScale() ? ", FABLE2_TURBO_SCALE" : speed_env && *speed_env ? ", FABLE2_TURBO_SPEED" : "",
               slow, EnvSlowScale() ? ", FABLE2_SLOW_SCALE" : slow_env && *slow_env ? ", FABLE2_SLOW_SPEED" : "",
               AudioFollows() ? fable2::config::TurboAudioName(AudioMode()) : "normal (1x)");

@@ -162,13 +162,22 @@ environment route (below).
   row waits for a key; Command itself can't be bound.
 - **Mouse:** mouse look on/off and sensitivity (`mouse_look_scale`, 1–4096, default 256; the slider spans
   32–2048). There is no invert-Y setting in the game.
-- **Hotkeys:** the SDK overlay keys are cvars and can be rebound here: console (`bind_console`, Backtick),
-  settings menu (`bind_settings`, 4; also sets `mouse_unlock_key`, the key that frees the mouse), debug
-  overlay (`bind_debug_overlay`, 3), achievements (`bind_achievements`, 1; a value 7 or 8 saved in `fable_2.toml`
-  by older builds moves to 1); **None** unbinds. Fixed in code and only listed, number row first (on MacBooks the F
-  keys need fn, or the macOS setting "Use F1, F2, etc. keys as standard function keys"): 5/F5 quick save, 6/F6 Lua
-  script menu, 7/F7 turbo, 8/F8 slow motion, 9/F9 FPS counter, 0/F10 frame generation, ⌃⌘F full screen
-  (SDL's window menu), ⌘Q quit; the controller hotkeys show their button next to the keys.
+- **Hotkeys:** the SDK overlay keys are cvars and can be rebound here: achievements (`bind_achievements`, 8;
+  F9 opens it too), console (`bind_console`), settings menu (`bind_settings`; also sets `mouse_unlock_key`, the
+  key that frees the mouse) and debug overlay (`bind_debug_overlay`), the last three with no key by default
+  (2026-10-22). **None** unbinds. Old defaults saved in `fable_2.toml` by older builds move to the new ones
+  (achievements 1, 4 or 7 → 8; console Backtick, debug overlay 3, settings 4 → None; `mouse_unlock_key` 4 →
+  the settings key). Fixed in code and only listed, number row first; the F keys mirror it one to the right (on
+  MacBooks the F keys need fn, or the macOS setting "Use F1, F2, etc. keys as standard function keys"):
+  `/F1 slow, 1/F2 normal speed, 2/F3, 3/F4, 4/F5 speed 2×/3×/4× (docs/turbo.md "Speed keys"), 5/F6 quick save,
+  6/F7 script menu, 7/F8 turbo, 9/F10 FPS counter, 0/F11 frame generation, ⌃⌘F full screen (SDL's window
+  menu), ⌘Q quit; the controller hotkeys show their button next to the keys. Number keys do nothing while an
+  overlay has the keyboard; F keys always work. F11 is macOS's Show Desktop shortcut by default (System
+  Settings > Keyboard > Keyboard Shortcuts > Mission Control), so it may not reach the game; 0 always does.
+- **Freeing the mouse:** with mouse look on, the cursor is captured while the game window is focused and no
+  overlay is open. With no Settings menu key (the default), switch apps (⌘Tab) to free it; it is captured
+  again when the window regains focus. Opening an overlay (script menu, or a console/settings key you bind)
+  frees it too. Binding the Settings menu key gives a key that toggles it.
 - **Game controllers:** controllers work directly; macOS remaps controller buttons system-wide in System
   Settings > Game Controllers (**Open Game Controller Settings…** opens it,
   `x-apple.systempreferences:com.apple.Game-Controller-Settings.extension`). The tab lists connected
@@ -208,9 +217,9 @@ console, so you can dial in the sensitivity live. Example: `fable_2.exe
 
 All cvars above are hot-reloadable, so they can also be changed from the in-game console.
 
-## F5 — quick save, F6 — run an external Lua script
+## 5 / F6 — quick save, 6 / F7 — script menu (run an external Lua script)
 
-**F5** (or number-row **5**) saves the current game immediately, exactly like the
+Number-row **5** (or **F6**) saves the current game immediately, exactly like the
 pause menu's **Save → Save and Continue** (same slot, same files), without opening
 the menu. It is ignored outside gameplay and for 3 s after the previous quick save.
 
@@ -220,33 +229,34 @@ the menu. It is ignored outside gameplay and for 3 s after the previous quick sa
 - The Lua `AutoSaveGame()` is **not** used: called from a host-run script it crashed
   the game once and left it on a loading screen with a half-written `mainsave.bin`
   the other time (2026-10-03).
-- `f5_lua_path` (default empty) makes F5 run a Lua file instead of saving.
+- `f5_lua_path` (default empty) makes 5/F6 run a Lua file instead of saving.
 
-**F6** (or number-row **6**) runs an external Lua file in the in-game Lua
+Number-row **6** (or **F7**) runs an external Lua file in the in-game Lua
 state, exactly the way the game's own `RunScript(path)` global does — but
 triggered from the host. This lets you drop a plain `.lua` file on disk and run
-it against the live game (no recompile of the scripts needed). (This was F5
-before F5 became quick save.)
+it against the live game (no recompile of the scripts needed). Internal names
+keep the original keys (`F6.lua`, `f6_lua_path`, `fable2_f5_lua.h`): quick save
+was F5 and the script menu F6 until 2026-10-22.
 
 - **Default file:** `data/scripts/recomp/F6.lua` (the build stages
   `src/lua/*.lua` into `data/scripts/recomp/` next to the exe). The shipped
   `F6.lua` opens a script selector menu (Get Player Position, Modify Money,
   Morality / Purity, and Character Editor when that mod is on: `docs/character-editor.md`).
-  F6 toggles it: pressed while any of its menus, pages, submenus or messages is up, it closes all
+  6/F7 toggles it: pressed while any of its menus, pages, submenus or messages is up, it closes all
   of them (a short B tap on the game's menu box, `src/core/fable2_f6_close.h`); pressed again, it opens
-  the menu. F6 works while an overlay has the keyboard; number-row 6 does not (it may be typed text).
+  the menu. F7 works while an overlay has the keyboard; number-row 6 does not (it may be typed text).
 - **Menu timing:** the menu's script ticks at 15 Hz. Every box goes through `st.box` in `F6.lua`, which
   waits 9 ticks (0.6 s) after a box closes before opening the next, or 3 ticks (0.2 s) when slot 1 was
   chosen, so paged menus keep "More..." / "Next" in slot 1. Opening sooner drops the box (under 2 ticks)
   or leaves the old box's hovered slot highlighted for good (under 7). `FABLE2_F6_TRACE=1` writes
-  timestamped `[f6t]` lines (F6 key, RunScript, close taps, Lua `f6_mark_*` paths) to `fable2_f5_lua.log`.
+  timestamped `[f6t]` lines (script menu key, RunScript, close taps, Lua `f6_mark_*` paths) to `fable2_f5_lua.log`.
 - **Path:** set by the `f6_lua_path` cvar (default `scripts/recomp/F6.lua`,
   resolved relative to the VFS root `data/`). Override per-launch with
   `fable_2.exe --f6_lua_path "scripts/other/MyScript.lua"`.
 - **How it works:** `src/core/fable2_f5_lua.h` captures the
   `CScriptManager::RunScript` callable the first time the game loads a `.lua`
   script (via a probe on the LuaPlus bound-method dispatcher), then replays that
-  call with your path when F6 is pressed. The file is loaded fresh on each press,
+  call with your path when 6/F7 is pressed. The file is loaded fresh on each press,
   so you can edit it live (the VFS re-reads it).
 - **The script runs in the game's global Lua environment**, so it has the full
   game API (`QuestManager`, `Debug`, `GUI`, `Creature`, `Player`, ...). Plain
@@ -263,11 +273,11 @@ Five actions, one controller button each (`none`, `view`, `share`, `ls`, `rs` = 
 
 | Action | Env | Default |
 |---|---|---|
-| Turbo on/off (same as F7) | `FABLE2_PAD_TURBO` | view |
-| Slow motion on/off (same as F8) | `FABLE2_PAD_SLOW` | none |
-| Quick save (same as F5) | `FABLE2_PAD_QUICKSAVE` | share |
+| Turbo on/off (same as 7/F8) | `FABLE2_PAD_TURBO` | view |
+| Slow motion on/off | `FABLE2_PAD_SLOW` | none |
+| Quick save (same as 5/F6) | `FABLE2_PAD_QUICKSAVE` | share |
 | Screenshot | `FABLE2_PAD_SCREENSHOT` | none |
-| Frame generation on/off (same as F10) | `FABLE2_PAD_FRAMEGEN` | none |
+| Frame generation on/off (same as 0/F11) | `FABLE2_PAD_FRAMEGEN` | none |
 
 A screenshot is the game frame as `Screenshots/Fable II YYYY-MM-DD HH-MM-SS.png` in the game data root
 (override with `FABLE2_SCREENSHOT_DIR` or `--screenshot_dir`). Once the PNG is written a "Screenshot saved"
@@ -356,23 +366,23 @@ Frame generation (`FABLE2_FRAME_INTERP=1`, default `0`; Settings > Display > Fra
 preset only): MetalFX frame interpolation shows a generated frame between every two real ones, 30 rendered -> 60
 shown, about 20 ms more delay. Needs the 30 FPS cap (at 60 FPS or uncapped the game leaves it off and logs
 `[frame-gen] off: needs the 30 FPS cap`), macOS 26 and a supported GPU; 3 drawables while on. Paused while turbo is on
-(resumes when turbo turns off); keeps running in slow mode. 0 or F10 (or the controller action `FABLE2_PAD_FRAMEGEN`) toggles it live with an on/off notice; without
+(resumes when turbo turns off); keeps running in slow mode. 0 or F11 (or the controller action `FABLE2_PAD_FRAMEGEN`) toggles it live with an on/off notice; without
 the requirements it only shows why ("Frame generation needs 30 FPS"). The setting stays the start state. Details and measurements: `docs/macos-metal.md` "Frame generation".
 
 Front-end audio preloading uses a 10 ms yield between banks instead of the original 400 ms throttle. It retains every bank load and completion check, shortening the forest painting pause when booting into a save. Set `FABLE2_AUDIO_PRELOAD_DELAY_MS=400` to compare original pacing; accepted overrides are 1–400 ms.
 
 ### Turbo (macOS)
 
-**7** or **F7** toggles turbo (the achievements overlay is on **1**): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** Off or 1.1×–4.0×, default 2.0×, Off in the Original preset; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables F7). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
+**7** or **F8** toggles turbo (the achievements overlay is on **8**; **2**/**3**/**4** set 2×/3×/4× directly, **1** returns to 1×, docs/turbo.md "Speed keys"): the whole game runs faster (default 2x) while the screen stays at ~30 FPS. Turbo is off at every start; a short "Turbo 2x on/off" notice appears in the top-right corner. Set the speed on the launcher front page (**Turbo speed** Off or 1.1×–4.0×, default 2.0×, Off in the Original preset; `FABLE2_TURBO_SPEED`) or with `[patches] turbo_scale` in `fable2_config.toml` (1.1–4.0 in 0.1 steps; 1.0 disables turbo). **Turbo audio** (`FABLE2_TURBO_AUDIO`, `[patches] turbo_audio`) sets the sound during turbo: "Sped up, natural pitch" (default; Apple AUNewTimePitch time-stretch), "Sped up, high pitch" (AUVarispeed) or "Normal speed" (1x, drifts behind the game, the old behaviour). The audio output then consumes guest audio at the turbo rate, so speech and music keep pace with the game; at 1x the audio path is unchanged. Guest sleeps and timed waits run at the turbo speed too (turbo wait fix, `FABLE2_TURBO_WAIT_FIX=0` restores the SDK behaviour, where they ran 2x long). Turbo needs SDK clock scaling, so launchers no longer pass `--clock_no_scaling=true`; an old `clock_no_scaling = true` line in `fable_2.toml` is ignored. Details: [docs/turbo.md](turbo.md).
 
-**8** or **F8** toggles **slow motion**: the whole game runs at a fraction of normal speed (default 0.5x; launcher
+**`** or **F1** sets **slow motion** (**1** or **F2** returns to 1×; the controller action toggles it): the whole game runs at a fraction of normal speed (default 0.5x; launcher
 **Slow speed** 0.25×–0.9× in 0.05 steps or Off, `FABLE2_SLOW_SPEED`, `[patches] slow_scale`). The frame rate stays at
 the cap (60 or 30) or uncapped. Turbo and slow motion turn each other off. Audio follows with the turbo audio
 setting. Details: [docs/turbo.md](turbo.md) "Slow mode".
 
 ### FPS counter (macOS)
 
-**9** or **F9** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
+**9** or **F10** shows or hides a small counter in the bottom-left corner. The headline is the game's own frame
 rate and average frame time over the last ~0.5 s (guest swaps, e.g. `52 FPS · 19.2 ms`). Extra fields, in
 order: `display N`, the presented rate, always shown (while any overlay is shown, this one included, the
 presenter repaints every UI tick, so the presented rate tends toward the display refresh), `2× res` at a
@@ -451,8 +461,8 @@ the game the slot shows **▶ Replaying**. Nothing moves when the slot changes. 
   while replaying), so a playback never makes a recording. Intro movies are always skipped. Normal window, sound and
   focus; the window title ends in "playback".
 - While the replay runs, the game reads only the recording: your controller, keyboard pad and mouse look do not
-  reach it (other controller slots get no input either). Hotkeys still work: 7/F7 turbo, 8/F8 slow motion, 0/F10
-  frame generation, 9/F9 FPS counter (its "L xx%" shows the replayed left stick before the remap), and the
+  reach it (other controller slots get no input either). Hotkeys still work: the speed keys (` 1-4), 7/F8 turbo, 0/F11
+  frame generation, 9/F10 FPS counter (its "L xx%" shows the replayed left stick before the remap), and the
   controller buttons bound in Controls (e.g. View = turbo). The replay follows guest time, so it stays in step at
   any speed; recorded speed changes are not replayed (you set the speed).
 - **Esc** ends the replay early. When the replay ends (Esc, the end of the recording, or a missed anchor) the game
@@ -539,10 +549,10 @@ happens fails the replay after `FABLE2_REPLAY_TIMEOUT_S` (60 s) and returns cont
 The launcher's front page starts with **Preset**: **Original · Enhanced · Custom** (both roles; 2026-10-22).
 
 - **Original**: as close to an Xbox 360 as possible: 1280×720 internal resolution, 30 FPS, the original image path,
-  intro movies, original pacing, no extras, turbo and slow motion off (F7, 7, F8 and the controller buttons do
+  intro movies, original pacing, no extras, turbo and slow motion off (7/F8, the speed keys and the controller buttons do
   nothing; View goes back to the game), the game's own stick deadzones.
 - **Enhanced** (the default): the original feel at the resolution and frame rate this Mac holds (Auto), plus the
-  turbo options. Turbo and slow motion (speeds, audio, F7/F8, controller buttons) are the one feel-changing exception,
+  turbo options. Turbo and slow motion (speeds, audio, speed keys, controller buttons) are the one feel-changing exception,
   on by choice as the recomp's own feature; everything else that changes feel is off.
 - **Custom**: a saved slot. Changing any preset setting below (on any page) copies the current values plus the change
   into Custom and selects it. Switching to Original or Enhanced and back to Custom restores it exactly. The launcher
@@ -587,7 +597,7 @@ Not part of a preset (the same in all three):
   target and resolve work, ring re-init, lower display latency, turbo precise sleeps, vsync phase lock)
   and every Performance switch (native shaders, specialization, prewarm, CPU trims, native save compressor and
   inflate, real occlusion queries, adaptive terrain opt-in). They don't change what the game looks or plays like.
-- **Preferences**: display mode (windowed/fullscreen), FPS counter (F9 still toggles it), boot straight into save,
+- **Preferences**: display mode (windowed/fullscreen), FPS counter (9/F10 still toggles it), boot straight into save,
   keyboard map, mouse look, overlay key binds, controller quick save and **screenshot** buttons (screenshots work in
   Original), View button to game, controllers in background.
 - **Dev options**: build choice, trace preset, hitch trace, verify modes, input recording, effects at full resolution
@@ -637,7 +647,7 @@ prints the backend arguments without launching.
   Fast title stays with **Skip intro movies**. It replaces the earlier "Shorter load fades" toggle (a saved "on"
   carries over). Inventory, what is excluded and measurements: `docs/load-fixes-20261016.md` section F.
 - A save launch runs in a session copy (`out/dev-sessions/<id>/test-state`) holding only that
-  save. Whenever the game writes a save there (menu Save, F5, autosave), the save is copied into
+  save. Whenever the game writes a save there (menu Save, quick save, autosave), the save is copied into
   the library as `<name>_<YYYY-MM-DD_HH-MM-SS>` and written back to the chosen live slot (the old
   slot is first backed up to `out/save-backups/`). Nothing is copied when the game closes.
 - **Close game** quits the running game; a second copy is refused.
@@ -648,7 +658,7 @@ prints the backend arguments without launching.
   (then `tools/fable2_test_control.py capture|press|close <session>`). `--test-control` turns on
   **background test mode** (`FABLE2_TEST_BACKGROUND=1`, launched with `open -g`): the game opens
   behind the frontmost app and never takes the keyboard/mouse; test `press` keys (including
-  F5-F10 and 5-9/0) go through the app's own test channel and work without focus, while real
+  the hotkeys ` 0-9 and F1-F11) go through the app's own test channel and work without focus, while real
   keyboard/mouse input stays focus-gated; an App Nap exemption keeps frames at full rate when the
   window is covered. Background test launches are also muted (`--audio_mute=true`).
   Normal Launcher play does not set either. `fable2_test_control.py launch|replay`
@@ -715,7 +725,7 @@ variable to `0` to restore the old behaviour (env only, no launcher toggles).
 | `FABLE2_DRAW_PREP_LITE2` | default **on** (2026-10-14); more GPU Commands thread trims: the texture load check reused when a state snapshot (load-check epoch, scaled-resolve generation, in-sync bits) is unchanged, texture find memo and sampler parameter memo, pending-write list in reused storage, float constants packed by runs, cached texture properties, flat residency set; `=0` restores each. `FABLE2_DRAW_PREP_LITE2_VERIFY=1` recomputes every reused check (`docs/gpucmd-cpu3-20261014.md`) | SDK `pipeline/texture/cache.cpp`, `metal_command_processor.cc`, `metal_texture_cache.cc` |
 | `FABLE2_FIX_LOD_SIZE_CACHE` | default **off** (game-logic fix, changes original behaviour); the texture streamer's per-model size cache (`82B197C8`) tests the minimum distance it computes from, so a model first sized from the shadow view (the pale Bower Lake root) is recomputed on the next frame. Launcher: Fixes → "Game bug fixes (changes original behaviour)". Trace: `FABLE2_PALE_ROOT_TRACE=1` / `_WATCH=1` (`docs/pale-root-20261014.md`) | `src/core/hotfunc/gpu/LodSizeCacheFix.cpp`, `src/core/hotfunc/gpu/PaleRootTrace.cpp` |
 | `FABLE2_FAST_PACING` | default **off** (pacing change). `1`: cosmetic pacing waits shortened by changing sub-switch defaults: `FABLE2_LOAD_FADE_FRAMES` 15 → 1 (render-object release fades), `FABLE2_SAVE_NOTICE_MS` 500 → 0 (save-notice minimum; the game's own is 3100). An explicit sub-switch value wins. Launcher: General → Game → "Skip cosmetic waits" (`docs/load-fixes-20261016.md` section F) | `src/core/fable2_fast_pacing.h`, `src/core/hotfunc/load/LoadFade_8235ABA0.cpp`, `src/core/fable2_loading_pacing.h` |
-| `FABLE2_CHARACTER_EDITOR` | default **off** (mod). `1`: F6 runs `F6_character_editor.lua`, which adds "Character Editor" to the F6 menu (morality, purity, gold, renown, fat, strength/skill/will morph through the game's `Stats`/`Money` API; save backed up first). Launcher: General → Mods (`docs/character-editor.md`) | `src/core/fable2_character_editor.h`, `src/lua/character_editor.lua` |
+| `FABLE2_CHARACTER_EDITOR` | default **off** (mod). `1`: the script menu key (6/F7) runs `F6_character_editor.lua`, which adds "Character Editor" to the script menu (morality, purity, gold, renown, fat, strength/skill/will morph through the game's `Stats`/`Money` API; save backed up first). Launcher: General → Mods (`docs/character-editor.md`) | `src/core/fable2_character_editor.h`, `src/lua/character_editor.lua` |
 | `FABLE2_CHARACTER_EDITOR_BACKUP_DIR` | Character Editor backup folder; default `<state dir>/character-editor-backups` (Fable II Launcher play sessions: `out/save-backups/character-editor`) | `src/core/fable2_character_editor.h` |
 | `FABLE2_LOAD_CHECK_EXACT` | default **on** (2026-10-14); a texture request after a "no load" check defers only loads caused by a guest CPU write after the check (the next draw that uses the texture loads it in its batch), so no load runs outside the upload batch; `=0` old behaviour, `=2` diagnostic (filter, no deferral). `FABLE2_LOAD_CHECK_EXACT_VERIFY=1` tracks every deferred texture until it loads (violations counted; `=2` negative control), `FABLE2_LOAD_CHECK_TRACE=1` logs loads after a no-load check with their call path (`docs/gpucmd-cpu4-20261014.md`) | SDK `pipeline/texture/cache.cpp`, `metal_texture_cache.cc` |
 | `FABLE2_TEX_RENAME` | default **on** (2026-10-14); a full reload of a texture the open command buffer already sampled goes into a fresh backing (pooled, new bindless slots; the old slots are retired so encoded draws keep the old contents) instead of ending the render pass; `=0` is the old split path. `FABLE2_TEX_RENAME_NOOP=0` (default on): planned loads that write nothing (stale plan, RTT keep) end the pass again. `FABLE2_TEX_UNCHANGED=1` (default off, no gain measured): skip reloads of unscaled textures at scale > 1 that no write touched. `FABLE2_RTT_NARROW_CPU_FIX=0` (default on) restores the resolve-narrowing race. `FABLE2_TEX_RENAME_MB` (128) caps pool + in-flight old backings. Diagnostics: `FABLE2_TEX_RENAME_VERIFY=1` (+`_BREAK=1`), `FABLE2_TEX_UNCHANGED_VERIFY=1`, `FABLE2_TEX_RENAME_TRACE=1`, `FABLE2_TEX_NX_DIAG=1`, `FABLE2_TEX_NX_TRACE=<hex>`; counters `tr_n_trn_*`, `tr_n_nx_*` (`docs/tex-rename-20261013.md`) | `metal_tex_rename.cc`, `metal_texture_cache.cc` (`PrepareTextureMaterialization`, `ClassifyMaterializationPlan`), `metal_resolve_to_texture.cc` (`RttOnInvalidate`, `NxTrack`), `metal_command_processor.cc` (`TexRenameAfterLoads`, orphan settle in `IssueCopy` / `EndCommandBuffer`) |

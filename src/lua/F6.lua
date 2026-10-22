@@ -175,7 +175,7 @@ if not st.registered then
         -- A script returns to this menu by setting st.show (its "Back").
         while st.show and not st.closing do
           st.show = false
-          local choice = st.box("F6 Menu", page())
+          local choice = st.box("Script Menu", page())
           local item = choice and F6_MENU_ITEMS[choice - 1]
           if item then run_script(item.path) end
         end

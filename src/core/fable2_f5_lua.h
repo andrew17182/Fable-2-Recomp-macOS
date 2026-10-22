@@ -1,13 +1,13 @@
 // fable_2 - Host hotkeys that run external Lua files in the in-game Lua state,
 // using the game's own CScriptManager::RunScript (C++ core API).
 //
-//   F5 (or number-row 5): quick save. Native (src/core/fable2_quick_save.h): the
+//   Number-row 5 (or F6): quick save. Native (src/core/fable2_quick_save.h): the
 //       same save as the pause menu's "Save and Continue". If `f5_lua_path` is set,
-//       F5 runs that Lua file instead.
-//   F6 (or number-row 6): custom Lua. Runs `f6_lua_path` (default
+//       the key runs that Lua file instead.
+//   Number-row 6 (or F7): custom Lua, the script menu. Runs `f6_lua_path` (default
 //       scripts/recomp/F6.lua, the script selector menu).
 // Each key runs its file exactly the way the Lua "RunScript(path)" global does,
-// but from the host side.
+// but from the host side. Internal names keep F5/F6 (the keys' original F keys).
 //
 // How it works (all hooks are recompiled-function probes so they have ctx+base):
 //   A) poll_f5() is called per frame from the host input poll; it edge-detects
@@ -69,14 +69,14 @@ REXCVAR_DEFINE_STRING(
     f5_lua_path,
     "",
     "Input",
-    "Optional Lua file run by F5 / number-row 5 (host keyboard) INSTEAD of the "
+    "Optional Lua file run by number-row 5 / F6 (host keyboard) INSTEAD of the "
     "native quick save. Empty (default) = quick save. Path relative to the VFS "
     "root (data/), as CScriptManager::RunScript / loadfile resolves it.");
 REXCVAR_DEFINE_STRING(
     f6_lua_path,
     "scripts/recomp/F6.lua",
     "Input",
-    "Custom Lua file run by F6 / number-row 6 (host keyboard). Path relative to "
+    "Custom Lua file run by number-row 6 / F7 (host keyboard). Path relative to "
     "the VFS root (data/). The default F6.lua opens the script selector menu.");
 
 // Current game-state name (defined in src/diagnostics/fable2_state_probe.h,

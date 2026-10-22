@@ -9,7 +9,7 @@
 // - Mouse look: the mouse_look / mouse_look_scale cvars (REX_MOUSE_LOOK, REX_MOUSE_LOOK_SCALE).
 // - Hotkeys: the SDK overlay binds are cvars (bind_console, bind_settings, bind_debug_overlay,
 //   bind_achievements; recomp defaults in src/input/recomp_hotkeys.h), so they are rebindable here
-//   (REX_BIND_*; the settings key is also mouse_unlock_key). 5-9/0 and F5-F10 are fixed in
+//   (REX_BIND_*; the settings key is also mouse_unlock_key). ` 1-7 9 0 and F1-F11 are fixed in
 //   src/input/window_keyboard_mouse.h and only listed.
 // - Controllers: macOS remaps controller buttons system-wide (System Settings > Game Controllers); this
 //   tab links there and lists connected controllers (GameController framework). Controller hotkeys
@@ -315,21 +315,25 @@ enum PadAction: String, CaseIterable, Identifiable {
 enum Hotkeys {
   /// Rebindable SDK overlay binds and their recomp defaults (src/input/recomp_hotkeys.h; SDK names).
   static let rebindable: [Hotkey] = [
-    Hotkey(title: "Console", keys: "Backtick", detail: "The SDK console (cvars, log).", cvar: "bind_console"),
-    Hotkey(title: "Settings menu", keys: "4",
+    Hotkey(title: "Achievements", keys: "8", detail: "The achievements overlay. F9 opens it too.", cvar: "bind_achievements"),
+    Hotkey(title: "Console", keys: "None", detail: "The SDK console (cvars, log).", cvar: "bind_console"),
+    Hotkey(title: "Settings menu", keys: "None",
            detail: "The SDK settings overlay. Also frees the mouse while mouse look is on.", cvar: "bind_settings"),
-    Hotkey(title: "Debug overlay", keys: "3", detail: "Frame-time and GPU stats.", cvar: "bind_debug_overlay"),
-    Hotkey(title: "Achievements", keys: "1", detail: "The achievements overlay.", cvar: "bind_achievements"),
+    Hotkey(title: "Debug overlay", keys: "None", detail: "Frame-time and GPU stats.", cvar: "bind_debug_overlay"),
   ]
   /// Fixed hotkeys (src/input/window_keyboard_mouse.h, src/input/controller_hotkeys.h, SDL's window menu). Number row
-  /// first (MacBook F keys need fn); the F keys mirror it.
+  /// first (MacBook F keys need fn); the F keys mirror it one to the right (` = F1 ... 0 = F11).
   static let fixed: [Hotkey] = [
-    Hotkey(title: "Quick save", keys: "5 or F5", detail: "Same as Save and Continue in the pause menu.", pad: .quickSave),
-    Hotkey(title: "Lua script menu", keys: "6 or F6", detail: "Opens the script selector (or runs f6_lua_path)."),
-    Hotkey(title: "Turbo on/off", keys: "7 or F7", detail: "The whole game runs faster (Turbo speed on the launcher page).", pad: .turbo),
-    Hotkey(title: "Slow motion on/off", keys: "8 or F8", detail: "The whole game runs slower (Slow speed on the launcher page).", pad: .slow),
-    Hotkey(title: "FPS counter", keys: "9 or F9", detail: "Shows or hides the frame-rate counter."),
-    Hotkey(title: "Frame generation on/off", keys: "0 or F10",
+    Hotkey(title: "Slow motion", keys: "` or F1", detail: "At the Slow speed (launcher page). The controller button toggles it.", pad: .slow),
+    Hotkey(title: "Normal speed", keys: "1 or F2", detail: "Turns turbo and slow motion off."),
+    Hotkey(title: "Speed 2×", keys: "2 or F3", detail: "Ignores the Turbo speed slider."),
+    Hotkey(title: "Speed 3×", keys: "3 or F4", detail: "Ignores the Turbo speed slider."),
+    Hotkey(title: "Speed 4×", keys: "4 or F5", detail: "Ignores the Turbo speed slider."),
+    Hotkey(title: "Quick save", keys: "5 or F6", detail: "Same as Save and Continue in the pause menu.", pad: .quickSave),
+    Hotkey(title: "Script menu", keys: "6 or F7", detail: "Opens the Lua script menu (or runs f6_lua_path)."),
+    Hotkey(title: "Turbo on/off", keys: "7 or F8", detail: "At the Turbo speed (launcher page). Off from any speed.", pad: .turbo),
+    Hotkey(title: "FPS counter", keys: "9 or F10", detail: "Shows or hides the frame-rate counter."),
+    Hotkey(title: "Frame generation on/off", keys: "0 or F11",
            detail: "30 FPS shows as 60 (needs the 30 FPS cap and macOS 26). The setting is the start state.",
            pad: .frameGen),
     Hotkey(title: "Full screen on/off", keys: "⌃⌘F", detail: "The window's full-screen Space (or the green button)."),
@@ -338,9 +342,10 @@ enum Hotkeys {
   ]
   /// Keys the game also uses as fixed hotkeys (number keys only while no overlay is open).
   static let fixedKeys: [String: String] = [
-    "F5": "Quick save", "5": "Quick save", "F6": "Lua script menu", "6": "Lua script menu",
-    "F7": "Turbo", "7": "Turbo", "F8": "Slow motion", "8": "Slow motion", "F9": "FPS counter", "9": "FPS counter",
-    "F10": "Frame generation", "0": "Frame generation",
+    "Backtick": "Slow motion", "F1": "Slow motion", "1": "Normal speed", "F2": "Normal speed",
+    "2": "Speed 2×", "F3": "Speed 2×", "3": "Speed 3×", "F4": "Speed 3×", "4": "Speed 4×", "F5": "Speed 4×",
+    "5": "Quick save", "F6": "Quick save", "6": "Script menu", "F7": "Script menu", "7": "Turbo", "F8": "Turbo",
+    "F9": "Achievements", "9": "FPS counter", "F10": "FPS counter", "0": "Frame generation", "F11": "Frame generation",
   ]
 }
 
@@ -850,7 +855,7 @@ struct ControlsTabContent: View {
       Toggle(isOn: $model.settings.controls.mouseLook) {
         VStack(alignment: .leading, spacing: 2) {
           Text("Mouse look")
-          Text("Moving the mouse turns the camera (right stick). Captures the cursor while playing; the Settings menu key (\(KeyNames.display(controls.bind("bind_settings")))) frees it.")
+          Text("Moving the mouse turns the camera (right stick). Captures the cursor while playing; switching apps (⌘Tab)\(controls.bind("bind_settings") == "None" ? "" : " or the Settings menu key (\(KeyNames.display(controls.bind("bind_settings"))))") frees it.")
             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
       }

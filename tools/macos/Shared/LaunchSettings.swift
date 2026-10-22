@@ -565,7 +565,7 @@ struct LaunchSettings: Equatable {
   var boot = true
   /// Off by default since 2026-10-22 (Enhanced keeps the original game's items; Custom can turn it on).
   var unlockExtras = false
-  /// Mods (opt-in, off by default): the Character Editor in the F6 menu (docs/character-editor.md).
+  /// Mods (opt-in, off by default): the Character Editor in the script menu (docs/character-editor.md).
   var characterEditor = false
   var turboNotice = TurboNotice.overlay
   var turboSpeed = TurboSpeed.defaultValue
@@ -682,8 +682,8 @@ struct LaunchSettings: Equatable {
          title: "Unlock Collector's Edition and website gear",
          detail: "Bonus items from the Collector's Edition and the old website."),
     Flag(key: "characterEditor", path: \.characterEditor, cli: "character-editor", tab: .mods, section: "Mods",
-         title: "Character Editor (F6 menu)",
-         detail: "Edit morality, looks, gold and renown from the F6 menu. Backs up the save first."),
+         title: "Character Editor (script menu)",
+         detail: "Edit morality, looks, gold and renown from the script menu (6). Backs up the save first."),
     Flag(key: "fpsCounter", path: \.fpsCounter, cli: "fps-counter", tab: .display, section: "Frame rate",
          title: "Show FPS counter", detail: "Its state at launch; F9 toggles it in game."),
     Flag(key: "auto2x", path: \.auto2x, cli: "auto-2x", tab: .display, section: "Frame rate",
@@ -1291,7 +1291,7 @@ extension LaunchSettings {
     // FABLE2_LOAD_FADE_FRAMES and FABLE2_SAVE_NOTICE_MS in the game. Always explicit. The sub-switches are not
     // passed, so an explicit value in Extra environment still wins over the umbrella.
     env.append("FABLE2_FAST_PACING=\(fastPacing ? 1 : 0)")
-    // Opt-in mod: the Character Editor entry in the F6 menu (docs/character-editor.md). Default off; always explicit.
+    // Opt-in mod: the Character Editor entry in the script menu (docs/character-editor.md). Default off; always explicit.
     env.append("FABLE2_CHARACTER_EDITOR=\(characterEditor ? 1 : 0)")
     // Shader cache keyed by a fixed converter target (apple7:15.0) instead of this Mac's GPU and exact macOS
     // version, so it survives macOS updates (docs/native-shaders.md, "Converter target"). Off = native.

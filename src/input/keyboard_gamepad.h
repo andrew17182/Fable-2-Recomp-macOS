@@ -61,9 +61,18 @@
 #include <rex/ui/imgui_drawer.h>
 
 namespace fable2::hotkey_hooks {
-// F9: set by Fable2App to fable2::fps_counter::Toggle (src/core/fable2_fps_counter.h),
+// 9/F10: set by Fable2App to fable2::fps_counter::Toggle (src/core/fable2_fps_counter.h),
 // so this header does not pull in the overlay. Called on the UI thread.
 inline void (*g_toggle_fps)() = nullptr;
+
+// F9: the F-key twin of the achievements key (bind_achievements, default 8). Runs whatever that bind
+// runs; nothing when it is unbound or already F9. UI thread.
+inline void OpenAchievements() {
+  const auto vk = rex::ui::ParseVirtualKey(rex::cvar::GetFlagByName("bind_achievements"));
+  if (vk == rex::ui::VirtualKey::kNone || vk == rex::ui::VirtualKey::kF9) return;
+  rex::ui::KeyEvent event(nullptr, vk, 1, false, false, false, false, false);
+  rex::ui::ProcessKeyEvent(event);
+}
 }  // namespace fable2::hotkey_hooks
 #endif
 
@@ -230,13 +239,20 @@ class KeyboardGamepadDriver final : public rex::input::InputDriver {
       }
       return options;
     }, [](int key) {
-      // 7 = 7/F7 turbo toggle, 8 = 8/F8 slow mode, 9 = 9/F9 FPS counter, 10 = 0/F10 frame generation
-      // (UI thread); 5/6 = quick save / Lua.
-      if (key == 7) fable2::turbo::Toggle();
-      else if (key == 10) fable2::frame_gen::Toggle();
-      else if (key == 8) fable2::turbo::ToggleSlow();
-      else if (key == 9) { if (fable2::hotkey_hooks::g_toggle_fps) fable2::hotkey_hooks::g_toggle_fps(); }
-      else fable2::f5lua::request_run(key);
+      // Hotkey codes from window_keyboard_mouse.h (UI thread): 5/6 = quick save / script menu, 7 = turbo
+      // toggle, 8 = achievements (F9), 9 = FPS counter, 10 = frame generation, 20-24 = speed keys.
+      switch (key) {
+        case 7: fable2::turbo::Toggle(); break;
+        case 8: hotkey_hooks::OpenAchievements(); break;
+        case 9: if (fable2::hotkey_hooks::g_toggle_fps) fable2::hotkey_hooks::g_toggle_fps(); break;
+        case 10: fable2::frame_gen::Toggle(); break;
+        case 20: fable2::turbo::SetSpeed(0.5); break;  // any speed below 1 = slow mode at slow_scale
+        case 21: fable2::turbo::SetSpeed(1.0); break;
+        case 22: fable2::turbo::SetSpeed(2.0); break;
+        case 23: fable2::turbo::SetSpeed(3.0); break;
+        case 24: fable2::turbo::SetSpeed(4.0); break;
+        default: fable2::f5lua::request_run(key);
+      }
     });
 #endif
   }

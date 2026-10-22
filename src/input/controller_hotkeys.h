@@ -1,15 +1,15 @@
 // fable_2 - controller hotkeys: bindable turbo / slow / quick save / screenshot / frame generation.
 //
 // Five actions, each bound to one controller button (or none):
-//   FABLE2_PAD_TURBO       default view   - same toggle as F7 (fable2::turbo::Toggle)
-//   FABLE2_PAD_SLOW        default none   - same toggle as F8 (fable2::turbo::ToggleSlow)
-//   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as F5
+//   FABLE2_PAD_TURBO       default view   - same toggle as 7/F8 (fable2::turbo::Toggle)
+//   FABLE2_PAD_SLOW        default none   - slow mode on/off (fable2::turbo::ToggleSlow)
+//   FABLE2_PAD_QUICKSAVE   default share  - same native quick save as 5/F6
 //                                           (fable2::quicksave::request, src/core/fable2_quick_save.h)
 //   FABLE2_PAD_SCREENSHOT  default none   - saves the game's rendered frame as a PNG:
 //                                           <dir>/Fable II YYYY-MM-DD HH-MM-SS.png. <dir> is
 //                                           FABLE2_SCREENSHOT_DIR, else the `screenshot_dir` cvar,
 //                                           else <game_data_root>/Screenshots.
-//   FABLE2_PAD_FRAMEGEN    default none   - same toggle as F10 (fable2::frame_gen::Toggle)
+//   FABLE2_PAD_FRAMEGEN    default none   - same toggle as 0/F11 (fable2::frame_gen::Toggle)
 // Buttons: none | view (SDL BACK, the 360 Back) | share (SDL MISC1) | ls | rs (stick clicks).
 // The launcher sets these (tools/macos/Shared/ControlsView.swift, Controls > Game controllers).
 // One button acts for one action: an explicitly set action takes its button first, and a
@@ -28,7 +28,7 @@
 // (down edge, 300 ms bounce guard). Pad events and the actions also arrive while the app is
 // in the background (FABLE2_PAD_BACKGROUND, default on, test_background.h; =0: focus only), and a
 // test-only instance (FABLE2_PHYSICAL_INPUT=0) takes only the test
-// channel's virtual pad, the same rules as the keyboard F7. Each open is logged once
+// channel's virtual pad, the same rules as the keyboard 7/F8. Each open is logged once
 // with the controller name and whether it reports MISC1 (Share).
 //
 // Share on macOS: SDL reads Xbox pads through Apple's GameController framework
@@ -614,19 +614,19 @@ inline void Dispatch(Action action, const std::string& what) {
       return;
     case Action::kTurbo:
       REXLOG_INFO("[pad-hotkeys] {} pressed -> turbo", what);
-      // Same toggle as F7; its own UI task, outside the SDL event watch.
+      // Same toggle as 7/F8; its own UI task, outside the SDL event watch.
       if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::Toggle(); }))
         REXLOG_WARN("[pad-hotkeys] turbo skipped: UI thread unavailable");
       return;
     case Action::kSlow:
       REXLOG_INFO("[pad-hotkeys] {} pressed -> slow", what);
-      // Same toggle as F8.
+      // Slow mode on/off.
       if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::turbo::ToggleSlow(); }))
         REXLOG_WARN("[pad-hotkeys] slow skipped: UI thread unavailable");
       return;
     case Action::kFrameGen:
       REXLOG_INFO("[pad-hotkeys] {} pressed -> frame generation", what);
-      // Same toggle as F10.
+      // Same toggle as 0/F11.
       if (!s.context || !s.context->CallInUIThreadDeferred([] { fable2::frame_gen::Toggle(); }))
         REXLOG_WARN("[pad-hotkeys] frame generation skipped: UI thread unavailable");
       return;

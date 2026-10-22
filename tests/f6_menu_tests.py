@@ -106,11 +106,14 @@ class MenuScriptTests(unittest.TestCase):
         self.assertIn('st.closing = true', press)
         self.assertIn('pcall(RunScript, CLOSE_BOX)', press)
 
-    def test_f6_not_gated_by_overlay(self):
+    def test_menu_f_key_not_gated_by_overlay(self):
+        # The script menu is on 6 and F7 (2026-10-22). Number keys go through NumberRowAction, which is skipped while
+        # an overlay has the keyboard; F keys go through FKeyAction, which never is (both key handlers).
         text = (ROOT / 'src/input/window_keyboard_mouse.h').read_text()
-        for block in re.findall(r'overlay_captures_input\) \{(.*?)\n\s*\}', text, re.S):
-            self.assertNotIn('kF6', block)
-        self.assertEqual(text.count('== uint16_t(K::kF6)) '), 2)
+        fkeys = text[text.index('static int FKeyAction('):]
+        self.assertIn('case K::kF7: return 6;', fkeys[:fkeys.index('default:')])
+        self.assertEqual(text.count('overlay_captures_input ? 0 : NumberRowAction(key);'), 2)
+        self.assertEqual(text.count('if (!action) action = FKeyAction(key);'), 2)
 
 
 if __name__ == '__main__':

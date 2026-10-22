@@ -41,7 +41,7 @@ local ITEMS = {
 
 local function run()
   if not (st and st.box) then
-    pcall(GUI.DisplayMessageBox, "Morality / Purity: open it from the F6 menu.")
+    pcall(GUI.DisplayMessageBox, "Morality / Purity: open it from the script menu (6).")
     return
   end
   local labels = {}

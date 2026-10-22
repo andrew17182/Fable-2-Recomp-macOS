@@ -88,7 +88,8 @@ class ControlsSourceTests(unittest.TestCase):
         keys = [entry.split(':')[0] for entry in swift.split(',')]
         names = set(swift_strings(block('sdk-key-names')))
         sdk = sdk_key_names()
-        hotkeys = set(re.findall(r'Hotkey\(title: "[^"]+", keys: "([^"]+)"', SWIFT)) | {'F5', 'F6', 'F7', 'F8', 'F9', '5', '6', '7'}
+        hotkeys = set(re.findall(r'Hotkey\(title: "[^"]+", keys: "([^"]+)"', SWIFT)) | {
+            'Backtick', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0'} | {'F%d' % n for n in range(1, 12)}
         for key in keys:
             self.assertIn(key, names)
             if sdk is not None: self.assertIn(key, sdk)
@@ -96,15 +97,26 @@ class ControlsSourceTests(unittest.TestCase):
         for key in ('I', 'J', 'K', 'L', 'Up', 'Down', 'Left', 'Right'): self.assertIn(key, keys)
 
     def test_hotkey_defaults_match_code(self):
-        rebindable = dict(re.findall(r'keys: "([^"]+)",\s*detail: "[^"]*",\s*cvar: "(\w+)"', SWIFT))
-        rebindable = {cvar: key for key, cvar in rebindable.items()}
+        rebindable = {cvar: key for key, cvar in re.findall(r'keys: "([^"]+)",\s*detail: "[^"]*",\s*cvar: "(\w+)"', SWIFT)}
         hotkeys = (ROOT / 'src/input/recomp_hotkeys.h').read_text()
         for cvar, key in re.findall(r'Binding\{"(\w+)", "([^"]+)"\}', hotkeys):
             self.assertEqual(rebindable.pop(cvar), key)
-        self.assertEqual(rebindable, {'bind_console': 'Backtick'})  # the SDK default, kept by the recomp
+        self.assertEqual(rebindable, {})  # every overlay bind has a recomp default (None = unbound)
+        # Fixed keys: the number row, and the F keys one to the right (` = F1 ... 0 = F11); 8 is bind_achievements.
         keys = (ROOT / 'src/input/window_keyboard_mouse.h').read_text()
-        for key in ('k5', 'kF5', 'k6', 'kF6', 'k7', 'kF7', 'k8', 'kF8', 'k9', 'kF9', 'k0', 'kF10'):
-            self.assertIn('K::%s)' % key, keys)
+        def cases(fn):
+            body = keys[keys.index('static int %s(' % fn):]
+            return dict(re.findall(r'case K::(\w+): return (\d+);', body[:body.index('default:')]))
+        row = cases('NumberRowAction')
+        self.assertEqual(row, {'kOem3': '20', 'k1': '21', 'k2': '22', 'k3': '23', 'k4': '24', 'k5': '5', 'k6': '6',
+                               'k7': '7', 'k9': '9', 'k0': '10'})
+        self.assertEqual(cases('FKeyAction'), {'kF1': '20', 'kF2': '21', 'kF3': '22', 'kF4': '23', 'kF5': '24',
+                                               'kF6': '5', 'kF7': '6', 'kF8': '7', 'kF9': '8', 'kF10': '9',
+                                               'kF11': '10'})
+        # The launcher's list names the same keys.
+        fixed = re.findall(r'keys: "(\S+) or (F\d+)"', SWIFT)
+        self.assertEqual(fixed, [('`', 'F1'), ('1', 'F2'), ('2', 'F3'), ('3', 'F4'), ('4', 'F5'), ('5', 'F6'),
+                                 ('6', 'F7'), ('7', 'F8'), ('9', 'F10'), ('0', 'F11')])
 
     def test_registered_in_both_apps(self):
         self.assertIn('case general, display, controls,', (ROOT / 'tools/macos/Shared/LaunchSettings.swift').read_text())

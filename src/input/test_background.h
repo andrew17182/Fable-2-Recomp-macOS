@@ -12,7 +12,7 @@
 //     driver ignores without focus). It posts kTestKeyEventType user events;
 //     WindowKeyboardMouse (window_keyboard_mouse.h) receives them through an
 //     SDL event watch and holds them in a separate synthetic key set that is
-//     merged into the guest pad and F5/F6/F7/5/6/7 handling regardless of focus.
+//     merged into the guest pad and hotkey (` 0-9, F1-F11) handling regardless of focus.
 //     Real host keyboard/mouse input stays focus-gated.
 // Normal play (variable unset) is unchanged.
 //
@@ -24,7 +24,7 @@
 //     virtual pad still works (SDL's virtual driver is separate).
 //   - The GameController-framework Share watcher is not installed and SDL pad events from any
 //     device other than the test virtual pad are ignored (controller_hotkeys.h).
-//   - Real keys, mouse buttons and mouse look never reach the guest pad or the F5-F9/5/6/7
+//   - Real keys, mouse buttons and mouse look never reach the guest pad or the hotkeys (` 0-9, F1-F11)
 //     hotkeys (window_keyboard_mouse.h treats the window as unfocused); the SDK MnK driver is
 //     not added (fable_2_app.h). Synthetic test keys (kTestKeyEventType) and the replay-pad
 //     channel are unaffected.

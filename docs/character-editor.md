@@ -1,14 +1,14 @@
 # Character Editor (mod, phase 1, 2026-10-15)
 
 An opt-in mod that edits the hero in a running game through the game's own Lua stat API. It is off by
-default. When it is off, the F6 menu and the game are unchanged.
+default. When it is off, the script menu (6, the old F6 menu) and the game are unchanged.
 
-- **Turn it on:** Launcher → Settings → Mods → "Character Editor (F6 menu)", or
+- **Turn it on:** Launcher → Settings → Mods → "Character Editor (script menu)", or
   `FABLE2_CHARACTER_EDITOR=1` (`tools/fable2_dev_session.py launch ... --env FABLE2_CHARACTER_EDITOR=1`).
-- **Use it:** in gameplay, press F6 (or 6) and pick "Character Editor". It is a game menu box, so it works
+- **Use it:** in gameplay, press 6 (or F7) and pick "Character Editor". It is a game menu box, so it works
   with a controller: A selects, B goes back. It has two pages; "More..." flips between them.
 - **Keep or discard:** edits change the live game. They reach the save only when the game saves (autosave,
-  F5 quick save or the pause menu). Quit without saving and they are gone.
+  quick save (5) or the pause menu). Quit without saving and they are gone.
 
 ## What it edits (phase 1)
 

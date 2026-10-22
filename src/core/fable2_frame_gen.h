@@ -2,15 +2,15 @@
 // shows one generated frame between every two real ones, 30 rendered -> 60 shown.
 //
 // Start state: FABLE2_FRAME_INTERP=1 (default 0; launcher Settings > Display > Frame rate "Frame generation", a
-// Custom preset setting). 0 or F10 (keyboard_gamepad.h) and the controller action FABLE2_PAD_FRAMEGEN
+// Custom preset setting). 0 or F11 (keyboard_gamepad.h) and the controller action FABLE2_PAD_FRAMEGEN
 // (controller_hotkeys.h, default none) toggle it live; the toggle never changes the launcher setting.
 // Rules, decided once at startup (Configure, after the frame-rate decision):
 // - It needs the 30 FPS cap (fps_60 off, vsync on). At 60 FPS or uncapped it stays off; the frame rate is not
-//   changed. The start state logs why, and F10 shows a notice ("Frame generation needs 30 FPS") and does nothing.
+//   changed. The start state logs why, and 0/F11 shows a notice ("Frame generation needs 30 FPS") and does nothing.
 // - It needs macOS 26 and a GPU that MetalFX frame interpolation supports (MTLFXFrameInterpolatorDescriptor
 //   supportsDevice), and the Metal renderer. Same handling.
 // - Turbo pauses it (maintainer, 2026-10-22): while turbo is on the presenter shows only real frames, and it resumes
-//   when turbo turns off. No notice of its own (turbo's notice says enough); the F9 overlay shows "framegen paused".
+//   when turbo turns off. No notice of its own (turbo's notice says enough); the FPS counter shows "framegen paused".
 //   Slow mode keeps it running (about 30 real frames per second at the 30 cap, src/core/fable2_turbo.h).
 // The presenter side is backends/metal/port/rex/ui/metal/metal_frame_interp.{h,mm}, driven through its export
 // fable2_frame_interp_enable (dlsym): 1 = on, 0 = off, 2 = query support.
@@ -35,7 +35,7 @@ namespace fable2::frame_gen {
 enum class Block { kUnknown, kOk, kNeeds30, kNeedsMetal, kNeedsMacOS26, kUnsupported };
 
 inline std::atomic<Block> g_block{Block::kUnknown};
-inline std::atomic<bool> g_on{false};      // wanted (start state, F10)
+inline std::atomic<bool> g_on{false};      // wanted (start state, 0/F11)
 inline std::atomic<bool> g_paused{false};  // wanted but paused while turbo is on
 
 using EnableFn = int (*)(int);
@@ -64,11 +64,11 @@ inline bool Requested() {
   return false;
 }
 
-// Is frame generation on (wanted; it may be paused by turbo)? Paused()? (F9 overlay)
+// Is frame generation on (wanted; it may be paused by turbo)? Paused()? (FPS counter)
 inline bool Active() { return g_on.load(std::memory_order_relaxed); }
 inline bool Paused() { return Active() && g_paused.load(std::memory_order_relaxed); }
 
-// Tells the presenter: on when wanted and turbo is off. Called on every change (F10, turbo mode change).
+// Tells the presenter: on when wanted and turbo is off. Called on every change (0/F11, turbo mode change).
 inline void Apply() {
   if (g_block.load() != Block::kOk || !Backend()) return;
   const bool pause = fable2::turbo::Active();
@@ -93,12 +93,12 @@ inline bool Configure() {
   fable2::turbo::g_on_mode_change = &Apply;
   const bool want = Requested();
   if (block != Block::kOk) {
-    REXSYS_INFO("[frame-gen] {}: {} ({}; 0/F10 shows this)", want ? "off" : "off, unavailable", BlockText(block),
+    REXSYS_INFO("[frame-gen] {}: {} ({}; 0/F11 shows this)", want ? "off" : "off, unavailable", BlockText(block),
                 block == Block::kNeeds30 ? (uncapped ? "running uncapped" : "running at 60 FPS") : "checked at start");
     return false;
   }
   if (!want) {
-    REXSYS_INFO("[frame-gen] off (available: 0/F10 turns it on)");
+    REXSYS_INFO("[frame-gen] off (available: 0/F11 turns it on)");
     return false;
   }
   g_on.store(true);
@@ -107,7 +107,7 @@ inline bool Configure() {
   return true;
 }
 
-// F10 / the controller action (UI thread): flip it, or say why it can't run. Runtime only.
+// 0/F11 / the controller action (UI thread): flip it, or say why it can't run. Runtime only.
 inline void Toggle() {
   const Block block = g_block.load();
   std::string text;

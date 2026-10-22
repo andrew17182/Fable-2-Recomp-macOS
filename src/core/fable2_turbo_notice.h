@@ -1,7 +1,7 @@
 // "Turbo 2x on/off" notice, shown on each turbo toggle (docs/turbo.md).
 //
 // Shown by fable2::turbo::SetActive through turbo::g_notice. Toggles come from
-// key events on the UI thread (real F7 and the background test channel), which
+// key events on the UI thread (real 7/F8 and the background test channel), which
 // is where ImGui dialogs must be created. The dialog exists only while the
 // notice is visible (or an in-game request is pending), so the overlay stack is
 // idle otherwise.

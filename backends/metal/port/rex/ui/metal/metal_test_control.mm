@@ -46,11 +46,15 @@ SDL_Scancode Key(const std::string& name) {
     {"right", SDL_SCANCODE_RIGHT}, {"m", SDL_SCANCODE_M},
     {"i", SDL_SCANCODE_I}, {"j", SDL_SCANCODE_J},
     {"k", SDL_SCANCODE_K}, {"l", SDL_SCANCODE_L},
+    {"grave", SDL_SCANCODE_GRAVE}, {"1", SDL_SCANCODE_1}, {"2", SDL_SCANCODE_2},
+    {"3", SDL_SCANCODE_3}, {"4", SDL_SCANCODE_4},
     {"5", SDL_SCANCODE_5}, {"6", SDL_SCANCODE_6},
     {"7", SDL_SCANCODE_7}, {"8", SDL_SCANCODE_8},
     {"9", SDL_SCANCODE_9}, {"0", SDL_SCANCODE_0},
-    {"f5", SDL_SCANCODE_F5}, {"f6", SDL_SCANCODE_F6}, {"f7", SDL_SCANCODE_F7},
-    {"f8", SDL_SCANCODE_F8}, {"f9", SDL_SCANCODE_F9}, {"f10", SDL_SCANCODE_F10}};
+    {"f1", SDL_SCANCODE_F1}, {"f2", SDL_SCANCODE_F2}, {"f3", SDL_SCANCODE_F3},
+    {"f4", SDL_SCANCODE_F4}, {"f5", SDL_SCANCODE_F5}, {"f6", SDL_SCANCODE_F6}, {"f7", SDL_SCANCODE_F7},
+    {"f8", SDL_SCANCODE_F8}, {"f9", SDL_SCANCODE_F9}, {"f10", SDL_SCANCODE_F10},
+    {"f11", SDL_SCANCODE_F11}};
   auto it = keys.find(name); return it == keys.end() ? SDL_SCANCODE_UNKNOWN : it->second;
 }
 // Background test mode (FABLE2_TEST_BACKGROUND=1, see src/input/test_background.h).
