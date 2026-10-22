@@ -11,9 +11,8 @@ A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, wit
 
 ## Features beyond the original game
 
-- **Speed keys**: ` slow, 1 normal, 2 / 3 / 4 for 2× / 3× / 4× (F1–F5 too)
 - **Turbo mode** (7 or F8, up to 4×)
-- **Slow motion** (down to 0.25×)
+  - **Speed Hotkeys:** (.5x = ~, 1x = 1, 2x = 2, 3x = 3, 4x = 4)
 - **Quick save** (5 or F6)
 - **Load any save from the launcher**
 - **Faster loading**
@@ -27,9 +26,8 @@ A native Apple Silicon port of the Fable II (Xbox 360) static recompilation, wit
 
 ## Play (download)
 
-> **Not yet tested through to the ending.** Testing so far covers the early and mid game (Bower Lake,
-> Bowerstone, the Heroes' Guild, Old Tomb). Later parts of the story may have bugs. Keep backup copies of
-> your saves, and please report problems in the issues.
+> **Not yet play tested through to the ending. Keep backup copies of
+> your saves.** Saves stored in ~/Library/Application Support/Fable II for Mac/
 
 You need an Apple Silicon Mac with macOS 15 or later, about 8 GB of free disk space, and **your own
 Fable II disc image** (`.iso`). The port is tested only with one disc image, the Platinum Hits release; the app
