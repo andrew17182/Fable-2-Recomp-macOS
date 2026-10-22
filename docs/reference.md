@@ -174,16 +174,18 @@ environment route (below).
   (Works / Not seen yet: whether macOS passes Share to apps; see "Share button" below), the controller hotkeys
   (**Turbo**, **Slow motion**, **Quick save**, **Screenshot**: None / View / Share / Left stick click / Right stick
   click; see "Controller hotkeys" below) and
-  **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`).
+  **View button reaches the game as Back** (`FABLE2_VIEW_BUTTON_TO_GAME=1`), **Left/Right stick deadzone**
+  (Game, 0–50%) and **Skip game deadzone** (see "Stick deadzones" below).
 
 Every launch passes `REX_KEYBOARD_GAMEPAD_MAP=<map>`, `REX_MOUSE_LOOK=true|false` and
 `REX_MOUSE_LOOK_SCALE=<n>`; changed hotkeys add `REX_BIND_<NAME>=<key>` (and `REX_MOUSE_UNLOCK_KEY` with the
 settings key); a changed controller hotkey adds all four `FABLE2_PAD_*`. Stored keys: `keyboardMap` (+ `keyboardMapVersion`),
 `mouseLook`, `mouseLookScale`, `hotkeyBinds`, `viewButtonToGame`, `padTurbo`, `padSlow`, `padQuickSave`, `padScreenshot`
-(+ `padDefaultsVersion`)
+(+ `padDefaultsVersion`), `stickDeadzoneLeft`, `stickDeadzoneRight` (no entry = Game), `stickAntiDeadzone`
 (Launcher: UserDefaults; player app: `player-settings.plist`). Launcher `--launch` options:
 `--keyboard-map MAP`, `--mouse-look` / `--no-mouse-look`, `--mouse-look-scale N`, `--bind CVAR=KEY`,
-`--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`.
+`--view-button-to-game`, `--pad-turbo|--pad-slow|--pad-quicksave|--pad-screenshot none|view|share|ls|rs`,
+`--stick-deadzone-left|--stick-deadzone-right game|0..50`, `--stick-anti-deadzone` / `--no-stick-anti-deadzone`.
 
 ### Mouse look (right stick)
 
@@ -273,6 +275,28 @@ that button is dropped (`FABLE2_PAD_SCREENSHOT=view` alone moves View from turbo
 those old defaults as unset (`padDefaultsVersion` = 2), so it gets the new ones. With Share
 unbound the GameController Share watcher is not installed. `FABLE2_PAD_DEBUG=1` logs every pad button.
 Code: `src/input/controller_hotkeys.h`. Tests: `fable2_test_control.py press <session> view|share|ls|rs`.
+
+### Stick deadzones
+
+The game ignores both sticks inside **30% of full deflection** (radial) and ramps from there:
+`(|v| - 0.3) / 0.7` (gameplay pad update, guest `sub_821895B0`; constants read from guest memory and confirmed
+live: the camera turns at 30.2% but not 29.6%, also on diagonals). The SDK's SDL driver adds no deadzone.
+Settings > Controls > Game controllers:
+
+| Setting | Env | Default |
+|---|---|---|
+| Left stick deadzone | `FABLE2_STICK_DEADZONE_LEFT` = `game` or 0–50 (%) | game (unchanged) |
+| Right stick deadzone | `FABLE2_STICK_DEADZONE_RIGHT` = `game` or 0–50 (%) | game (unchanged) |
+| Skip game deadzone | `FABLE2_STICK_ANTI_DEADZONE=0` when off | on (acts only with a deadzone set) |
+
+With a deadzone N set, a stick is zero inside N% (radial; drift suppression) and past it the range N–100% is
+rescaled onto 30–100% before the game sees it, so the game's own ramp gives a near-linear 0–1 from N% to the
+edge. Full deflection is passed unchanged. With Skip game deadzone off, only our N% applies and the game's
+30% still sits on top (useful only for N above 30). Code: `src/input/stick_deadzone.h`, applied in
+`BackFilterDriver` (`src/input/controller_hotkeys.h`) to SDL controllers only (not the keyboard pad or mouse
+look). `FABLE2_PAD_DEBUG=1` logs each stick change as raw -> remapped. Test pad:
+`fable2_test_control.py stick <session> lx|ly|rx|ry <value>` holds a virtual-pad axis (SDL units; ly/ry positive
+= down). Unit test: `tests/stick_deadzone_tests.cpp` (models the guest function).
 
 **Share button.** SDL reads Xbox pads on macOS through Apple's GameController framework and maps Share to
 MISC1. macOS reserves Share for its own screenshot/recording gesture unless an app asks for it

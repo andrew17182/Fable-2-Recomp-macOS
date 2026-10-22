@@ -448,6 +448,16 @@ def press(session, key, hold=150, wait=True):
     return request(session, f'press {key} {hold}', timeout=hold / 1000 + 20)
 
 
+STICK_AXES = ('lx', 'ly', 'rx', 'ry')
+
+
+def stick(session, axis, value):
+    """Hold a virtual-pad stick axis at value (SDL units -32768..32767; ly/ry positive = down, as SDL
+    reports it). It stays until set again; the first call attaches the virtual pad."""
+    if axis not in STICK_AXES or not -32768 <= int(value) <= 32767: raise ValueError('Invalid axis/value')
+    return request(session, f'stick {axis} {int(value)}')
+
+
 def key_down(session, key):
     if key not in KEYS: raise ValueError('Invalid key')
     return request(session, f'down {key}')
@@ -714,6 +724,9 @@ def main():
     q.add_argument('--hero', required=True, help='folder name, e.g. Hero000'); q.add_argument('--note')
     for command in ('telemetry', 'stop-recording', 'cancel-replay'):
         q = sub.add_parser(command); q.add_argument('session', type=Path)
+    q = sub.add_parser('stick', help='hold a virtual-pad stick axis (stays until set again)')
+    q.add_argument('session', type=Path); q.add_argument('axis', choices=STICK_AXES)
+    q.add_argument('value', type=int, help='-32768..32767 (ly/ry positive = down)')
     for command in ('capture', 'close', 'ping', 'focus', 'summary', 'press', 'down', 'up', 'state', 'dump', 'mark', 'tag'):
         q = sub.add_parser(command); q.add_argument('session', type=Path)
         if command == 'press':
@@ -745,6 +758,7 @@ def main():
         result = capture_at(args.session, args.at_frame) if args.at_frame else capture(args.session, args.screen)  # noqa
     elif args.cmd == 'close': result = close(args.session)
     elif args.cmd == 'press': result = press(args.session, args.key, args.hold, wait=not args.no_wait)
+    elif args.cmd == 'stick': result = stick(args.session, args.axis, args.value)
     elif args.cmd == 'down': result = key_down(args.session, args.key)
     elif args.cmd == 'up': result = key_up(args.session, args.key)
     elif args.cmd == 'state': result = state(args.session)

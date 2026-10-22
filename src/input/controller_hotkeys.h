@@ -42,8 +42,8 @@
 // down/up (via the element handler or the 30 Hz poll) are logged;
 // FABLE2_PAD_DEBUG=1 logs every SDL gamepad and joystick button down/up.
 //
-// Test channel: metal_test_control.mm `press <session> share|view|ls|rs` pushes
-// kTestPadEventType user events. The watch then drives a virtual SDL gamepad
+// Test channel: metal_test_control.mm `press <session> share|view|ls|rs` (and `stick lx|ly|rx|ry <value>`)
+// pushes kTestPadEventType user events. The watch then drives a virtual SDL gamepad
 // (attached on the first such press), so the press travels the real path: SDL
 // gamepad event -> this watch, and SDK SDL driver -> BackFilterDriver -> guest.
 #pragma once
@@ -80,6 +80,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "fable2_turbo.h"
+#include "stick_deadzone.h"
 #include "test_background.h"
 
 #ifdef __APPLE__
@@ -104,6 +105,7 @@ namespace fable2::padkeys {
 constexpr uint32_t kTestPadEventType = 0xF2B6;
 constexpr int32_t kTestPadDownBit = 0x10000;
 constexpr int32_t kTestPadPrepareBit = 0x20000;  // attach the virtual pad only
+constexpr int32_t kTestPadAxisBit = 0x40000;     // code = SDL_GamepadAxis, user.data1 = value
 constexpr const char* kVirtualPadName = "Fable II test pad (virtual)";
 
 inline bool view_to_game() {
@@ -296,6 +298,7 @@ class BackFilterDriver final : public rex::input::InputDriver {
                                rex::input::X_INPUT_STATE* out_state) override {
     const auto result = inner_->GetDeviceState(id, out_state);
     if (result != X_ERROR_SUCCESS || !out_state) return result;
+    ApplyStickDeadzones(id, out_state->gamepad);
     const uint16_t buttons = out_state->gamepad.buttons;
     const uint16_t removed = RemovedGuestButtons();
     if (buttons & removed) out_state->gamepad.buttons.set(uint16_t(buttons & ~removed));
@@ -340,7 +343,39 @@ class BackFilterDriver final : public rex::input::InputDriver {
   }
 
  private:
+  // Stick deadzone remap (stick_deadzone.h; FABLE2_STICK_DEADZONE_LEFT/RIGHT, default game = unchanged).
+  void ApplyStickDeadzones(rex::input::DeviceId id, rex::input::X_INPUT_GAMEPAD& pad) {
+    const auto& left = fable2::stickdz::Left();
+    const auto& right = fable2::stickdz::Right();
+    static const bool logged = [&] {
+      REXLOG_INFO("[pad-hotkeys] stick deadzone: left {}, right {}", fable2::stickdz::Describe(left),
+                  fable2::stickdz::Describe(right));
+      return true;
+    }();
+    (void)logged;
+    if (!left.enabled && !right.enabled && !pad_debug()) return;
+    const int16_t raw[4] = {int16_t(pad.thumb_lx), int16_t(pad.thumb_ly), int16_t(pad.thumb_rx), int16_t(pad.thumb_ry)};
+    int16_t lx = raw[0], ly = raw[1], rx = raw[2], ry = raw[3];
+    fable2::stickdz::Apply(left, lx, ly);
+    fable2::stickdz::Apply(right, rx, ry);
+    pad.thumb_lx.set(lx);
+    pad.thumb_ly.set(ly);
+    pad.thumb_rx.set(rx);
+    pad.thumb_ry.set(ry);
+    if (!pad_debug()) return;
+    // FABLE2_PAD_DEBUG=1: one line per change of a pad's raw stick values.
+    std::lock_guard lock(mutex_);
+    auto& last = sticks_logged_[uint64_t(id)];
+    const uint64_t key = (uint64_t(uint16_t(raw[0])) << 48) | (uint64_t(uint16_t(raw[1])) << 32) |
+                         (uint64_t(uint16_t(raw[2])) << 16) | uint64_t(uint16_t(raw[3]));
+    if (key == last) return;
+    last = key;
+    REXLOG_INFO("[pad-hotkeys] sticks pad {}: L ({}, {}) -> ({}, {})  R ({}, {}) -> ({}, {})", uint64_t(id), raw[0],
+                raw[1], lx, ly, raw[2], raw[3], rx, ry);
+  }
+
   std::unique_ptr<rex::input::InputDriver> inner_;
+  std::map<uint64_t, uint64_t> sticks_logged_;
   size_t last_count_ = 0;
   std::mutex mutex_;
   std::map<uint64_t, uint16_t> held_;  // SDL pad device id -> bound buttons held
@@ -630,6 +665,17 @@ inline bool EnsureVirtualPad() {
   return true;
 }
 
+// Test channel `stick <axis> <value>`: holds a virtual-pad axis (stays until set again).
+inline void OnTestPadAxis(int axis, int value) {
+  auto& s = state();
+  if (!EnsureVirtualPad()) return;
+  // Axis events, like button-downs, need background joystick events (the test window has no focus).
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+  SDL_SetJoystickVirtualAxis(s.virtual_joystick, axis, int16_t(value));
+  SDL_UpdateJoysticks();
+  REXLOG_INFO("[pad-hotkeys] test: virtual stick axis {} = {}", axis, value);
+}
+
 inline void OnTestPadEvent(int32_t code) {
   auto& s = state();
   const int button = code & 0xFFFF;
@@ -716,6 +762,12 @@ inline bool SDLCALL Watch(void*, SDL_Event* event) {
     default:
       if (event->type == kTestPadEventType && test_pad_enabled()) {
         const int32_t code = event->user.code;
+        if (code & kTestPadAxisBit) {
+          const int value = int(reinterpret_cast<intptr_t>(event->user.data1));
+          if (auto* ctx = state().context)
+            ctx->CallInUIThreadDeferred([code, value] { OnTestPadAxis(code & 0xFFFF, value); });
+          break;
+        }
         if (auto* ctx = state().context) ctx->CallInUIThreadDeferred([code] { OnTestPadEvent(code); });
       }
       break;

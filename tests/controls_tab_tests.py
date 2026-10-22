@@ -155,6 +155,31 @@ for (arg, value) in [("--keyboard-map", "Return:Pause,e:A"), ("--keyboard-map", 
   }
 }
 out["cli"] = results
+var sticks = ControlSettings()
+var stickResults: [String] = []
+for (arg, value) in [("--stick-deadzone-left", "5"), ("--stick-deadzone-right", "51"), ("--stick-deadzone-right", "x"),
+                     ("--stick-deadzone-right", "0"), ("--no-stick-anti-deadzone", "")] {
+  switch sticks.applyCLI(arg, value) {
+  case .notMine: stickResults.append("notMine")
+  case .ok(let n): stickResults.append("ok\(n)")
+  case .error: stickResults.append("error")
+  }
+}
+out["stickCLI"] = stickResults
+out["stickEnv"] = sticks.environment.filter { $0.hasPrefix("FABLE2_STICK_") }
+out["stickDefaultEnv"] = ControlSettings().environment.filter { $0.hasPrefix("FABLE2_STICK_") }
+_ = sticks.applyCLI("--stick-deadzone-left", "game")
+out["stickGameEnv"] = sticks.environment.filter { $0.hasPrefix("FABLE2_STICK_") }
+let stickStore = PlistSettingsStore(path: CommandLine.arguments[1] + ".sticks")
+var stickSaved = ControlSettings()
+stickSaved.stickDeadzoneRight = 12
+stickSaved.save(to: stickStore, old: ControlSettings())
+let stickLoaded = ControlSettings.load(from: stickStore)
+out["stickPersist"] = [stickLoaded.stickDeadzoneLeft.map(String.init) ?? "game", stickLoaded.stickDeadzoneRight.map(String.init) ?? "game"]
+var stickReset = stickLoaded
+stickReset.stickDeadzoneRight = nil
+stickReset.save(to: stickStore, old: stickLoaded)
+out["stickReset"] = ControlSettings.load(from: stickStore).stickDeadzoneRight.map(String.init) ?? "game"
 var pads = ControlSettings()
 out["padDefault"] = pads.environment.filter { $0.hasPrefix("FABLE2_PAD_") }
 pads.setPad(.ls, for: .turbo)
@@ -260,6 +285,18 @@ class ControlsHarnessTests(unittest.TestCase):
             'REX_KEYBOARD_GAMEPAD_MAP=Return:pause', 'REX_MOUSE_LOOK=true', 'REX_MOUSE_LOOK_SCALE=700',
             'REX_BIND_SETTINGS=F4', 'REX_MOUSE_UNLOCK_KEY=F4', 'FABLE2_VIEW_BUTTON_TO_GAME=1',
             'FABLE2_PAD_TURBO=none', 'FABLE2_PAD_SLOW=none', 'FABLE2_PAD_QUICKSAVE=share', 'FABLE2_PAD_SCREENSHOT=view'])
+
+    def test_stick_deadzones(self):
+        self.assertEqual(self.out['stickCLI'], ['ok1', 'error', 'error', 'ok1', 'ok0'])
+        self.assertEqual(self.out['stickEnv'], ['FABLE2_STICK_DEADZONE_LEFT=5', 'FABLE2_STICK_DEADZONE_RIGHT=0',
+                                                'FABLE2_STICK_ANTI_DEADZONE=0'])
+        self.assertEqual(self.out['stickDefaultEnv'], [])  # game default: nothing passed
+        self.assertEqual(self.out['stickGameEnv'], ['FABLE2_STICK_DEADZONE_RIGHT=0', 'FABLE2_STICK_ANTI_DEADZONE=0'])
+        self.assertEqual(self.out['stickPersist'], ['game', '12'])
+        self.assertEqual(self.out['stickReset'], 'game')
+        header = (ROOT / 'src/input/stick_deadzone.h').read_text()
+        for name in ('FABLE2_STICK_DEADZONE_LEFT', 'FABLE2_STICK_DEADZONE_RIGHT', 'FABLE2_STICK_ANTI_DEADZONE'):
+            self.assertIn('"%s"' % name, header)
 
     def test_controller_hotkeys(self):
         self.assertEqual(self.out['padDefault'], [])
