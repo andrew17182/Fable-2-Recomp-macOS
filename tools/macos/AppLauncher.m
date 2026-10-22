@@ -185,8 +185,13 @@ int main(int argc, char **argv) {
     }
     // The release app ships no game code: the game is built on this Mac (tools/fable2_game_build.py) into
     // <state>/Game/Fable II.bundle, a bundle with this app's identity, ad-hoc signed here.
+    // FABLE2_GAME_BUILD_ROOT: the folder holding that Game/ when the state folder is another one (the player app's
+    // Run Playback runs the game on a temporary copy of its state: tools/macos/Player/main.swift PlaybackSession).
     if ([[bundle objectForInfoDictionaryKey:@"Fable2BuildsGame"] boolValue]) {
-      engine = [state stringByAppendingPathComponent:@"Game/Fable II.bundle/Contents/MacOS/fable_2"];
+      NSString *built = environment[@"FABLE2_GAME_BUILD_ROOT"];
+      if (!built.length) built = state;
+      if (!built.isAbsolutePath) Fail(@"FABLE2_GAME_BUILD_ROOT must be an absolute path.");
+      engine = [built stringByAppendingPathComponent:@"Game/Fable II.bundle/Contents/MacOS/fable_2"];
       if (![fm isExecutableFileAtPath:engine])
         Fail(@"The game has not been built on this Mac yet. Open Fable II again: it builds the game first.");
     }

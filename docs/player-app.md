@@ -59,6 +59,9 @@ click away, and every setting is in Settings.
 
 - General, Display, Controls (keyboard map, mouse, hotkeys, controllers; docs/reference.md), Mods;
 - Performance, Fixes and Diagnostics only with **Dev Options** on (switch at the bottom-right of the page).
+- Diagnostics > Input recording: **Record input** and **Play recording** as in the repo launcher; Run Playback on the
+  front page plays the recording on a temporary copy of this app's state (docs/reference.md "Input recording and
+  replay", player app).
 
 Player-only additions, all in General:
 

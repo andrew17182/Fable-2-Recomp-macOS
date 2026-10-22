@@ -50,8 +50,19 @@ class SettingsModel: ObservableObject {
   }
   /// The recordings in logs/recordings, newest first (refreshRecordings).
   @Published var recordings: [RecordingItem] = []
-  /// Whether this role can play a recording back (the Dev Launcher role: tools/fable2_dev_session.py --mode replay).
+  /// Whether this role can play a recording back (both roles since 2026-10-22: the Dev Launcher through
+  /// tools/fable2_dev_session.py --mode replay, the player app natively, Player/main.swift PlaybackSession).
   var playbackSupported: Bool { false }
+  /// The running playback's replay status (the game's logs/replay-status.json: starting, running, waiting, complete,
+  /// failed, cancelled); nil when the role's game is not a playback. --snapshot --replaying: running.
+  @Published var replayStatus: String? = commandLine.contains("--snapshot") && commandLine.contains("--replaying")
+    ? "running" : nil
+  /// The front page's playback slot: "▶ Replaying" while the playback drives the game, else Run Playback for the
+  /// picked recording.
+  var playbackSlot: PlaybackSlot {
+    if let status = replayStatus, ["starting", "running", "waiting"].contains(status) { return .replaying }
+    return selectedRecording.map { .ready($0.label) } ?? .hidden
+  }
   /// The picked recording while its file is there.
   var selectedRecording: RecordingItem? { recordings.first { $0.id == playbackRecording } }
   /// Run Playback (front page): the role's playback launch.

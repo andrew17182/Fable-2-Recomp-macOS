@@ -23,6 +23,10 @@
 //   --play               start the game as soon as the game files are ready (exec, as "Skip launcher")
 //   --press-play         select the newest save and press Load Saved Game (child game; the launcher returns when it exits)
 //   --print-env          print the environment items Play would set (JSON) and exit
+//   --print-env --playback RECORDING   the same for Run Playback of that recording (file name in logs/recordings, or
+//                        a path); nothing is copied
+//   --press-playback [--recording NAME]   pick that recording (else the newest) and press Run Playback (child game)
+//   --snapshot ... --recording NAME [--replaying]   the front page with Run Playback for that recording (or Replaying)
 //   --preset original|enhanced|custom   with --print-env, --play or --snapshot: that preset for this run (not stored)
 //   --iso IMAGE          on the welcome window, extract IMAGE at once (as if chosen in the file panel)
 //   --reuse              on the welcome window, reuse the offered sibling game files at once
@@ -40,9 +44,10 @@ import UniformTypeIdentifiers
 // MARK: - Paths and game files
 
 /// Flags this app consumes; the rest are passed to the game.
-let playerFlags: Set<String> = ["--play", "--press-play", "--print-env", "--reuse", "--show-launcher", "--start-fresh",
-                                 "--archive-saves", "--list-archives", "--relaunched"]
-let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive", "--preset"]
+let playerFlags: Set<String> = ["--play", "--press-play", "--press-playback", "--print-env", "--reuse", "--show-launcher",
+                                 "--start-fresh", "--archive-saves", "--list-archives", "--relaunched", "--replaying"]
+let playerValueFlags: Set<String> = ["--iso", "--snapshot", "--window", "--restore-archive", "--delete-archive", "--preset",
+                                      "--recording", "--playback"]
 var gameArguments: [String] {
   var out: [String] = []
   var i = 0
@@ -1134,6 +1139,158 @@ final class BuildRunner: ObservableObject {
 
 // MARK: - Model
 
+// MARK: - Playback (Run Playback; docs/reference.md "Input recording and replay")
+
+/// Playback of an input recording in the player app (2026-10-22), the native counterpart of the Dev Launcher's
+/// tools/fable2_dev_session.py --mode replay: the game runs on a temporary copy of this app's state
+/// (<state>/playback-session: shader cache and settings files cloned, saves from the recording's own starting copy
+/// "<recording>.save/"), with the current settings, recording forced off, intros skipped, FABLE2_REPLAY_INPUT set, a
+/// normal window and sound. Nothing is written back: the real saves are only read (older recordings without a copy).
+/// After the game the copy is removed; its logs are kept in logs/playback (the last playback only). Everything stays in
+/// this app's own Application Support folder: no file panels, no permission prompts.
+enum PlaybackSession {
+  static let heroSlots = "B13EBABEBABEBABE/4D5307F1/00000001"
+  static let heroHeaders = "B13EBABEBABEBABE/4D5307F1/Headers/00000001"
+  /// The temporary state folder (inside this app's folder; removed after the game).
+  static var folder: String { Paths.state + "/playback-session" }
+  /// The last playback's logs (replaced by the next playback).
+  static var keptLogs: String { Paths.logs + "/playback" }
+  /// Variables a playback never takes from the settings or the app's own environment (set again below).
+  static let replaced: Set<String> = ["FABLE2_RECORD_INPUT", "FABLE2_RECORD_INPUT_PATH", "FABLE2_RECORD_INPUT_SAVE",
+                                      "FABLE2_REPLAY_TIMEOUT_S", "FABLE2_SKIP_INTRO_MOVIES", "FABLE2_BOOT_SAVE",
+                                      "FABLE2_BOOT_SAVE_HERO", "FABLE2_REPLAY_INPUT", "FABLE2_APP_STATE_ROOT",
+                                      "FABLE2_GAME_DATA_ROOT", "FABLE2_GAME_BUILD_ROOT", "FABLE2_WINDOW_TAG"]
+
+  /// How a playback starts (tools/fable2_dev_session.py replay_start): "copy" (the recording's own starting saves;
+  /// boot = it started in a save), "save" (older recording: the hero its metadata names, as it is now), or "title".
+  /// note: a terse line for the Play window when the start is not the recorded one.
+  struct Start {
+    var kind: String
+    var copy: String?
+    var boot: Bool
+    var hero: String?
+    var heroes: [String] = []
+    var note: String?
+  }
+
+  static func isFolder(_ path: String) -> Bool {
+    var directory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
+  }
+
+  /// Hero folders (HeroNNN) in a saves folder, sorted.
+  static func heroes(inSaves saves: String) -> [String] {
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: saves + "/" + heroSlots)) ?? []
+    return names.filter { $0.range(of: #"^Hero\d{3}$"#, options: .regularExpression) != nil }.sorted()
+  }
+
+  /// A recording by file name (in logs/recordings) or path.
+  static func resolve(_ name: String) -> String {
+    name.contains("/") ? name : InputRecordings.folder + "/" + name
+  }
+
+  static func start(_ recording: String) -> Start {
+    let meta = InputRecordings.meta(recording)
+    let text = { (key: String) -> String in meta[key] as? String ?? "" }
+    let copy = (recording as NSString).deletingPathExtension + ".save"
+    var boot = meta["start"] != nil ? text("start") == "save" : !["", "0"].contains(text("boot_save"))
+    if isFolder(copy) {
+      let heroes = heroes(inSaves: copy)
+      let hero = text("boot_hero").isEmpty ? (heroes.count == 1 ? heroes[0] : nil) : text("boot_hero")
+      if boot && hero == nil { boot = false }  // several saves and no pick: the title screen lists them
+      return Start(kind: "copy", copy: copy, boot: boot, hero: hero, heroes: heroes,
+                   note: boot || text("start") == "title" ? nil : "Started at the title screen.")
+    }
+    let save = text("save"), fm = FileManager.default
+    if save.range(of: #"^Hero\d{3}$"#, options: .regularExpression) != nil,
+       fm.fileExists(atPath: Paths.state + "/saves/" + heroSlots + "/" + save + "/mainsave.bin"),
+       fm.fileExists(atPath: Paths.state + "/saves/" + heroHeaders + "/" + save + ".header") {
+      return Start(kind: "save", boot: true, hero: save, heroes: [save],
+                   note: "No save copy: booted \(save) as it is now.")
+    }
+    return Start(kind: "title", boot: false, hero: nil,
+                 note: boot || !save.isEmpty ? "No save copy: started at the title screen." : nil)
+  }
+
+  /// The environment of a playback launch: the current settings, then the playback's own items (they win).
+  static func environment(settings: LaunchSettings, recording: String, start: Start) -> [String] {
+    var env = settings.gameEnvironment.filter { item in
+      !replaced.contains(String(item.prefix { $0 != "=" }))
+    }
+    env += ["FABLE2_RECORD_INPUT=0", "FABLE2_SKIP_INTRO_MOVIES=1", "FABLE2_REPLAY_INPUT=" + recording,
+            "FABLE2_WINDOW_TAG=playback", "FABLE2_APP_STATE_ROOT=" + folder,
+            // The real game files and (release app) the game built in the real folder; neither is remembered.
+            "FABLE2_GAME_DATA_ROOT=" + GameFiles.root, "FABLE2_GAME_BUILD_ROOT=" + Paths.state]
+    if GameFiles.remembered["AllowXexMismatch"] as? Bool == true { env.append("FABLE2_XEX_MISMATCH_OK=1") }
+    if start.boot {
+      env.append("FABLE2_BOOT_SAVE=1")
+      if start.heroes.count > 1, let hero = start.hero { env.append("FABLE2_BOOT_SAVE_HERO=" + hero) }
+    }
+    env.append("FABLE2_PLAYER_LAUNCH=1")
+    return env
+  }
+
+  /// An APFS clone (copy-on-write, ~0 disk until written); a normal copy elsewhere.
+  static func clone(_ source: String, _ destination: String) throws {
+    if clonefile(source, destination, 0) == 0 { return }
+    try FileManager.default.copyItem(atPath: source, toPath: destination)
+  }
+
+  /// The game of an earlier playback still holds the copy's lock.
+  static func inUse() -> Bool {
+    let fd = open(folder + "/app.lock", O_RDWR | O_CLOEXEC)
+    guard fd >= 0 else { return false }
+    defer { close(fd) }
+    return flock(fd, LOCK_EX | LOCK_NB) != 0
+  }
+
+  /// Makes the temporary state folder. Only reads the real state; writes only inside `folder`.
+  static func prepare(_ recording: String, start: Start) throws {
+    let fm = FileManager.default
+    guard !inUse() else { throw NSError(domain: "Fable II", code: 1, userInfo: [NSLocalizedDescriptionKey: "a playback is still running"]) }
+    if fm.fileExists(atPath: folder) { try fm.removeItem(atPath: folder) }
+    try fm.createDirectory(atPath: folder, withIntermediateDirectories: true)
+    for name in ["cache", "metadata"] where fm.fileExists(atPath: Paths.state + "/" + name) {
+      try clone(Paths.state + "/" + name, folder + "/" + name)
+    }
+    for name in ["fable_2.toml", "fable2_config.toml", "fable2_patches.toml", "fable2_window.toml"]
+    where fm.fileExists(atPath: Paths.state + "/" + name) {
+      try fm.copyItem(atPath: Paths.state + "/" + name, toPath: folder + "/" + name)
+    }
+    let saves = folder + "/saves"
+    if let copy = start.copy {
+      try clone(copy, saves)
+    } else if fm.fileExists(atPath: Paths.state + "/saves") {
+      try clone(Paths.state + "/saves", saves)
+      if start.kind == "save", let hero = start.hero {  // that hero only (profile and achievements kept)
+        for other in heroes(inSaves: saves) where other != hero {
+          try? fm.removeItem(atPath: saves + "/" + heroSlots + "/" + other)
+          try? fm.removeItem(atPath: saves + "/" + heroHeaders + "/" + other + ".header")
+        }
+      }
+    }
+  }
+
+  /// The game's replay status (logs/replay-status.json in the copy), nil before it writes one.
+  static func status() -> String? {
+    guard let data = FileManager.default.contents(atPath: folder + "/logs/replay-status.json"),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    return object["status"] as? String
+  }
+
+  /// After the game: keeps the copy's logs in logs/playback and removes the copy (never while a game holds it).
+  static func finish() {
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: folder), !inUse() else { return }
+    if fm.fileExists(atPath: folder + "/logs") {
+      try? fm.createDirectory(atPath: Paths.logs, withIntermediateDirectories: true)
+      try? fm.removeItem(atPath: keptLogs)
+      try? fm.moveItem(atPath: folder + "/logs", toPath: keptLogs)
+    }
+    try? fm.removeItem(atPath: folder)
+  }
+}
+
 enum StartMode: String, CaseIterable, Identifiable {
   case continueSave = "continue", title
   var id: String { rawValue }
@@ -1169,6 +1326,10 @@ final class PlayerModel: SettingsModel {
   let shaderPrep = ShaderPrepRunner()
   let builder = BuildRunner()
   var lock: Int32 = -1
+  /// The running playback (Run Playback), nil otherwise; its replay status is polled while the game runs.
+  private var playback: PlaybackSession.Start?
+  private var playbackTimer: Timer?
+  override var playbackSupported: Bool { true }
 
   init() {
     try? FileManager.default.createDirectory(atPath: Paths.state, withIntermediateDirectories: true)
@@ -1198,6 +1359,7 @@ final class PlayerModel: SettingsModel {
       if self.lock >= 0 { close(self.lock); self.lock = -1 }
       if PlayerApp.heldLock >= 0 { close(PlayerApp.heldLock); PlayerApp.heldLock = -1 }
     }
+    refreshRecordings()
     shaderPrep.retakeLock = { [weak self] in
       let fd = open(Paths.state + "/app.lock", O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
       if fd >= 0 && flock(fd, LOCK_EX | LOCK_NB) == 0 { PlayerApp.heldLock = fd; self?.lock = fd } else if fd >= 0 { close(fd) }
@@ -1211,6 +1373,7 @@ final class PlayerModel: SettingsModel {
 
   /// `pickNewest`: put the save menu on the newest save (first time, and after a game).
   func refresh(pickNewest: Bool = false) {
+    refreshRecordings()
     if screen == .play {
       saves = Saves.all()
       latestSave = saves.first
@@ -1378,6 +1541,8 @@ final class PlayerModel: SettingsModel {
       env.append("FABLE2_BOOT_SAVE=1")
       // With several saves the game would show its slot cards; load the newest one directly instead.
       if save.count > 1 { env.append("FABLE2_BOOT_SAVE_HERO=" + save.hero) }
+      // Record input: the save the recording starts from (the Play recording picker's label).
+      if settings.recordInput { env.append("FABLE2_RECORD_INPUT_SAVE=" + save.hero) }
     }
     env.append("FABLE2_PLAYER_LAUNCH=1")
     return env
@@ -1396,18 +1561,48 @@ final class PlayerModel: SettingsModel {
   /// The save menu: every save, newest first (Start at Title Screen is its own button).
   var saveChoices: [SaveChoice] { saves.map { SaveChoice(id: $0.hero, label: $0.label) } }
 
-  func playFromLauncher(_ mode: StartMode) {
+  /// Run Playback (front page): plays the picked recording back with the current settings, on a copy of this app's
+  /// state that is removed afterwards (PlaybackSession; never writes the real saves).
+  override func runPlayback() {
+    refreshRecordings()
+    guard let item = selectedRecording else {
+      message = "Recording not found."
+      return
+    }
+    playFromLauncher(.title, replay: item)
+  }
+
+  /// `replay`: play that recording back instead (startMode is left as it was).
+  func playFromLauncher(_ mode: StartMode, replay: RecordingItem? = nil) {
     guard !gameRunning else { return }
-    startMode = mode  // also what "Skip launcher" starts with next time
     readyNote = ""
     latestSave = Saves.latest()
     var env = Paths.environment  // the app's own launch environment: nothing from an earlier Play leaks in
-    for item in playEnvironment {
+    let items: [String]
+    if let replay = replay {
+      let start = PlaybackSession.start(replay.path)
+      do {
+        try PlaybackSession.prepare(replay.path, start: start)
+      } catch {
+        message = "Could not start the playback: \(error.localizedDescription)"
+        return
+      }
+      items = PlaybackSession.environment(settings: settings, recording: replay.path, start: start)
+      for key in PlaybackSession.replaced { env.removeValue(forKey: key) }
+      playback = start
+      replayStatus = "starting"
+    } else {
+      startMode = mode  // also what "Skip launcher" starts with next time
+      items = playEnvironment
+    }
+    for item in items {
       guard let eq = item.firstIndex(of: "=") else { continue }
       env[String(item[..<eq])] = String(item[item.index(after: eq)...])
     }
-    appendLog(Paths.logs + "/player.log", "play (returns to the launcher): " + playEnvironment.joined(separator: " "))
-    if lock >= 0 { close(lock); lock = -1 }  // the launcher takes the state folder's lock itself
+    appendLog(Paths.logs + "/player.log", (replay == nil ? "play" : "playback of \(replay!.id)")
+              + " (returns to the launcher): " + items.joined(separator: " "))
+    // The launcher takes the state folder's lock itself; a playback runs on its copy, so this app keeps the real one.
+    if replay == nil && lock >= 0 { close(lock); lock = -1 }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: Paths.macOS + "/FableIILauncher")
     process.arguments = gameArguments
@@ -1418,9 +1613,15 @@ final class PlayerModel: SettingsModel {
     do {
       try process.run()
     } catch {
-      lock = relock()
+      if lock < 0 { lock = relock() }
       message = "Could not start the game: \(error.localizedDescription)"
+      if playback != nil { playback = nil; replayStatus = nil; PlaybackSession.finish() }
       return
+    }
+    if playback != nil {
+      playbackTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        if let status = PlaybackSession.status(), self?.replayStatus != status { self?.replayStatus = status }
+      }
     }
     gameRunning = true
     gameNote = ""
@@ -1446,7 +1647,26 @@ final class PlayerModel: SettingsModel {
     gameRunning = false
     ProcessInfo.processInfo.enableAutomaticTermination("Fable II is running")
     ProcessInfo.processInfo.enableSuddenTermination()
-    lock = relock()
+    if lock < 0 { lock = relock() }
+    if let start = playback {
+      // The copy goes (its logs stay in logs/playback); the note says how the playback ended.
+      playbackTimer?.invalidate()
+      playbackTimer = nil
+      let status = PlaybackSession.status()
+      PlaybackSession.finish()
+      playback = nil
+      replayStatus = nil
+      let ended: String
+      switch status {
+      case "complete": ended = "Playback complete."
+      case "cancelled": ended = "Playback cancelled."
+      case "failed": ended = "Playback failed."
+      default: ended = "Playback stopped."
+      }
+      let note = ([start.note, ended].compactMap { $0 }).joined(separator: " ")
+      if status == "failed" { if gameNote.isEmpty { gameNote = note } } else { readyNote = note }
+      appendLog(Paths.logs + "/player.log", "playback ended: \(status ?? "no status")")
+    }
     if !clean {
       gameNote = process.terminationReason == .exit
         ? "The game closed unexpectedly (exit code \(status))."
@@ -1516,7 +1736,8 @@ struct PlayView: View {
         Section {
           SaveMenu(choices: model.saveChoices, selection: $model.startPick, busy: false, disabled: model.gameRunning,
                    startTitle: { model.startTitle() }, load: { model.loadSave() },
-                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() })
+                   recording: model.settings.recordInput, showRecording: { model.openRecordingSetting() },
+                   playback: model.playbackSlot, runPlayback: { model.runPlayback() })
         }
         FrontPageOptions(model: model)
         Section {
@@ -1975,6 +2196,15 @@ enum Startup {
     }
     // A new build or shader seed with game files already in place: prepare its shaders before Play.
     if model.screen == .play && ShaderPrepRunner.needed { model.filesReady() }
+    if commandLine.contains("--press-playback"), model.screen == .play, model.shaderPrep.phase != .running {
+      // Run Playback on the named recording (else the newest), the button's own path.
+      DispatchQueue.main.async {
+        model.refreshRecordings()
+        if let pick = argument(after: "--recording") ?? model.recordings.first?.id { model.playbackRecording = pick }
+        model.runPlayback()
+      }
+      return
+    }
     if commandLine.contains("--press-play"), model.screen == .play, model.shaderPrep.phase != .running {
       // Load Saved Game on the newest save (the title screen without saves).
       DispatchQueue.main.async { model.refresh(pickNewest: true); model.loadSave() }
@@ -2198,6 +2428,8 @@ struct PlayerApp: App {
     let model = PlayerModel()
     model.lock = PlayerApp.heldLock
     PlayerApp.model = model
+    // A playback copy left by a crash or a force quit (never one a game still holds).
+    if PlayerApp.heldLock >= 0 { PlaybackSession.finish() }
     return model
   }()
   static var heldLock: Int32 = -1
@@ -2538,7 +2770,13 @@ if let source = argument(after: "--import-saves") {
 }
 if commandLine.contains("--print-env") {
   let model = PlayerModel()
-  let data = (try? JSONSerialization.data(withJSONObject: model.playEnvironment)) ?? Data()
+  var items = model.playEnvironment
+  if let name = argument(after: "--playback") {  // Run Playback's environment (nothing is copied)
+    let recording = PlaybackSession.resolve(name)
+    items = PlaybackSession.environment(settings: model.settings, recording: recording,
+                                        start: PlaybackSession.start(recording))
+  }
+  let data = (try? JSONSerialization.data(withJSONObject: items)) ?? Data()
   print(String(decoding: data, as: UTF8.self))
   exit(0)
 }

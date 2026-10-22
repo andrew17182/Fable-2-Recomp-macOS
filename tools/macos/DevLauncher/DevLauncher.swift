@@ -225,16 +225,8 @@ final class LauncherModel: SettingsModel {
   private var watchedGames = Set<Int>()
   @Published var lastSave = ""
   @Published var gameVersion = Backend.gameVersion
-  /// The running playback's replay status (tools/fable2_dev_session.py status "replay": starting, running, waiting,
-  /// complete, failed, cancelled); nil when the launcher's game is not a playback. --snapshot --replaying: running.
-  @Published var replayStatus: String? = DevSnapshot.request != nil && commandLine.contains("--replaying") ? "running" : nil
+  /// replayStatus (Shared/SettingsViews.swift): from tools/fable2_dev_session.py status "replay".
   override var playbackSupported: Bool { true }
-  /// The front page's playback slot: "▶ Replaying" while the playback drives the game, else Run Playback for the
-  /// picked recording.
-  var playbackSlot: PlaybackSlot {
-    if let status = replayStatus, ["starting", "running", "waiting"].contains(status) { return .replaying }
-    return selectedRecording.map { .ready($0.label) } ?? .hidden
-  }
   /// State folder of the launcher's current (or last) session; nil for title-screen play.
   @Published var sessionState: String?
 

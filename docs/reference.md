@@ -437,8 +437,8 @@ that draw UI items. Turbo and speed changes are `speed` events.
 from `logs/recordings` (newest first, "date time · save"; None = off; remembered). While one is picked the front
 page shows **Run Playback** (its date and save under it) in the reserved slot right of Load Saved Game, the same slot
 as the "Recording input" note (a red dot before the caption when Record input is also on); while the playback drives
-the game the slot shows **▶ Replaying**. Nothing moves when the slot changes. Dev Launcher role only (the release app
-has no playback).
+the game the slot shows **▶ Replaying**. Nothing moves when the slot changes. Both roles: the Dev Launcher and (since
+2026-10-22, below) the player/release app.
 - Run Playback launches `tools/fable2_dev_session.py launch --mode replay --recording <file>` with the **current**
   launcher settings (preset, resolution, frame rate, deadzones, turbo speeds, bindings): the same recording under
   different settings, e.g. Original vs Custom deadzones for a video. Dev Launcher CLI: `--launch --replay <file>`.
@@ -462,6 +462,19 @@ has no playback).
   back) and `logs/replay-status.json` (starting, running, waiting, complete, failed, cancelled), which
   `fable2_dev_session.py status` reports as `replay`. `FABLE2_REPLAY_LOG=1` adds one `[replay] game pad [...]` line
   per change of what the game reads.
+- **Player app (release, portable; 2026-10-22).** Same picker, slot and game behaviour, launched natively (no Python):
+  `PlaybackSession` in `tools/macos/Player/main.swift` makes `<state>/playback-session/` inside the app's own folder
+  (shader cache and `metadata` APFS-cloned, `fable_2.toml` / `fable2_config.toml` / `fable2_patches.toml` /
+  `fable2_window.toml` copied, `saves/` cloned from the recording's `.save/` copy; older recordings: the real saves
+  with only the named hero, else all saves at the title, with the same notes) and runs FableIILauncher with
+  `FABLE2_APP_STATE_ROOT` = that folder, `FABLE2_GAME_DATA_ROOT` = the real game files and `FABLE2_GAME_BUILD_ROOT` =
+  the real folder (AppLauncher.m runs the release app's built `Game/` from there). The real saves are only read; the
+  app keeps its own folder's lock during playback. After the game the copy is removed and its logs are kept in
+  `logs/playback/` (last playback only); the Play window says "Playback complete." (or cancelled, stopped; failed with
+  Show Logs). A copy left by a crash is removed at the next start (never while a game holds its lock). No file panels,
+  no permission prompts. CLI: `--print-env --playback <file name or path>` (the environment, nothing copied),
+  `--press-playback [--recording NAME]` (the button's path), `--snapshot ... --recording NAME [--replaying]`. Tests:
+  `tests/player_playback_tests.py`.
 - Caveat: inputs before the first `LevelLoaded` are timed from launch, so a recording that starts at the title with
   intro movies on replays its title inputs early (playback always skips the intros); record title-start recordings
   with Skip intro movies on.
