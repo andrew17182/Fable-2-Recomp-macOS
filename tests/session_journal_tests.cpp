@@ -70,11 +70,15 @@ int main(int argc,char** argv) {
     j.Marker("Go");
     for(int i=0;i<400&&!(remapped&&keyboard);++i) {
       Pad p;j.Input(p);
-      if(p.lx==ex&&ex!=6554) remapped=true;
+      if(p.lx==ex&&ex!=6554) {
+        remapped=true;
+        assert(fable2::stickdz::g_left_replay_percent.load()==20);  // F9 readout: the raw replayed stick (6554)
+      }
       if(remapped&&p.lx==32767) keyboard=true;  // not a controller stick: unchanged
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     assert(remapped&&keyboard);
+    assert(fable2::stickdz::g_left_replay_percent.load()==100);  // keyboard-pad stick: as recorded
   }
   unsetenv("FABLE2_REPLAY_INPUT");
   std::cout<<"Session clock, raw edges, pad snapshots, leases, stop and raw-stick replay passed\n";

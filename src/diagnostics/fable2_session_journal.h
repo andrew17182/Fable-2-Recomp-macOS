@@ -206,6 +206,9 @@ class Journal {
     int sticks=raw_sticks;
     if(game_replay_) {stored=game_pad_;sticks=game_sticks_;pad=RemapSticks(game_pad_,game_sticks_);}
     else if(replaying_) {pad=stored=replay_pad_;sticks=0;}
+    // F9 overlay readout (stick_deadzone.h): the replayed left stick before the remap, -1 when not replaying.
+    fable2::stickdz::g_left_replay_percent.store(
+        injected?fable2::stickdz::RadialPercent(int16_t(stored.lx),int16_t(stored.ly)):-1,std::memory_order_relaxed);
     if(recording_&&(!have_pad_||stored!=previous_||sticks!=previous_sticks_)) {
       std::string fields="\"pad\":"+stored.Json()+",\"raw\":"+std::to_string(sticks);
       if(pad!=stored) fields+=",\"game\":"+pad.Json();
@@ -344,6 +347,7 @@ class Journal {
   }
   void EndReplay(const char* status,const std::string& fields="") {
     replay_.clear();replay_i_=0;game_replay_=false;game_pad_=Pad{};game_sticks_=0;wait_since_=0;
+    fable2::stickdz::g_left_replay_percent.store(-1,std::memory_order_relaxed);
     REXSYS_INFO("[replay] {}", status);
     Status(status,fields);
   }

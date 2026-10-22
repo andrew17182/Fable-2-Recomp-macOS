@@ -381,7 +381,8 @@ while frame generation is on (`framegen paused` while turbo pauses it), and the 
 use for presenting, `Bilinear` or `MetalFX` (MetalFX only when it is actually applied: the window must be
 larger than the internal size, otherwise the presenter logs `[metalfx] not applied` and uses bilinear; read
 from the Metal plugin's `fable2_present_filter` export), then the left stick's raw deflection for deadzone tuning
-(`L 42%`: radius before the recomp's deadzone remap, 0-100%; `L --` with no controller). Example: `52 FPS · 19.2 ms ·
+(`L 42%`: radius before the recomp's deadzone remap, 0-100%; `L --` with no controller; `R 42%` while an input replay drives the pad: the replayed stick the game's pad
+is built from, raw before this session's remap for schema 3 recordings, as recorded for schema 1/2). Example: `52 FPS · 19.2 ms ·
 display 120 · 2× res · turbo 2.5x · MetalFX · L 42% · M3 Pro`; the last field is always this Mac's chip (`machdep.cpu.brand_string` without
 "Apple "). Digits are tabular, so the box width changes only with the digit count. The backing is a soft dark
 band (0.45 alpha behind the text) that fades out on all four edges. It uses the
