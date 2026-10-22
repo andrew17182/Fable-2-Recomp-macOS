@@ -30,7 +30,7 @@ CASES = [
     ({'resolutionScale': '2', 'frameRate': '30', 'fpsCounter': True, 'skipIntro': True},
      ['--resolution', '2', '--fps', '30', '--fps-counter', '--skip-intro']),
     ({'resolutionScale': 'auto', 'frameRate': 'uncapped', 'displayMode': 'fullscreen', 'upscaling': 'metalfx-spatial',
-      'effectsSize': 'full', 'turboNotice': 'game', 'turboSpeed': 3.5, 'slowSpeed': 0.35, 'turboAudio': 'high-pitch',
+      'effectsSize': 'full', 'effectsDefaultsVersion': 1, 'turboNotice': 'game', 'turboSpeed': 3.5, 'slowSpeed': 0.35, 'turboAudio': 'high-pitch',
       'skipIntro': False},
      ['--resolution', 'auto', '--fps', 'uncapped', '--display', 'fullscreen', '--upscaling', 'metalfx-spatial',
       '--effects', 'full', '--turbo-notice', 'game', '--turbo-speed', '3.5', '--slow-speed', '0.35',
@@ -44,6 +44,8 @@ CASES = [
      ['--fps', 'settings', '--no-unlock-extras', '--no-ring-reinit-fix', '--no-tile-edram', '--resolution', '3']),
     # Frame generation (FABLE2_FRAME_INTERP, docs/macos-metal.md "Frame generation"); always explicit.
     ({'frameGeneration': 'on', 'frameRate': '30'}, ['--frame-generation', 'on', '--fps', '30']),
+    # A "Full resolution" effects size stored before 2026-10-22 is reset to native once (effectsDefaultsVersion).
+    ({'effectsSize': 'full'}, []),
     # "Skip cosmetic waits" (docs/load-fixes-20261016.md section F).
     ({'fastPacing': True}, ['--fast-pacing']),
     # Controls tab (tools/macos/Shared/ControlsView.swift).

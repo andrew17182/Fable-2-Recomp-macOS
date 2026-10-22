@@ -415,11 +415,6 @@ struct SettingsTabView: View {
           ForEach(Upscaling.allCases) { mode in Text(mode.title).tag(mode) }
         }
         .help("How the image is scaled to the window. Does not change the render resolution or its cost.")
-        FixedPicker("Bloom and effects", selection: $model.settings.effects) {
-          ForEach(EffectsSize.allCases) { mode in Text(mode.title).tag(mode) }
-        }
-        .disabled(model.settings.resolution.effectiveScale(frameRate: model.settings.frameRate, rule2x: model.settings.auto2x) == 1)
-        .help("Bloom, blur and glow size at 2× and 3×.")
       }
       Section("Window") {
         FixedPicker("Display", selection: $model.settings.display) {
@@ -490,6 +485,13 @@ struct SettingsTabView: View {
         Text("Input recording")
       }
       section(.diagnostics, "Verify modes")
+      Section("Graphics") {
+        Toggle("Effects at full resolution (shifts glows)", isOn: Binding(
+          get: { model.settings.effects == .full },
+          set: { model.settings.effects = $0 ? .full : .original }))
+          .help("At 2× and 3×, bloom, blur and glow kernels shrink with the resolution and shift right and down. "
+                + "Off: native 1× size, the original look.")
+      }
       Section {
         TextField("Extra environment", text: $model.settings.extraEnv, prompt: Text("NAME=VALUE NAME2=VALUE2"))
           .labelsHidden()

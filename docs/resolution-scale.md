@@ -757,6 +757,10 @@ size. Setting the cvar to false keeps offsets in guest texels: the original kern
 - Launcher: "Bloom/effects: Native 1× (original look) / Full resolution", stored as UserDefaults `effectsSize`.
   It is disabled at Native resolution. The launcher always passes `FABLE2_EFFECTS_NATIVE`. CLI: `--effects
   original|full`.
+- 2026-10-22: the choice moved to Dev Options (Settings > Diagnostics > Graphics, "Effects at full resolution
+  (shifts glows)", default off = native) and is no longer a preset setting. Full resolution also shifts glows
+  right/down (half-texel centring; at 3× a chest's glow nearly vanishes on the left/top, `docs/bug-patterns.md`
+  #37/#115). The launcher resets a stored "full" to native once (`effectsDefaultsVersion` = 1).
 - No effect at scale 1. A changed value re-translates the affected shaders once (the first launch after
   switching is slower; steady state costs nothing measurable, below).
 

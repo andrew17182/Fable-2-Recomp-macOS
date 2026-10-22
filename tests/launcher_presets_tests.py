@@ -49,6 +49,23 @@ let fixOnly = PlistSettingsStore(path: dir + "/fix.plist")
 fixOnly.set(false, forKey: "turboFineDelay")  // not a preset setting
 out["migrateFix"] = LaunchSettings.load(from: fixOnly).preset.rawValue
 
+// Effects size: one-time reset of a stored "full" to native (effectsDefaultsVersion), then kept.
+let fx = PlistSettingsStore(path: dir + "/effects.plist")
+fx.set("full", forKey: "effectsSize")
+fx.set("enhanced", forKey: "preset")
+let fx1 = LaunchSettings.load(from: fx)
+out["effectsMigrated"] = [fx1.effects.rawValue, fx.string(forKey: "effectsSize") ?? "-",
+                          String(fx.object(forKey: "effectsDefaultsVersion") as? Int ?? 0)]
+fx.set("full", forKey: "effectsSize")  // the user's choice after the migration
+out["effectsKept"] = LaunchSettings.load(from: fx).effects.rawValue
+// Not a preset setting: changing it on Enhanced does not make Custom.
+var fm = SettingsModel(store: PlistSettingsStore(path: dir + "/effects-model.plist"))
+fm.choosePreset(.enhanced)
+fm.settings.effects = .full
+out["effectsNoCustom"] = [fm.settings.preset.rawValue, fm.settings.effects.rawValue]
+fm.choosePreset(.original)
+out["effectsSurvivesPreset"] = fm.settings.effects.rawValue
+
 // Flip to Custom, round trip, persistence.
 let path = dir + "/model.plist"
 var m = SettingsModel(store: PlistSettingsStore(path: path))
@@ -192,6 +209,14 @@ class PresetHarnessTests(unittest.TestCase):
         self.assertEqual(self.out['migrateExtras'], 'custom')
         self.assertEqual(self.out['migrateFix'], 'enhanced')
 
+    def test_effects_size_is_dev_only_and_migrated_once(self):
+        self.assertNotIn('effectsSize', self.out['ruleKeys'])
+        self.assertEqual(self.out['effectsMigrated'], ['original', '-', '1'])
+        self.assertEqual(self.out['effectsKept'], 'full')
+        self.assertEqual(self.out['effectsNoCustom'], ['enhanced', 'full'])
+        self.assertEqual(self.out['effectsSurvivesPreset'], 'full')
+        self.assertIn('FABLE2_EFFECTS_NATIVE=1', self.out['enhancedEnv'])
+
     def test_edit_flips_to_custom_from_the_preset_base(self):
         self.assertEqual(self.out['afterOriginal'], ['original', '1', '30'])
         self.assertEqual(self.out['afterEdit'], ['custom', '2', '30', '1.0', 'no-extras'])
@@ -241,6 +266,14 @@ class PresetHarnessTests(unittest.TestCase):
 
 
 class PresetSourceTests(unittest.TestCase):
+    def test_effects_option_in_dev_options_only(self):
+        views = (ROOT / 'tools/macos/Shared/SettingsViews.swift').read_text()
+        display = views[views.index('case .display:'):views.index('case .controls:')]
+        diagnostics = views[views.index('case .diagnostics:'):]
+        self.assertNotIn('effects', display)
+        self.assertIn('"Effects at full resolution (shifts glows)"', diagnostics)
+
+
     def test_picker_on_both_front_pages(self):
         dev = (ROOT / 'tools/macos/DevLauncher/DevLauncher.swift').read_text()
         player = (ROOT / 'tools/macos/Player/main.swift').read_text()

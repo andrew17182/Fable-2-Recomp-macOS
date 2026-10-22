@@ -419,7 +419,8 @@ enum FrameGeneration: String, CaseIterable, Identifiable {
 /// Bloom/blur/glow effect size at a higher internal resolution (FABLE2_EFFECTS_NATIVE ->
 /// draw_resolution_scaled_texture_offsets; game config [graphics] effects_native_scale).
 /// Original keeps the effects' texel offsets at native 1x size (the original look); full
-/// resolution shrinks them with the internal resolution (narrower, sharper glow).
+/// resolution shrinks them with the internal resolution (narrower glow, shifted right/down by the half-texel
+/// centring; docs/bug-patterns.md #37). Dev-only since 2026-10-22 (Diagnostics > Graphics), not part of a preset.
 enum EffectsSize: String, CaseIterable, Identifiable {
   case original, full
   var id: String { rawValue }
@@ -1001,6 +1002,7 @@ struct LaunchSettings: Equatable {
   /// Custom values). Before presets (2026-10-22, no "preset" stored): Enhanced when the settings match it, else
   /// Custom, saved once as the Custom slot.
   static func load(from defaults: SettingsStore) -> LaunchSettings {
+    migrateEffectsSize(in: defaults)
     var s = loadStored(from: defaults)
     if let preset = SettingsPreset(rawValue: defaults.string(forKey: "preset") ?? "") {
       s.applyPreset(preset, custom: savedCustom(in: defaults))
@@ -1012,6 +1014,15 @@ struct LaunchSettings: Equatable {
       defaults.set(SettingsPreset.custom.rawValue, forKey: "preset")
     }
     return s
+  }
+
+  /// Stored as "effectsDefaultsVersion". 1 (2026-10-22): effects at native 1x became the dev-only default, so a
+  /// stored "Full resolution" (which shrinks and shifts glows) is reset to native once; later choices are kept.
+  static let effectsDefaultsVersion = 1
+  static func migrateEffectsSize(in defaults: SettingsStore) {
+    guard (defaults.object(forKey: "effectsDefaultsVersion") as? Int ?? 0) < effectsDefaultsVersion else { return }
+    if defaults.object(forKey: "effectsSize") != nil { defaults.set(nil, forKey: "effectsSize") }
+    defaults.set(effectsDefaultsVersion, forKey: "effectsDefaultsVersion")
   }
 
   /// The per-setting keys only (no preset handling).
@@ -1099,7 +1110,6 @@ extension LaunchSettings {
     .make("auto2x", \.auto2x, original: true),
     .make("upscaling", \.upscaling, original: .off),
     .make("frameGeneration", \.frameGeneration, original: .off),
-    .make("effectsSize", \.effects, original: .original),
     .make("skipIntro", \.skipIntro, original: false),
     .make("fastPacing", \.fastPacing, original: false),
     .make("unlockExtras", \.unlockExtras, original: false),

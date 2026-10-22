@@ -506,7 +506,6 @@ Preset settings (code: `LaunchSettings.presetRules`; Enhanced is the launcher de
 | Auto 2× uncapped rule (`auto2x`) | on (no effect at 1×/30) | on | `FABLE2_AUTO_2X` |
 | Upscaling (`upscaling`) | Bilinear | Bilinear | `FABLE2_UPSCALING` |
 | Frame generation (`frameGeneration`; changes how motion looks, ~20 ms more delay) | Off | Off | `FABLE2_FRAME_INTERP` |
-| Bloom and effects (`effectsSize`) | Native 1× | Native 1× | `FABLE2_EFFECTS_NATIVE` |
 | Skip intro movies (`skipIntro`) | off | off | `FABLE2_SKIP_INTRO_MOVIES` |
 | Skip cosmetic waits (`fastPacing`; title fade, save notice) | off | off | `FABLE2_FAST_PACING` |
 | Unlock CE and website gear (`unlockExtras`) | off | off (was on before 2026-10-22) | `FABLE2_UNLOCK_EXTRAS` |
@@ -530,7 +529,8 @@ Not part of a preset (the same in all three):
 - **Preferences**: display mode (windowed/fullscreen), FPS counter (F9 still toggles it), boot straight into save,
   keyboard map, mouse look, overlay key binds, controller quick save and **screenshot** buttons (screenshots work in
   Original), View button to game, controllers in background.
-- **Dev options**: build choice, trace preset, hitch trace, verify modes, input recording, extra environment.
+- **Dev options**: build choice, trace preset, hitch trace, verify modes, input recording, effects at full resolution
+  (`effectsSize`, Diagnostics > Graphics, default off = native 1×; a preset no longer changes it, 2026-10-22), extra environment.
 
 ### Fable II Launcher (macOS: the way to play from source)
 
@@ -545,11 +545,11 @@ button, boots straight in), the save menu (newest first), **Resolution** and **F
 status (with **Dev Options**: **Build**, "Write saves back to" for library saves, and **Update Playtest Build** when
 shown). When a game ends the launcher comes back to the front; after a crash it shows a note with **Show Logs**.
 **Settings** is a page of the same window (the Settings / Launcher button, bottom-left on both pages; ⌘,), with these
-tabs: General (intro, extras, turbo notice), Display (resolution, upscaling, effects, window, frame rate, frame
+tabs: General (intro, extras, turbo notice), Display (resolution, upscaling, window, frame rate, frame
 generation, FPS counter), Controls (keyboard map, mouse look, hotkeys, controllers; see **Settings > Controls** above), Mods
 (Character Editor), and with Dev Options on: Performance (shader cache and specialization switches), Fixes (the
 correctness switches, all on by default; **Reset All to Defaults**) and Diagnostics (trace preset, hitch trace,
-verify modes, extra env, source checkout). The **Tools** menu has Close Game, Refresh and Open Logs Folder, and with
+verify modes, effects at full resolution, extra env, source checkout). The **Tools** menu has Close Game, Refresh and Open Logs Folder, and with
 Dev Options: Save Library…, Run Benchmark…, Run Flash Kit…, Export Portable Build…, Update Playtest Build and the
 save library / sessions / benchmark report folders. Default-on kill switches
 (`FABLE2_NATIVE_SHADERS`, `FABLE2_NS_SPECIALIZE`, `FABLE2_SHADOWS_NATIVE`, `FABLE2_DEFERRED_CLEARS`, `FABLE2_ALIAS_CLEAR_NATIVE`, `FABLE2_MAIN_DEPTH_NATIVE`, `FABLE2_EFFECTS_FOOTPRINT_VARIANT`, `FABLE2_CLEAR_LOAD_ACTION`, `FABLE2_SSM_STENCIL_FOLD`, `FABLE2_CLEAR_CONST_SOURCE`, `FABLE2_TILE_EDRAM`,
